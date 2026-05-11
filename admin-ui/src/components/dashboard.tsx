@@ -43,6 +43,12 @@ function createExportId(credential: ExportedCredential): string {
   return `kiro-rs-${credential.id ?? Date.now()}`
 }
 
+function formatMs(value?: number): string {
+  if (value === undefined || value === null) return '-'
+  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`
+  return `${Math.round(value)}ms`
+}
+
 function toKamStyleExport(credential: ExportedCredential) {
   const authMethod = credential.authMethod || (credential.kiroApiKey ? 'api_key' : 'social')
   const isApiKey = authMethod === 'api_key' || Boolean(credential.kiroApiKey)
@@ -821,7 +827,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
       </header>
 
       <main className="w-full px-4 py-5 md:px-6">
-        <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">账号池</CardTitle>
@@ -880,7 +886,47 @@ export function Dashboard({ onLogout }: DashboardProps) {
               </div>
             </CardContent>
           </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">上游延迟</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold tabular-nums">
+                {formatMs(runtimeStatus?.requestMetrics.p95TotalMs)}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                P50 上游 {formatMs(runtimeStatus?.requestMetrics.p50UpstreamMs)} · 样本 {runtimeStatus?.requestMetrics.requestCount ?? 0}
+              </div>
+            </CardContent>
+          </Card>
         </div>
+
+        {runtimeStatus?.requestMetrics.requestCount ? (
+          <div className="mb-5 rounded-lg border bg-card p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium">最近 {Math.round(runtimeStatus.requestMetrics.windowSecs / 60)} 分钟请求耗时</div>
+              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span>成功 {runtimeStatus.requestMetrics.successCount}</span>
+                <span>失败 {runtimeStatus.requestMetrics.errorCount}</span>
+                <span>流式 {runtimeStatus.requestMetrics.streamCount}</span>
+                <span>重试 {runtimeStatus.requestMetrics.retryCount}</span>
+                <span>排队 P95 {formatMs(runtimeStatus.requestMetrics.p95QueueMs)}</span>
+                <span>拿账号 P95 {formatMs(runtimeStatus.requestMetrics.p95AcquireMs)}</span>
+                <span>上游 P95 {formatMs(runtimeStatus.requestMetrics.p95UpstreamMs)}</span>
+              </div>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+              {runtimeStatus.requestMetrics.slowModels.map(model => (
+                <div key={model.model} className="rounded-md border bg-muted/30 px-3 py-2">
+                  <div className="truncate text-sm font-medium" title={model.model}>{model.model}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    P95 {formatMs(model.p95TotalMs)} · 均值 {formatMs(model.avgTotalMs)} · {model.requestCount} 次
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">

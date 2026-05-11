@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::CredentialPolicy;
 use crate::kiro::token_manager::MultiTokenManager;
+use crate::metrics::MetricsRecorder;
 use crate::runtime::RuntimeLimiter;
 
 use super::error::AdminServiceError;
@@ -40,6 +41,7 @@ struct CachedBalance {
 pub struct AdminService {
     token_manager: Arc<MultiTokenManager>,
     runtime_limiter: Arc<RuntimeLimiter>,
+    metrics: Arc<MetricsRecorder>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
@@ -50,6 +52,7 @@ impl AdminService {
     pub fn new(
         token_manager: Arc<MultiTokenManager>,
         runtime_limiter: Arc<RuntimeLimiter>,
+        metrics: Arc<MetricsRecorder>,
         known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
@@ -61,6 +64,7 @@ impl AdminService {
         Self {
             token_manager,
             runtime_limiter,
+            metrics,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
@@ -139,6 +143,7 @@ impl AdminService {
             dispatch_available_credentials: snapshot.dispatch_available,
             cooling_down_credentials: snapshot.cooling_down,
             session_affinity_bindings: snapshot.session_affinity_bindings,
+            request_metrics: self.metrics.snapshot(),
             credentials: snapshot
                 .entries
                 .into_iter()

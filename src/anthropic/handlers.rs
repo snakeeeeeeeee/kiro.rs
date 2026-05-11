@@ -442,7 +442,7 @@ async fn handle_stream_request(
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider
-        .call_api_stream_with_session(request_body, session_id)
+        .call_api_stream_with_session(request_body, session_id, permit.queue_ms())
         .await
     {
         Ok(resp) => resp,
@@ -637,7 +637,7 @@ async fn handle_non_stream_request(
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider
-        .call_api_with_session(request_body, session_id)
+        .call_api_with_session(request_body, session_id, _permit.queue_ms())
         .await
     {
         Ok(resp) => resp,
@@ -1081,7 +1081,7 @@ async fn handle_stream_request_buffered(
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider
-        .call_api_stream_with_session(request_body, session_id)
+        .call_api_stream_with_session(request_body, session_id, permit.queue_ms())
         .await
     {
         Ok(resp) => resp,

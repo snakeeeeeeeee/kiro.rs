@@ -56,7 +56,48 @@ export interface RuntimeStatusResponse {
   dispatchAvailableCredentials: number
   coolingDownCredentials: number
   sessionAffinityBindings: number
+  requestMetrics: RuntimeMetricsSnapshot
   credentials: RuntimeCredentialStatus[]
+}
+
+export interface RuntimeMetricsSnapshot {
+  windowSecs: number
+  requestCount: number
+  successCount: number
+  errorCount: number
+  streamCount: number
+  retryCount: number
+  avgQueueMs: number
+  p95QueueMs: number
+  avgAcquireMs: number
+  p95AcquireMs: number
+  avgUpstreamMs: number
+  p50UpstreamMs: number
+  p95UpstreamMs: number
+  avgTotalMs: number
+  p95TotalMs: number
+  slowModels: ModelLatencySnapshot[]
+  statusCounts: StatusCountSnapshot[]
+  credentialCounts: CredentialCountSnapshot[]
+}
+
+export interface ModelLatencySnapshot {
+  model: string
+  requestCount: number
+  avgUpstreamMs: number
+  p95UpstreamMs: number
+  avgTotalMs: number
+  p95TotalMs: number
+}
+
+export interface StatusCountSnapshot {
+  status: string
+  count: number
+}
+
+export interface CredentialCountSnapshot {
+  credentialId: number
+  count: number
 }
 
 export interface RuntimeCredentialStatus {

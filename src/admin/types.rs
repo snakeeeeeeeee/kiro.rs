@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::RuntimeSettings;
+use crate::metrics::RuntimeMetricsSnapshot;
 
 // ============ 凭据状态 ============
 
@@ -108,6 +109,7 @@ pub struct RuntimeStatusResponse {
     pub dispatch_available_credentials: usize,
     pub cooling_down_credentials: usize,
     pub session_affinity_bindings: usize,
+    pub request_metrics: RuntimeMetricsSnapshot,
     pub credentials: Vec<RuntimeCredentialStatus>,
 }
 

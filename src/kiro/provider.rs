@@ -5,11 +5,14 @@
 //! 支持多凭据故障转移和重试
 //! 支持按凭据级 endpoint 切换不同 Kiro API 端点
 
-use futures::StreamExt;
+use futures::{
+    StreamExt,
+    stream::{self, BoxStream},
+};
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 use crate::http_client::{ProxyConfig, build_client};
@@ -17,6 +20,7 @@ use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::{CredentialLease, MultiTokenManager};
+use crate::metrics::{MetricsRecorder, RequestTimingSample, UpstreamOutcome, duration_ms};
 use crate::model::config::TlsBackend;
 use parking_lot::Mutex;
 
@@ -33,6 +37,7 @@ const MAX_TOTAL_RETRIES: usize = 9;
 /// 按凭据 `endpoint` 字段选择 [`KiroEndpoint`] 实现
 pub struct KiroProvider {
     token_manager: Arc<MultiTokenManager>,
+    metrics: Arc<MetricsRecorder>,
     /// 全局代理配置（用于凭据无自定义代理时的回退）
     global_proxy: Option<ProxyConfig>,
     /// Client 缓存：key = effective proxy config, value = reqwest::Client
@@ -48,17 +53,77 @@ pub struct KiroProvider {
 
 /// 上游 API 响应及其绑定的凭据占用守卫
 pub struct LeasedResponse {
-    response: reqwest::Response,
+    response: Option<reqwest::Response>,
     credential_id: u64,
-    _lease: CredentialLease,
+    lease: Option<CredentialLease>,
+    timing: Option<ResponseTimingGuard>,
+}
+
+struct ApiTimingRecord {
+    model: String,
+    is_stream: bool,
+    credential_id: Option<u64>,
+    status: Option<u16>,
+    outcome: UpstreamOutcome,
+    attempts: usize,
+    queue_ms: u64,
+    acquire_ms: u64,
+    upstream_ms: u64,
+    total_ms: u64,
+}
+
+struct ResponseTimingGuard {
+    metrics: Arc<MetricsRecorder>,
+    record: Option<ApiTimingRecord>,
+    total_started_at: Instant,
+    body_started_at: Instant,
+}
+
+impl ResponseTimingGuard {
+    fn new(
+        metrics: Arc<MetricsRecorder>,
+        record: ApiTimingRecord,
+        total_started_at: Instant,
+        body_started_at: Instant,
+    ) -> Self {
+        Self {
+            metrics,
+            record: Some(record),
+            total_started_at,
+            body_started_at,
+        }
+    }
+
+    fn finish(&mut self, outcome: UpstreamOutcome) {
+        if let Some(mut record) = self.record.take() {
+            record.outcome = outcome;
+            record.upstream_ms = record
+                .upstream_ms
+                .saturating_add(duration_ms(self.body_started_at.elapsed()));
+            record.total_ms = duration_ms(self.total_started_at.elapsed());
+            record_api_timing(&self.metrics, record);
+        }
+    }
+}
+
+impl Drop for ResponseTimingGuard {
+    fn drop(&mut self) {
+        self.finish(UpstreamOutcome::Error);
+    }
 }
 
 impl LeasedResponse {
-    fn new(response: reqwest::Response, credential_id: u64, lease: CredentialLease) -> Self {
+    fn new(
+        response: reqwest::Response,
+        credential_id: u64,
+        lease: CredentialLease,
+        timing: Option<ResponseTimingGuard>,
+    ) -> Self {
         Self {
-            response,
+            response: Some(response),
             credential_id,
-            _lease: lease,
+            lease: Some(lease),
+            timing,
         }
     }
 
@@ -66,21 +131,103 @@ impl LeasedResponse {
         self.credential_id
     }
 
-    pub async fn bytes(self) -> Result<bytes::Bytes, reqwest::Error> {
-        self.response.bytes().await
+    pub async fn bytes(mut self) -> Result<bytes::Bytes, reqwest::Error> {
+        let response = self
+            .response
+            .take()
+            .expect("LeasedResponse body already taken");
+        let result = response.bytes().await;
+        if let Some(timing) = self.timing.as_mut() {
+            timing.finish(if result.is_ok() {
+                UpstreamOutcome::Success
+            } else {
+                UpstreamOutcome::Error
+            });
+        }
+        result
     }
 
-    pub async fn text(self) -> Result<String, reqwest::Error> {
-        self.response.text().await
+    pub async fn text(mut self) -> Result<String, reqwest::Error> {
+        let response = self
+            .response
+            .take()
+            .expect("LeasedResponse body already taken");
+        let result = response.text().await;
+        if let Some(timing) = self.timing.as_mut() {
+            timing.finish(if result.is_ok() {
+                UpstreamOutcome::Success
+            } else {
+                UpstreamOutcome::Error
+            });
+        }
+        result
     }
 
-    pub fn bytes_stream(self) -> impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> {
-        let lease = self._lease;
-        self.response.bytes_stream().map(move |item| {
-            let _keep_alive = &lease;
-            item
-        })
+    pub fn bytes_stream(mut self) -> BoxStream<'static, Result<bytes::Bytes, reqwest::Error>> {
+        let response = self
+            .response
+            .take()
+            .expect("LeasedResponse body already taken");
+        let body_stream = response.bytes_stream();
+        let timing = self.timing.take();
+        let lease = self.lease.take();
+
+        stream::unfold(
+            (body_stream, timing, lease),
+            |(mut body_stream, mut timing, lease)| async move {
+                match body_stream.next().await {
+                    Some(Ok(chunk)) => Some((Ok(chunk), (body_stream, timing, lease))),
+                    Some(Err(err)) => {
+                        if let Some(timing) = timing.as_mut() {
+                            timing.finish(UpstreamOutcome::Error);
+                        }
+                        Some((Err(err), (body_stream, timing, lease)))
+                    }
+                    None => {
+                        if let Some(timing) = timing.as_mut() {
+                            timing.finish(UpstreamOutcome::Success);
+                        }
+                        drop(lease);
+                        None
+                    }
+                }
+            },
+        )
+        .boxed()
     }
+}
+
+fn record_api_timing(metrics: &MetricsRecorder, record: ApiTimingRecord) {
+    tracing::info!(
+        target: "kiro_rs::metrics",
+        model = %record.model,
+        stream = record.is_stream,
+        credential_id = record.credential_id,
+        status = record.status,
+        outcome = match record.outcome {
+            UpstreamOutcome::Success => "success",
+            UpstreamOutcome::Error => "error",
+        },
+        attempts = record.attempts,
+        queue_ms = record.queue_ms,
+        acquire_ms = record.acquire_ms,
+        upstream_ms = record.upstream_ms,
+        total_ms = record.total_ms,
+        "upstream_request_timing"
+    );
+    metrics.record(RequestTimingSample {
+        completed_at: chrono::Utc::now(),
+        model: record.model,
+        stream: record.is_stream,
+        credential_id: record.credential_id,
+        status: record.status,
+        outcome: record.outcome,
+        attempts: record.attempts,
+        queue_ms: record.queue_ms,
+        acquire_ms: record.acquire_ms,
+        upstream_ms: record.upstream_ms,
+        total_ms: record.total_ms,
+    });
 }
 
 impl KiroProvider {
@@ -93,6 +240,7 @@ impl KiroProvider {
     /// * `default_endpoint` - 凭据未显式指定 endpoint 时使用的名称
     pub fn with_proxy(
         token_manager: Arc<MultiTokenManager>,
+        metrics: Arc<MetricsRecorder>,
         proxy: Option<ProxyConfig>,
         endpoints: HashMap<String, Arc<dyn KiroEndpoint>>,
         default_endpoint: String,
@@ -111,6 +259,7 @@ impl KiroProvider {
 
         Self {
             token_manager,
+            metrics,
             global_proxy: proxy,
             client_cache: Mutex::new(cache),
             tls_backend,
@@ -148,30 +297,32 @@ impl KiroProvider {
     /// 支持多凭据故障转移（见 [`Self::call_api_with_retry`]）
     #[allow(dead_code)]
     pub async fn call_api(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, false, None).await
+        self.call_api_with_retry(request_body, false, None, 0).await
     }
 
     pub async fn call_api_with_session(
         &self,
         request_body: &str,
         session_id: Option<&str>,
+        queue_ms: u64,
     ) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, false, session_id)
+        self.call_api_with_retry(request_body, false, session_id, queue_ms)
             .await
     }
 
     /// 发送流式 API 请求
     #[allow(dead_code)]
     pub async fn call_api_stream(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, true, None).await
+        self.call_api_with_retry(request_body, true, None, 0).await
     }
 
     pub async fn call_api_stream_with_session(
         &self,
         request_body: &str,
         session_id: Option<&str>,
+        queue_ms: u64,
     ) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, true, session_id)
+        self.call_api_with_retry(request_body, true, session_id, queue_ms)
             .await
     }
 
@@ -272,7 +423,7 @@ impl KiroProvider {
             // 成功响应
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
-                return Ok(LeasedResponse::new(response, ctx.id, ctx.lease));
+                return Ok(LeasedResponse::new(response, ctx.id, ctx.lease, None));
             }
 
             // 失败响应
@@ -368,7 +519,9 @@ impl KiroProvider {
         request_body: &str,
         is_stream: bool,
         session_id: Option<&str>,
+        queue_ms: u64,
     ) -> anyhow::Result<LeasedResponse> {
+        let total_started_at = Instant::now();
         let total_credentials = self.token_manager.total_count();
         let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
@@ -377,20 +530,31 @@ impl KiroProvider {
 
         // 尝试从请求体中提取模型信息
         let model = Self::extract_model_from_request(request_body);
+        let model_for_metrics = model.clone().unwrap_or_else(|| "unknown".to_string());
+        let mut last_credential_id: Option<u64> = None;
+        let mut last_status: Option<u16> = None;
+        let mut acquire_ms_total = 0;
+        let mut upstream_ms_total = 0;
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token）
+            let acquire_started_at = Instant::now();
             let ctx = match self
                 .token_manager
                 .acquire_context_with_session(model.as_deref(), session_id)
                 .await
             {
-                Ok(c) => c,
+                Ok(c) => {
+                    acquire_ms_total += duration_ms(acquire_started_at.elapsed());
+                    c
+                }
                 Err(e) => {
+                    acquire_ms_total += duration_ms(acquire_started_at.elapsed());
                     last_error = Some(e);
                     continue;
                 }
             };
+            last_credential_id = Some(ctx.id);
 
             let config = self.token_manager.config();
             let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
@@ -422,9 +586,11 @@ impl KiroProvider {
                 .header("Connection", "close");
             let request = endpoint.decorate_api(base, &rctx);
 
+            let upstream_started_at = Instant::now();
             let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
+                    upstream_ms_total += duration_ms(upstream_started_at.elapsed());
                     tracing::warn!(
                         "API 请求发送失败（尝试 {}/{}）: {}",
                         attempt + 1,
@@ -441,17 +607,44 @@ impl KiroProvider {
                     continue;
                 }
             };
+            upstream_ms_total += duration_ms(upstream_started_at.elapsed());
 
             let status = response.status();
+            last_status = Some(status.as_u16());
 
-            // 成功响应
+            // 成功响应：耗时指标延后到响应体消费完成时记录。
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
-                return Ok(LeasedResponse::new(response, ctx.id, ctx.lease));
+                let timing = ResponseTimingGuard::new(
+                    self.metrics.clone(),
+                    ApiTimingRecord {
+                        model: model_for_metrics.clone(),
+                        is_stream,
+                        credential_id: Some(ctx.id),
+                        status: Some(status.as_u16()),
+                        outcome: UpstreamOutcome::Success,
+                        attempts: attempt + 1,
+                        queue_ms,
+                        acquire_ms: acquire_ms_total,
+                        upstream_ms: upstream_ms_total,
+                        total_ms: 0,
+                    },
+                    total_started_at,
+                    Instant::now(),
+                );
+                return Ok(LeasedResponse::new(
+                    response,
+                    ctx.id,
+                    ctx.lease,
+                    Some(timing),
+                ));
             }
 
             // 失败响应：读取 body 用于日志/错误信息
+            let body_started_at = Instant::now();
             let body = response.text().await.unwrap_or_default();
+            upstream_ms_total =
+                upstream_ms_total.saturating_add(duration_ms(body_started_at.elapsed()));
 
             // 402 Payment Required 且额度用尽：禁用凭据并故障转移
             if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
@@ -465,6 +658,19 @@ impl KiroProvider {
 
                 let has_available = self.token_manager.report_quota_exhausted(ctx.id);
                 if !has_available {
+                    let total_ms = duration_ms(total_started_at.elapsed());
+                    self.record_api_timing(ApiTimingRecord {
+                        model: model_for_metrics,
+                        is_stream,
+                        credential_id: Some(ctx.id),
+                        status: Some(status.as_u16()),
+                        outcome: UpstreamOutcome::Error,
+                        attempts: attempt + 1,
+                        queue_ms,
+                        acquire_ms: acquire_ms_total,
+                        upstream_ms: upstream_ms_total,
+                        total_ms,
+                    });
                     anyhow::bail!(
                         "{} API 请求失败（所有凭据已用尽）: {} {}",
                         api_type,
@@ -484,6 +690,19 @@ impl KiroProvider {
 
             // 400 Bad Request - 请求问题，重试/切换凭据无意义
             if status.as_u16() == 400 {
+                let total_ms = duration_ms(total_started_at.elapsed());
+                self.record_api_timing(ApiTimingRecord {
+                    model: model_for_metrics.clone(),
+                    is_stream,
+                    credential_id: Some(ctx.id),
+                    status: Some(status.as_u16()),
+                    outcome: UpstreamOutcome::Error,
+                    attempts: attempt + 1,
+                    queue_ms,
+                    acquire_ms: acquire_ms_total,
+                    upstream_ms: upstream_ms_total,
+                    total_ms,
+                });
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
             }
 
@@ -515,6 +734,19 @@ impl KiroProvider {
 
                 let has_available = self.token_manager.report_failure(ctx.id);
                 if !has_available {
+                    let total_ms = duration_ms(total_started_at.elapsed());
+                    self.record_api_timing(ApiTimingRecord {
+                        model: model_for_metrics,
+                        is_stream,
+                        credential_id: Some(ctx.id),
+                        status: Some(status.as_u16()),
+                        outcome: UpstreamOutcome::Error,
+                        attempts: attempt + 1,
+                        queue_ms,
+                        acquire_ms: acquire_ms_total,
+                        upstream_ms: upstream_ms_total,
+                        total_ms,
+                    });
                     anyhow::bail!(
                         "{} API 请求失败（所有凭据已用尽）: {} {}",
                         api_type,
@@ -561,6 +793,19 @@ impl KiroProvider {
 
             // 其他 4xx - 通常为请求/配置问题：直接返回，不计入凭据失败
             if status.is_client_error() {
+                let total_ms = duration_ms(total_started_at.elapsed());
+                self.record_api_timing(ApiTimingRecord {
+                    model: model_for_metrics.clone(),
+                    is_stream,
+                    credential_id: Some(ctx.id),
+                    status: Some(status.as_u16()),
+                    outcome: UpstreamOutcome::Error,
+                    attempts: attempt + 1,
+                    queue_ms,
+                    acquire_ms: acquire_ms_total,
+                    upstream_ms: upstream_ms_total,
+                    total_ms,
+                });
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
             }
 
@@ -584,13 +829,31 @@ impl KiroProvider {
         }
 
         // 所有重试都失败
-        Err(last_error.unwrap_or_else(|| {
+        let error = last_error.unwrap_or_else(|| {
             anyhow::anyhow!(
                 "{} API 请求失败：已达到最大重试次数（{}次）",
                 api_type,
                 max_retries
             )
-        }))
+        });
+        let total_ms = duration_ms(total_started_at.elapsed());
+        self.record_api_timing(ApiTimingRecord {
+            model: model_for_metrics,
+            is_stream,
+            credential_id: last_credential_id,
+            status: last_status,
+            outcome: UpstreamOutcome::Error,
+            attempts: max_retries,
+            queue_ms,
+            acquire_ms: acquire_ms_total,
+            upstream_ms: upstream_ms_total,
+            total_ms,
+        });
+        Err(error)
+    }
+
+    fn record_api_timing(&self, record: ApiTimingRecord) {
+        record_api_timing(&self.metrics, record);
     }
 
     /// 从请求体中提取模型信息

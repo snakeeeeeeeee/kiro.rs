@@ -4,6 +4,7 @@ mod anthropic;
 mod common;
 mod http_client;
 mod kiro;
+mod metrics;
 mod model;
 mod runtime;
 pub mod token;
@@ -18,6 +19,7 @@ use kiro::provider::KiroProvider;
 use kiro::settings::RuntimeSettings;
 use kiro::store::KiroStore;
 use kiro::token_manager::MultiTokenManager;
+use metrics::MetricsRecorder;
 use model::arg::Args;
 use model::config::Config;
 use runtime::RuntimeLimiter;
@@ -198,8 +200,10 @@ async fn main() {
     });
     let token_manager = Arc::new(token_manager);
     let runtime_limiter = Arc::new(RuntimeLimiter::new(&config));
+    let metrics = Arc::new(MetricsRecorder::new());
     let kiro_provider = KiroProvider::with_proxy(
         token_manager.clone(),
+        metrics.clone(),
         proxy_config.clone(),
         endpoints,
         config.default_endpoint.clone(),
@@ -238,6 +242,7 @@ async fn main() {
             let admin_service = admin::AdminService::new(
                 token_manager.clone(),
                 runtime_limiter.clone(),
+                metrics.clone(),
                 endpoint_names.clone(),
             );
             let admin_state = admin::AdminState::new(admin_key, admin_service);

@@ -6,6 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
+use std::time::Instant;
 
 use axum::{
     Json,
@@ -19,6 +20,7 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 
 use crate::kiro::token_manager::MultiTokenManager;
+use crate::metrics::duration_ms;
 use crate::model::config::Config;
 
 pub struct RuntimeLimiter {
@@ -30,6 +32,13 @@ pub struct RuntimeLimiter {
 pub struct GlobalRequestPermit {
     token_manager: Arc<MultiTokenManager>,
     limiter: Weak<RuntimeLimiter>,
+    queue_ms: u64,
+}
+
+impl GlobalRequestPermit {
+    pub fn queue_ms(&self) -> u64 {
+        self.queue_ms
+    }
 }
 
 impl Drop for GlobalRequestPermit {
@@ -54,6 +63,7 @@ impl RuntimeLimiter {
         self: &Arc<Self>,
         token_manager: Arc<MultiTokenManager>,
     ) -> Result<GlobalRequestPermit, RuntimeLimitError> {
+        let started_at = Instant::now();
         if self.closed.load(Ordering::Acquire) {
             return Err(RuntimeLimitError::Closed);
         }
@@ -66,6 +76,7 @@ impl RuntimeLimiter {
             return Ok(GlobalRequestPermit {
                 token_manager,
                 limiter: Arc::downgrade(self),
+                queue_ms: duration_ms(started_at.elapsed()),
             });
         }
 
@@ -103,6 +114,7 @@ impl RuntimeLimiter {
         result.map(|_| GlobalRequestPermit {
             token_manager,
             limiter: Arc::downgrade(self),
+            queue_ms: duration_ms(started_at.elapsed()),
         })
     }
 
