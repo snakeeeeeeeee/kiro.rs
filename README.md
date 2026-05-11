@@ -494,7 +494,7 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 ## 单机生产部署
 
-单机生产部署建议使用 `docker-compose-prod.yml`，默认只绑定 `127.0.0.1:8990`，并配置了健康检查、日志滚动、资源限制和优雅停止时间。
+单机生产部署建议使用 `docker-compose-prod.yml`，默认映射 `0.0.0.0:8990->8990`，并配置了健康检查、日志滚动、资源限制和优雅停止时间。请用服务器防火墙或安全组限制 Admin 访问来源。
 
 ```bash
 docker compose -f docker-compose-prod.yml up -d
