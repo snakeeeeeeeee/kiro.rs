@@ -13,6 +13,8 @@ import type {
   RuntimeSettings,
   SetCredentialPolicyRequest,
   BatchCredentialPolicyRequest,
+  DynamicProxyActionResponse,
+  DynamicProxyBatchActionResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -136,6 +138,34 @@ export async function clearCredentialCooldown(id: number): Promise<SuccessRespon
 
 export async function clearCredentialCooldownBatch(ids: number[]): Promise<SuccessResponse> {
   const { data } = await api.post<SuccessResponse>('/credentials/cooldown/clear-batch', { ids })
+  return data
+}
+
+export async function bindDynamicProxy(id: number): Promise<DynamicProxyActionResponse> {
+  const { data } = await api.post<DynamicProxyActionResponse>(`/credentials/${id}/dynamic-proxy/bind`)
+  return data
+}
+
+export async function rotateDynamicProxy(id: number): Promise<DynamicProxyActionResponse> {
+  const { data } = await api.post<DynamicProxyActionResponse>(`/credentials/${id}/dynamic-proxy/rotate`)
+  return data
+}
+
+export async function verifyDynamicProxy(id: number): Promise<DynamicProxyActionResponse> {
+  const { data } = await api.post<DynamicProxyActionResponse>(`/credentials/${id}/dynamic-proxy/verify`)
+  return data
+}
+
+export async function clearDynamicProxy(id: number): Promise<SuccessResponse> {
+  const { data } = await api.delete<SuccessResponse>(`/credentials/${id}/dynamic-proxy`)
+  return data
+}
+
+export async function dynamicProxyBatchAction(
+  action: 'bind' | 'rotate' | 'verify' | 'clear',
+  ids: number[],
+): Promise<DynamicProxyBatchActionResponse> {
+  const { data } = await api.post<DynamicProxyBatchActionResponse>(`/dynamic-proxy/batch/${action}`, { ids })
   return data
 }
 

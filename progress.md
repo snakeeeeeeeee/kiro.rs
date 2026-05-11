@@ -117,3 +117,21 @@
 - `GET /healthz`: 200.
 - `GET /api/admin/settings/runtime`: returns the new virtual cache dynamic mode fields.
 - `PUT /api/admin/settings/runtime`: hot update to `estimated_user_delta` + `dynamic` succeeded, then local settings were restored to the previous fixed mode.
+
+## In Progress: Dynamic Proxy/IP Binding
+- Inspected WindsurfAPI `dynamic-proxy.js`, `proxy-test.js`, `proxy-config.js`, and availability worker integration.
+- Confirmed `kiro.rs` already supports manual account proxy/global proxy and effective proxy usage in both token refresh and Kiro provider client selection.
+- Started implementing a Rust-native dynamic proxy layer rather than copying JS code directly.
+- Added dynamic proxy runtime settings, SQLite binding table, Rust dynamic proxy manager/verifier, and background maintenance worker.
+- Wired effective proxy lookup into token refresh, usage-limit lookup, MCP calls, and normal Kiro API calls.
+- Added Admin API/UI controls for single-account and batch bind/rotate/verify/clear operations.
+
+## Latest Validation: Dynamic Proxy/IP Binding
+- `cargo check`: passed.
+- `cargo test`: passed, 233 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `docker compose -f docker-compose-dev.yml up -d --build`: passed.
+- `GET /healthz`: 200.
+- `GET /api/admin/runtime`: returns `dynamicProxy` summary.
+- `GET /api/admin/settings/runtime`: returns dynamic proxy configuration fields.
+- `docker compose -f docker-compose-dev.yml ps`: `kiro-rs-dev` healthy.

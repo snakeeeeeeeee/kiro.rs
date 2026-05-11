@@ -16,6 +16,11 @@ import {
   setCredentialPolicyBatch,
   clearCredentialCooldown,
   clearCredentialCooldownBatch,
+  bindDynamicProxy,
+  rotateDynamicProxy,
+  verifyDynamicProxy,
+  clearDynamicProxy,
+  dynamicProxyBatchAction,
 } from '@/api/credentials'
 import type { AddCredentialRequest, BatchCredentialPolicyRequest, RuntimeSettings, SetCredentialPolicyRequest } from '@/types/api'
 
@@ -183,6 +188,57 @@ export function useClearCooldownBatch() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (ids: number[]) => clearCredentialCooldownBatch(ids),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useBindDynamicProxy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => bindDynamicProxy(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useRotateDynamicProxy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => rotateDynamicProxy(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useVerifyDynamicProxy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => verifyDynamicProxy(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useClearDynamicProxy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => clearDynamicProxy(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useDynamicProxyBatchAction() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ action, ids }: { action: 'bind' | 'rotate' | 'verify' | 'clear'; ids: number[] }) =>
+      dynamicProxyBatchAction(action, ids),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
     },

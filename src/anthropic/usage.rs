@@ -565,6 +565,24 @@ mod tests {
             virtual_cache_burst_min_tokens: 1_500,
             virtual_cache_burst_max_tokens: 3_000,
             virtual_cache_fallback_scope: "model".to_string(),
+            dynamic_proxy_enabled: false,
+            dynamic_proxy_provider: "novproxy".to_string(),
+            dynamic_proxy_protocol: "http".to_string(),
+            dynamic_proxy_host: "us.novproxy.io".to_string(),
+            dynamic_proxy_port: 1000,
+            dynamic_proxy_username_template:
+                "nfgr68136-region-{region}-st-{state}-sid-{sid}-t-{ttl}".to_string(),
+            dynamic_proxy_password: String::new(),
+            dynamic_proxy_region: "US".to_string(),
+            dynamic_proxy_state: "New Jersey".to_string(),
+            dynamic_proxy_ttl_minutes: 120,
+            dynamic_proxy_renew_before_ms: 900_000,
+            dynamic_proxy_verify_url: "https://ipinfo.io/json".to_string(),
+            dynamic_proxy_max_bind_retries: 3,
+            dynamic_proxy_auto_bind_new_accounts: false,
+            dynamic_proxy_worker_interval_ms: 60_000,
+            dynamic_proxy_worker_batch_size: 20,
+            dynamic_proxy_worker_concurrency: 3,
         }
     }
 

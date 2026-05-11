@@ -34,6 +34,23 @@ pub struct RuntimeSettings {
     pub virtual_cache_burst_min_tokens: u32,
     pub virtual_cache_burst_max_tokens: u32,
     pub virtual_cache_fallback_scope: String,
+    pub dynamic_proxy_enabled: bool,
+    pub dynamic_proxy_provider: String,
+    pub dynamic_proxy_protocol: String,
+    pub dynamic_proxy_host: String,
+    pub dynamic_proxy_port: u16,
+    pub dynamic_proxy_username_template: String,
+    pub dynamic_proxy_password: String,
+    pub dynamic_proxy_region: String,
+    pub dynamic_proxy_state: String,
+    pub dynamic_proxy_ttl_minutes: u32,
+    pub dynamic_proxy_renew_before_ms: u64,
+    pub dynamic_proxy_verify_url: String,
+    pub dynamic_proxy_max_bind_retries: u32,
+    pub dynamic_proxy_auto_bind_new_accounts: bool,
+    pub dynamic_proxy_worker_interval_ms: u64,
+    pub dynamic_proxy_worker_batch_size: usize,
+    pub dynamic_proxy_worker_concurrency: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,6 +100,27 @@ impl RuntimeSettings {
             virtual_cache_fallback_scope: normalize_virtual_cache_fallback_scope(
                 &config.virtual_cache_fallback_scope,
             ),
+            dynamic_proxy_enabled: config.dynamic_proxy_enabled,
+            dynamic_proxy_provider: normalize_dynamic_proxy_provider(
+                &config.dynamic_proxy_provider,
+            ),
+            dynamic_proxy_protocol: normalize_dynamic_proxy_protocol(
+                &config.dynamic_proxy_protocol,
+            ),
+            dynamic_proxy_host: config.dynamic_proxy_host.trim().to_string(),
+            dynamic_proxy_port: config.dynamic_proxy_port,
+            dynamic_proxy_username_template: config.dynamic_proxy_username_template.clone(),
+            dynamic_proxy_password: config.dynamic_proxy_password.clone(),
+            dynamic_proxy_region: config.dynamic_proxy_region.clone(),
+            dynamic_proxy_state: config.dynamic_proxy_state.clone(),
+            dynamic_proxy_ttl_minutes: config.dynamic_proxy_ttl_minutes,
+            dynamic_proxy_renew_before_ms: config.dynamic_proxy_renew_before_ms,
+            dynamic_proxy_verify_url: config.dynamic_proxy_verify_url.clone(),
+            dynamic_proxy_max_bind_retries: config.dynamic_proxy_max_bind_retries,
+            dynamic_proxy_auto_bind_new_accounts: config.dynamic_proxy_auto_bind_new_accounts,
+            dynamic_proxy_worker_interval_ms: config.dynamic_proxy_worker_interval_ms,
+            dynamic_proxy_worker_batch_size: config.dynamic_proxy_worker_batch_size,
+            dynamic_proxy_worker_concurrency: config.dynamic_proxy_worker_concurrency,
         }
     }
 
@@ -180,6 +218,43 @@ impl RuntimeSettings {
         {
             anyhow::bail!("virtualCacheFallbackScope 必须是 'model' 或 'none'");
         }
+        if self.dynamic_proxy_provider.trim().is_empty() {
+            anyhow::bail!("dynamicProxyProvider 不能为空");
+        }
+        if self.dynamic_proxy_protocol != "http" && self.dynamic_proxy_protocol != "socks5" {
+            anyhow::bail!("dynamicProxyProtocol 必须是 'http' 或 'socks5'");
+        }
+        if self.dynamic_proxy_enabled && self.dynamic_proxy_host.trim().is_empty() {
+            anyhow::bail!("dynamicProxyHost 不能为空");
+        }
+        if self.dynamic_proxy_port == 0 {
+            anyhow::bail!("dynamicProxyPort 必须在 1..65535 范围内");
+        }
+        if self.dynamic_proxy_enabled && self.dynamic_proxy_username_template.trim().is_empty() {
+            anyhow::bail!("dynamicProxyUsernameTemplate 不能为空");
+        }
+        if !(1..=24 * 60).contains(&self.dynamic_proxy_ttl_minutes) {
+            anyhow::bail!("dynamicProxyTtlMinutes 必须在 1..1440 范围内");
+        }
+        if self.dynamic_proxy_renew_before_ms > 86_400_000 {
+            anyhow::bail!("dynamicProxyRenewBeforeMs 不能超过 86400000");
+        }
+        if self.dynamic_proxy_enabled && self.dynamic_proxy_verify_url.trim().is_empty() {
+            anyhow::bail!("dynamicProxyVerifyUrl 不能为空");
+        }
+        if !(1..=20).contains(&self.dynamic_proxy_max_bind_retries) {
+            anyhow::bail!("dynamicProxyMaxBindRetries 必须在 1..20 范围内");
+        }
+        if !(1_000..=86_400_000).contains(&self.dynamic_proxy_worker_interval_ms) {
+            anyhow::bail!("dynamicProxyWorkerIntervalMs 必须在 1000..86400000 范围内");
+        }
+        if self.dynamic_proxy_worker_batch_size > 1_000 {
+            anyhow::bail!("dynamicProxyWorkerBatchSize 必须在 0..1000 范围内");
+        }
+        if self.dynamic_proxy_worker_concurrency == 0 || self.dynamic_proxy_worker_concurrency > 100
+        {
+            anyhow::bail!("dynamicProxyWorkerConcurrency 必须在 1..100 范围内");
+        }
         Ok(())
     }
 }
@@ -255,6 +330,22 @@ pub fn normalize_virtual_cache_fallback_scope(scope: &str) -> String {
         "none".to_string()
     } else {
         "model".to_string()
+    }
+}
+
+pub fn normalize_dynamic_proxy_provider(provider: &str) -> String {
+    let trimmed = provider.trim();
+    if trimmed.is_empty() {
+        "novproxy".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn normalize_dynamic_proxy_protocol(protocol: &str) -> String {
+    match protocol.trim().to_ascii_lowercase().as_str() {
+        "socks" | "socks5h" | "socks5" => "socks5".to_string(),
+        _ => "http".to_string(),
     }
 }
 

@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -46,6 +46,13 @@ const numberFields: Array<{
   { key: 'virtualCacheBurstEveryTurns', label: '动态突增间隔轮数', hint: '0 表示关闭，建议 7' },
   { key: 'virtualCacheBurstMinTokens', label: '动态突增最小创建', hint: '建议 1500' },
   { key: 'virtualCacheBurstMaxTokens', label: '动态突增最大创建', hint: '建议 3000' },
+  { key: 'dynamicProxyPort', label: '动态代理端口', hint: '1-65535' },
+  { key: 'dynamicProxyTtlMinutes', label: '动态代理 TTL 分钟', hint: '建议 120' },
+  { key: 'dynamicProxyRenewBeforeMs', label: '动态代理提前续绑 ms', hint: '建议 900000' },
+  { key: 'dynamicProxyMaxBindRetries', label: '动态代理绑定重试', hint: '建议 3' },
+  { key: 'dynamicProxyWorkerIntervalMs', label: '动态代理扫描间隔 ms', hint: '建议 60000' },
+  { key: 'dynamicProxyWorkerBatchSize', label: '动态代理批量数量', hint: '建议 20' },
+  { key: 'dynamicProxyWorkerConcurrency', label: '动态代理并发数', hint: '建议 3' },
 ]
 
 export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDialogProps) {
@@ -60,7 +67,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
   }, [data, open])
 
   const updateNumber = (
-    key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope'>,
+    key: (typeof numberFields)[number]['key'],
     value: string,
   ) => {
     const next = Number(value)
@@ -192,6 +199,68 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="none">不累计</option>
               </select>
             </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">动态 IP 绑定</label>
+              <select
+                value={form.dynamicProxyEnabled ? 'enabled' : 'disabled'}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, dynamicProxyEnabled: event.target.value === 'enabled' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="disabled">关闭</option>
+                <option value="enabled">启用</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">新账号自动绑定</label>
+              <select
+                value={form.dynamicProxyAutoBindNewAccounts ? 'enabled' : 'disabled'}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, dynamicProxyAutoBindNewAccounts: event.target.value === 'enabled' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="disabled">关闭</option>
+                <option value="enabled">启用</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">动态代理协议</label>
+              <select
+                value={form.dynamicProxyProtocol}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, dynamicProxyProtocol: event.target.value as 'http' | 'socks5' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="http">HTTP</option>
+                <option value="socks5">SOCKS5</option>
+              </select>
+            </div>
+
+            {([
+              ['dynamicProxyProvider', '动态代理供应商', 'novproxy'],
+              ['dynamicProxyHost', '动态代理 Host', 'us.novproxy.io'],
+              ['dynamicProxyUsernameTemplate', '用户名模板', '支持 {region}/{state}/{sid}/{ttl}'],
+              ['dynamicProxyPassword', '动态代理密码', '保存后服务端明文持久化'],
+              ['dynamicProxyRegion', '动态代理 Region', '例如 US'],
+              ['dynamicProxyState', '动态代理 State', '例如 New Jersey'],
+              ['dynamicProxyVerifyUrl', '出口验证 URL', '默认 https://ipinfo.io/json'],
+            ] as const).map(([key, label, hint]) => (
+              <div key={key} className="space-y-2 md:col-span-2">
+                <label className="text-sm font-medium">{label}</label>
+                <Input
+                  type={key === 'dynamicProxyPassword' ? 'password' : 'text'}
+                  value={form[key]}
+                  onChange={event => setForm(prev => prev ? { ...prev, [key]: event.target.value } : prev)}
+                />
+                <p className="text-xs text-muted-foreground">{hint}</p>
+              </div>
+            ))}
 
             {numberFields.map(field => (
               <div key={field.key} className="space-y-2">

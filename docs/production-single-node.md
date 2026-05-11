@@ -251,6 +251,51 @@ For better upstream prompt-cache locality, keep the client session stable:
 
 For highest cache hit rate, route retries and follow-up turns from the same external conversation through the same `metadata.user_id`. Avoid generating a new session UUID for every request. If your client has worker queues, partition by conversation/session ID so concurrent turns from one conversation do not scatter across accounts.
 
+## Dynamic IP Binding
+
+Dynamic IP binding is optional. It keeps a verified proxy session per account so accounts do not share the same outbound IP unless you choose to.
+
+Effective proxy priority is:
+
+1. Active dynamic IP binding
+2. Manual account proxy
+3. Global proxy from `config.json`
+4. Direct connection
+
+Configure it in Admin UI → `运行策略`:
+
+- `动态 IP 绑定`: enable the dynamic proxy worker and request-path lookup.
+- `新账号自动绑定`: automatically bind active accounts that do not have a binding.
+- `动态代理协议`: `http` or `socks5`.
+- `动态代理 Host/端口/密码`: provider connection details.
+- `用户名模板`: supports `{region}`, `{state}`, `{sid}`, and `{ttl}`.
+- `动态代理 TTL 分钟`: provider-side session lifetime.
+- `动态代理提前续绑 ms`: worker rotates bindings before expiry.
+- `出口验证 URL`: default `https://ipinfo.io/json`.
+
+Novproxy-style example:
+
+```text
+Host: us.novproxy.io
+Port: 1000
+Username template: nfgr68136-region-{region}-st-{state}-sid-{sid}-t-{ttl}
+Region: US
+State: New Jersey
+TTL minutes: 120
+```
+
+After saving settings, use the account table:
+
+- `绑 IP`: create and verify a dynamic proxy binding for the account.
+- `换 IP`: generate a new session and verify it.
+- `验 IP`: verify the current binding and update the displayed egress IP.
+- `清 IP`: remove the binding and fall back to manual/global proxy.
+- Batch buttons are available after selecting multiple accounts.
+
+The background worker rotates failed, expired, and soon-expiring bindings. If a request fails with a proxy/tunnel/auth/timeout-style error, the binding is marked failed and a rotate is scheduled. This avoids treating a bad proxy as a bad Kiro account.
+
+Dynamic IP binding can help account/IP isolation and proxy reliability. It does not guarantee that model-capacity errors such as `INSUFFICIENT_MODEL_CAPACITY` disappear, because those are often upstream capacity or regional capacity signals.
+
 ## Virtual Cache Usage
 
 The proxy can return Anthropic-compatible cache usage fields for downstream gateways such as new-api:

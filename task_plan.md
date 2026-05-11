@@ -11,6 +11,8 @@ Current extension: add configurable background token auto-refresh so expiring So
 
 Current extension: add optional natural dynamic virtual cache usage accounting so ordinary input tokens and cache creation tokens do not have to stay fixed.
 
+Current extension: add dynamic per-account IP proxy binding so each account can keep an isolated, renewable proxy session with verification and auto-rotation.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -28,6 +30,7 @@ Current extension: add optional natural dynamic virtual cache usage accounting s
 - [in_progress] Implement medium-weight rate-limit dispatch: account failover, model-capacity cooldown, Retry-After parsing, and Admin runtime visibility
 - [completed] Add configurable background Token auto-refresh scheduler
 - [completed] Add dynamic virtual cache usage input/creation modes and Admin controls
+- [completed] Add dynamic proxy/IP binding settings, SQLite bindings, worker, Admin controls, and request-path effective proxy integration
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -40,6 +43,8 @@ Current extension: add optional natural dynamic virtual cache usage accounting s
 - Treat `INSUFFICIENT_MODEL_CAPACITY` as model capacity pressure rather than account-wide rate limit; use short model-level cooldown and do not cool the account for that reason.
 - Token auto-refresh defaults to enabled, scans every 300 seconds, and refreshes refreshable credentials expiring within 1800 seconds.
 - Dynamic virtual cache usage stays configurable and defaults to fixed mode for compatibility; Admin can enable `estimated_user_delta` input mode and `dynamic` creation mode.
+- Dynamic proxy V1 follows the WindsurfAPI design but is implemented natively in Rust; dynamic active binding wins over manual account proxy, then global proxy.
+- Dynamic proxy V1 targets Novproxy-style username templates and keeps plaintext provider password in SQLite/runtime settings, matching the current config/security model.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

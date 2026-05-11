@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 use crate::http_client::{ProxyConfig, build_client};
+use crate::kiro::dynamic_proxy::is_proxy_error;
 use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
@@ -40,8 +41,6 @@ pub struct KiroProvider {
     token_manager: Arc<MultiTokenManager>,
     metrics: Arc<MetricsRecorder>,
     model_cooldowns: Arc<ModelCooldownManager>,
-    /// 全局代理配置（用于凭据无自定义代理时的回退）
-    global_proxy: Option<ProxyConfig>,
     /// Client 缓存：key = effective proxy config, value = reqwest::Client
     /// 不同代理配置的凭据使用不同的 Client，共享相同代理的凭据复用 Client
     client_cache: Mutex<HashMap<Option<ProxyConfig>, Client>>,
@@ -321,7 +320,6 @@ impl KiroProvider {
             token_manager,
             metrics,
             model_cooldowns,
-            global_proxy: proxy,
             client_cache: Mutex::new(cache),
             tls_backend,
             endpoints,
@@ -330,8 +328,14 @@ impl KiroProvider {
     }
 
     /// 根据凭据的代理配置获取（或创建并缓存）对应的 reqwest::Client
-    fn client_for(&self, credentials: &KiroCredentials) -> anyhow::Result<Client> {
-        let effective = credentials.effective_proxy(self.global_proxy.as_ref());
+    fn client_for(
+        &self,
+        credential_id: u64,
+        credentials: &KiroCredentials,
+    ) -> anyhow::Result<Client> {
+        let effective = self
+            .token_manager
+            .effective_proxy_for(credential_id, credentials);
         let mut cache = self.client_cache.lock();
         if let Some(client) = cache.get(&effective) {
             return Ok(client.clone());
@@ -454,7 +458,7 @@ impl KiroProvider {
             let body = endpoint.transform_mcp_body(request_body, &rctx);
 
             let base = self
-                .client_for(&ctx.credentials)?
+                .client_for(ctx.id, &ctx.credentials)?
                 .post(&url)
                 .body(body)
                 .header("content-type", "application/json")
@@ -470,6 +474,9 @@ impl KiroProvider {
                         max_retries,
                         e
                     );
+                    if is_proxy_error(&e) {
+                        self.mark_dynamic_proxy_failure(ctx.id, &e).await;
+                    }
                     self.token_manager.report_transient_error(ctx.id);
                     last_error = Some(e.into());
                     if attempt + 1 < max_retries {
@@ -680,7 +687,7 @@ impl KiroProvider {
             let body = endpoint.transform_api_body(request_body, &rctx);
 
             let base = self
-                .client_for(&ctx.credentials)?
+                .client_for(ctx.id, &ctx.credentials)?
                 .post(&url)
                 .body(body)
                 .header("content-type", "application/json")
@@ -701,6 +708,9 @@ impl KiroProvider {
                         max_retry_accounts,
                         e
                     );
+                    if is_proxy_error(&e) {
+                        self.mark_dynamic_proxy_failure(ctx.id, &e).await;
+                    }
                     self.token_manager
                         .report_transient_error_for(ctx.id, settings.transient_cooldown_ms);
                     excluded_credentials.insert(ctx.id);
@@ -1013,6 +1023,22 @@ impl KiroProvider {
 
     fn record_api_timing(&self, record: ApiTimingRecord) {
         record_api_timing(&self.metrics, record);
+    }
+
+    async fn mark_dynamic_proxy_failure(&self, credential_id: u64, err: &reqwest::Error) {
+        if let Some(manager) = self.token_manager.dynamic_proxy() {
+            let settings = self.token_manager.runtime_settings();
+            if let Err(mark_err) = manager
+                .mark_failure(credential_id, err, &settings, true)
+                .await
+            {
+                tracing::warn!(
+                    credential_id,
+                    error = %mark_err,
+                    "标记动态代理失败时出错"
+                );
+            }
+        }
     }
 
     /// 从请求体中提取模型信息

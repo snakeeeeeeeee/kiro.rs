@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::kiro::dynamic_proxy::{DynamicProxyBindingView, DynamicProxySummary};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownSnapshot;
 use crate::kiro::settings::RuntimeSettings;
@@ -87,6 +88,9 @@ pub struct CredentialStatusItem {
     pub available_for_dispatch: bool,
     /// 绑定到该凭据的活跃会话数
     pub session_affinity_bindings: usize,
+    /// 动态代理绑定状态
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_proxy: Option<DynamicProxyBindingView>,
 }
 
 // ============ 运行时状态 ============
@@ -117,6 +121,7 @@ pub struct RuntimeStatusResponse {
     pub session_affinity_bindings: usize,
     pub request_metrics: RuntimeMetricsSnapshot,
     pub model_cooldowns: Vec<ModelCooldownSnapshot>,
+    pub dynamic_proxy: DynamicProxySummary,
     pub credentials: Vec<RuntimeCredentialStatus>,
 }
 
@@ -134,6 +139,8 @@ pub struct RuntimeCredentialStatus {
     pub is_cooling_down: bool,
     pub available_for_dispatch: bool,
     pub session_affinity_bindings: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_proxy: Option<DynamicProxyBindingView>,
 }
 
 // ============ 操作请求 ============
@@ -173,6 +180,30 @@ pub struct BatchCredentialPolicyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BatchCredentialIdsRequest {
     pub ids: Vec<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicProxyBindingsResponse {
+    pub bindings: Vec<DynamicProxyBindingView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicProxyActionResponse {
+    pub success: bool,
+    pub binding: Option<DynamicProxyBindingView>,
+    pub attempts: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicProxyBatchActionResponse {
+    pub success: bool,
+    pub requested: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
 }
 
 pub type RuntimeSettingsResponse = RuntimeSettings;

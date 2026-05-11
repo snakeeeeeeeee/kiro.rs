@@ -7,12 +7,14 @@ use axum::{
 
 use super::{
     handlers::{
-        add_credential, clear_credential_cooldown, clear_credential_cooldown_batch,
-        delete_credential, export_credentials, force_refresh_token, get_all_credentials,
-        get_credential_balance, get_load_balancing_mode, get_runtime_settings, get_runtime_status,
-        reset_failure_count, set_credential_disabled, set_credential_policy,
-        set_credential_policy_batch, set_credential_priority, set_load_balancing_mode,
-        set_runtime_settings,
+        add_credential, bind_dynamic_proxy, clear_credential_cooldown,
+        clear_credential_cooldown_batch, clear_dynamic_proxy, delete_credential,
+        dynamic_proxy_batch_action, export_credentials, force_refresh_token, get_all_credentials,
+        get_credential_balance, get_dynamic_proxy_bindings, get_load_balancing_mode,
+        get_runtime_settings, get_runtime_status, reset_failure_count, rotate_dynamic_proxy,
+        set_credential_disabled, set_credential_policy, set_credential_policy_batch,
+        set_credential_priority, set_load_balancing_mode, set_runtime_settings,
+        verify_dynamic_proxy,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -63,6 +65,27 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}/reset", post(reset_failure_count))
         .route("/credentials/{id}/refresh", post(force_refresh_token))
         .route("/credentials/{id}/balance", get(get_credential_balance))
+        .route(
+            "/credentials/{id}/dynamic-proxy/bind",
+            post(bind_dynamic_proxy),
+        )
+        .route(
+            "/credentials/{id}/dynamic-proxy/rotate",
+            post(rotate_dynamic_proxy),
+        )
+        .route(
+            "/credentials/{id}/dynamic-proxy/verify",
+            post(verify_dynamic_proxy),
+        )
+        .route(
+            "/credentials/{id}/dynamic-proxy",
+            delete(clear_dynamic_proxy),
+        )
+        .route("/dynamic-proxy/bindings", get(get_dynamic_proxy_bindings))
+        .route(
+            "/dynamic-proxy/batch/{action}",
+            post(dynamic_proxy_batch_action),
+        )
         .route("/runtime", get(get_runtime_status))
         .route(
             "/settings/runtime",

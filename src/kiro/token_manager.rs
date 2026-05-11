@@ -20,6 +20,7 @@ use std::sync::{
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::http_client::{ProxyConfig, build_client};
+use crate::kiro::dynamic_proxy::{CredentialLite, DynamicProxyManager};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::token_refresh::{
@@ -622,6 +623,7 @@ pub struct ManagerSnapshot {
 pub struct MultiTokenManager {
     config: Config,
     proxy: Option<ProxyConfig>,
+    dynamic_proxy: Option<Arc<DynamicProxyManager>>,
     store: Option<KiroStore>,
     /// 凭据条目列表
     entries: Mutex<Vec<CredentialEntry>>,
@@ -723,6 +725,7 @@ impl MultiTokenManager {
             config,
             credentials,
             proxy,
+            None,
             credentials_path,
             is_multiple_format,
             None,
@@ -734,6 +737,7 @@ impl MultiTokenManager {
         config: Config,
         credentials: Vec<KiroCredentials>,
         proxy: Option<ProxyConfig>,
+        dynamic_proxy: Option<Arc<DynamicProxyManager>>,
         credentials_path: Option<PathBuf>,
         is_multiple_format: bool,
         store: Option<KiroStore>,
@@ -830,6 +834,7 @@ impl MultiTokenManager {
         let manager = Self {
             config,
             proxy,
+            dynamic_proxy,
             store,
             entries: Mutex::new(entries),
             current_id: Mutex::new(initial_id),
@@ -863,6 +868,7 @@ impl MultiTokenManager {
         config: Config,
         stored_credentials: Vec<StoredCredential>,
         proxy: Option<ProxyConfig>,
+        dynamic_proxy: Option<Arc<DynamicProxyManager>>,
         credentials_path: Option<PathBuf>,
         is_multiple_format: bool,
         store: Option<KiroStore>,
@@ -876,6 +882,7 @@ impl MultiTokenManager {
             config,
             credentials,
             proxy,
+            dynamic_proxy,
             credentials_path,
             is_multiple_format,
             store,
@@ -906,6 +913,10 @@ impl MultiTokenManager {
     /// 获取配置的引用
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn dynamic_proxy(&self) -> Option<Arc<DynamicProxyManager>> {
+        self.dynamic_proxy.clone()
     }
 
     /// 获取凭据总数
@@ -1369,7 +1380,7 @@ impl MultiTokenManager {
 
             if is_token_expired(&current_creds) || is_token_expiring_soon(&current_creds) {
                 // 确实需要刷新
-                let effective_proxy = current_creds.effective_proxy(self.proxy.as_ref());
+                let effective_proxy = self.effective_proxy_for(id, &current_creds);
                 let new_creds =
                     refresh_token(&current_creds, &self.config, effective_proxy.as_ref()).await?;
 
@@ -1481,6 +1492,30 @@ impl MultiTokenManager {
 
     pub fn report_transient_error_for(&self, id: u64, cooldown_ms: u64) {
         self.set_cooldown(id, cooldown_ms, "transient error");
+    }
+
+    pub fn credential_lites(&self) -> Vec<CredentialLite> {
+        let entries = self.entries.lock();
+        entries
+            .iter()
+            .map(|entry| CredentialLite {
+                id: entry.id,
+                disabled: entry.disabled,
+            })
+            .collect()
+    }
+
+    pub fn effective_proxy_for(
+        &self,
+        credential_id: u64,
+        credentials: &KiroCredentials,
+    ) -> Option<ProxyConfig> {
+        let manual = credentials.effective_proxy(self.proxy.as_ref());
+        if let Some(dynamic_proxy) = &self.dynamic_proxy {
+            dynamic_proxy.effective_proxy(credential_id, manual)
+        } else {
+            manual
+        }
     }
 
     fn refresh_candidate_ids(&self, window_secs: u64) -> Vec<u64> {
@@ -2279,7 +2314,7 @@ impl MultiTokenManager {
                 };
 
                 if is_token_expired(&current_creds) || is_token_expiring_soon(&current_creds) {
-                    let effective_proxy = current_creds.effective_proxy(self.proxy.as_ref());
+                    let effective_proxy = self.effective_proxy_for(id, &current_creds);
                     let new_creds =
                         refresh_token(&current_creds, &self.config, effective_proxy.as_ref())
                             .await?;
@@ -2317,7 +2352,7 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
 
-        let effective_proxy = credentials.effective_proxy(self.proxy.as_ref());
+        let effective_proxy = self.effective_proxy_for(id, &credentials);
         let usage_limits =
             get_usage_limits(&credentials, &self.config, &token, effective_proxy.as_ref()).await?;
 
@@ -2546,6 +2581,15 @@ impl MultiTokenManager {
 
         // 持久化更改
         self.persist_credentials()?;
+        if let Some(dynamic_proxy) = &self.dynamic_proxy {
+            if let Err(err) = dynamic_proxy.clear(id) {
+                tracing::warn!(
+                    credential_id = id,
+                    error = %err,
+                    "删除凭据后清理动态代理绑定失败"
+                );
+            }
+        }
 
         // 立即回写统计数据，清除已删除凭据的残留条目
         self.save_stats();
@@ -2572,7 +2616,7 @@ impl MultiTokenManager {
         let _guard = self.refresh_lock.lock().await;
 
         // 无条件调用 refresh_token
-        let effective_proxy = credentials.effective_proxy(self.proxy.as_ref());
+        let effective_proxy = self.effective_proxy_for(id, &credentials);
         let new_creds = refresh_token(&credentials, &self.config, effective_proxy.as_ref()).await?;
 
         // 更新 entries 中对应凭据

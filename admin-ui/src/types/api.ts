@@ -37,6 +37,7 @@ export interface CredentialStatusItem {
   isCoolingDown: boolean
   availableForDispatch: boolean
   sessionAffinityBindings: number
+  dynamicProxy?: DynamicProxyBindingView | null
 }
 
 export interface RuntimeStatusResponse {
@@ -63,6 +64,7 @@ export interface RuntimeStatusResponse {
   sessionAffinityBindings: number
   requestMetrics: RuntimeMetricsSnapshot
   modelCooldowns: ModelCooldownSnapshot[]
+  dynamicProxy: DynamicProxySummary
   credentials: RuntimeCredentialStatus[]
 }
 
@@ -125,6 +127,55 @@ export interface RuntimeCredentialStatus {
   isCoolingDown: boolean
   availableForDispatch: boolean
   sessionAffinityBindings: number
+  dynamicProxy?: DynamicProxyBindingView | null
+}
+
+export interface DynamicProxyBindingView {
+  credentialId: number
+  provider: string
+  protocol: string
+  host: string
+  port: number
+  username: string
+  sessionId: string
+  expiresAt: string | null
+  remainingMs: number
+  status: string
+  egressIp?: string | null
+  country?: string | null
+  region?: string | null
+  city?: string | null
+  ispOrg?: string | null
+  latencyMs?: number | null
+  lastVerifiedAt?: string | null
+  verifyError?: string | null
+  failCount: number
+  hasPassword: boolean
+}
+
+export interface DynamicProxySummary {
+  enabled: boolean
+  bound: number
+  expiringSoon: number
+  failed: number
+  expired: number
+  verifying: number
+  rotating: number
+  unbound: number
+}
+
+export interface DynamicProxyActionResponse {
+  success: boolean
+  binding?: DynamicProxyBindingView | null
+  attempts: number
+}
+
+export interface DynamicProxyBatchActionResponse {
+  success: boolean
+  requested: number
+  succeeded: number
+  failed: number
+  errors: string[]
 }
 
 // 余额响应
@@ -191,6 +242,23 @@ export interface RuntimeSettings {
   virtualCacheBurstMinTokens: number
   virtualCacheBurstMaxTokens: number
   virtualCacheFallbackScope: 'model' | 'none'
+  dynamicProxyEnabled: boolean
+  dynamicProxyProvider: string
+  dynamicProxyProtocol: 'http' | 'socks5'
+  dynamicProxyHost: string
+  dynamicProxyPort: number
+  dynamicProxyUsernameTemplate: string
+  dynamicProxyPassword: string
+  dynamicProxyRegion: string
+  dynamicProxyState: string
+  dynamicProxyTtlMinutes: number
+  dynamicProxyRenewBeforeMs: number
+  dynamicProxyVerifyUrl: string
+  dynamicProxyMaxBindRetries: number
+  dynamicProxyAutoBindNewAccounts: boolean
+  dynamicProxyWorkerIntervalMs: number
+  dynamicProxyWorkerBatchSize: number
+  dynamicProxyWorkerConcurrency: number
 }
 
 export interface SetCredentialPolicyRequest {

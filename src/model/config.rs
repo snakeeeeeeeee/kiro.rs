@@ -203,6 +203,74 @@ pub struct Config {
     #[serde(default = "default_virtual_cache_fallback_scope")]
     pub virtual_cache_fallback_scope: String,
 
+    /// 是否启用动态账号代理绑定
+    #[serde(default)]
+    pub dynamic_proxy_enabled: bool,
+
+    /// 动态代理供应商标识，默认 novproxy
+    #[serde(default = "default_dynamic_proxy_provider")]
+    pub dynamic_proxy_provider: String,
+
+    /// 动态代理协议："http" 或 "socks5"
+    #[serde(default = "default_dynamic_proxy_protocol")]
+    pub dynamic_proxy_protocol: String,
+
+    /// 动态代理 host
+    #[serde(default = "default_dynamic_proxy_host")]
+    pub dynamic_proxy_host: String,
+
+    /// 动态代理端口
+    #[serde(default = "default_dynamic_proxy_port")]
+    pub dynamic_proxy_port: u16,
+
+    /// 动态代理用户名模板，支持 {region}/{state}/{sid}/{ttl}
+    #[serde(default = "default_dynamic_proxy_username_template")]
+    pub dynamic_proxy_username_template: String,
+
+    /// 动态代理密码
+    #[serde(default)]
+    pub dynamic_proxy_password: String,
+
+    /// 动态代理地区
+    #[serde(default = "default_dynamic_proxy_region")]
+    pub dynamic_proxy_region: String,
+
+    /// 动态代理州/省
+    #[serde(default = "default_dynamic_proxy_state")]
+    pub dynamic_proxy_state: String,
+
+    /// 动态代理绑定 TTL（分钟）
+    #[serde(default = "default_dynamic_proxy_ttl_minutes")]
+    pub dynamic_proxy_ttl_minutes: u32,
+
+    /// 距离过期多少毫秒内自动换绑
+    #[serde(default = "default_dynamic_proxy_renew_before_ms")]
+    pub dynamic_proxy_renew_before_ms: u64,
+
+    /// 动态代理出口验证 URL
+    #[serde(default = "default_dynamic_proxy_verify_url")]
+    pub dynamic_proxy_verify_url: String,
+
+    /// 动态代理绑定最大重试次数
+    #[serde(default = "default_dynamic_proxy_max_bind_retries")]
+    pub dynamic_proxy_max_bind_retries: u32,
+
+    /// 是否自动为新账号绑定动态代理
+    #[serde(default)]
+    pub dynamic_proxy_auto_bind_new_accounts: bool,
+
+    /// 动态代理后台维护间隔（毫秒）
+    #[serde(default = "default_dynamic_proxy_worker_interval_ms")]
+    pub dynamic_proxy_worker_interval_ms: u64,
+
+    /// 动态代理后台每轮处理数量
+    #[serde(default = "default_dynamic_proxy_worker_batch_size")]
+    pub dynamic_proxy_worker_batch_size: usize,
+
+    /// 动态代理后台并发数
+    #[serde(default = "default_dynamic_proxy_worker_concurrency")]
+    pub dynamic_proxy_worker_concurrency: usize,
+
     /// 优雅关闭等待正在处理请求的时间（秒）
     #[serde(default = "default_shutdown_drain_timeout_secs")]
     pub shutdown_drain_timeout_secs: u64,
@@ -371,6 +439,62 @@ fn default_virtual_cache_fallback_scope() -> String {
     "model".to_string()
 }
 
+fn default_dynamic_proxy_provider() -> String {
+    "novproxy".to_string()
+}
+
+fn default_dynamic_proxy_protocol() -> String {
+    "http".to_string()
+}
+
+fn default_dynamic_proxy_host() -> String {
+    "us.novproxy.io".to_string()
+}
+
+fn default_dynamic_proxy_port() -> u16 {
+    1000
+}
+
+fn default_dynamic_proxy_username_template() -> String {
+    "nfgr68136-region-{region}-st-{state}-sid-{sid}-t-{ttl}".to_string()
+}
+
+fn default_dynamic_proxy_region() -> String {
+    "US".to_string()
+}
+
+fn default_dynamic_proxy_state() -> String {
+    "New Jersey".to_string()
+}
+
+fn default_dynamic_proxy_ttl_minutes() -> u32 {
+    120
+}
+
+fn default_dynamic_proxy_renew_before_ms() -> u64 {
+    900_000
+}
+
+fn default_dynamic_proxy_verify_url() -> String {
+    "https://ipinfo.io/json".to_string()
+}
+
+fn default_dynamic_proxy_max_bind_retries() -> u32 {
+    3
+}
+
+fn default_dynamic_proxy_worker_interval_ms() -> u64 {
+    60_000
+}
+
+fn default_dynamic_proxy_worker_batch_size() -> usize {
+    20
+}
+
+fn default_dynamic_proxy_worker_concurrency() -> usize {
+    3
+}
+
 fn default_shutdown_drain_timeout_secs() -> u64 {
     60
 }
@@ -433,6 +557,23 @@ impl Default for Config {
             virtual_cache_burst_min_tokens: default_virtual_cache_burst_min_tokens(),
             virtual_cache_burst_max_tokens: default_virtual_cache_burst_max_tokens(),
             virtual_cache_fallback_scope: default_virtual_cache_fallback_scope(),
+            dynamic_proxy_enabled: false,
+            dynamic_proxy_provider: default_dynamic_proxy_provider(),
+            dynamic_proxy_protocol: default_dynamic_proxy_protocol(),
+            dynamic_proxy_host: default_dynamic_proxy_host(),
+            dynamic_proxy_port: default_dynamic_proxy_port(),
+            dynamic_proxy_username_template: default_dynamic_proxy_username_template(),
+            dynamic_proxy_password: String::new(),
+            dynamic_proxy_region: default_dynamic_proxy_region(),
+            dynamic_proxy_state: default_dynamic_proxy_state(),
+            dynamic_proxy_ttl_minutes: default_dynamic_proxy_ttl_minutes(),
+            dynamic_proxy_renew_before_ms: default_dynamic_proxy_renew_before_ms(),
+            dynamic_proxy_verify_url: default_dynamic_proxy_verify_url(),
+            dynamic_proxy_max_bind_retries: default_dynamic_proxy_max_bind_retries(),
+            dynamic_proxy_auto_bind_new_accounts: false,
+            dynamic_proxy_worker_interval_ms: default_dynamic_proxy_worker_interval_ms(),
+            dynamic_proxy_worker_batch_size: default_dynamic_proxy_worker_batch_size(),
+            dynamic_proxy_worker_concurrency: default_dynamic_proxy_worker_concurrency(),
             shutdown_drain_timeout_secs: default_shutdown_drain_timeout_secs(),
             extract_thinking: default_extract_thinking(),
             default_endpoint: default_endpoint(),

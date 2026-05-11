@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Download, Trash2, RotateCcw, CheckCircle2, Activity, Settings, Columns3, Search, SlidersHorizontal, ShieldCheck } from 'lucide-react'
+import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Download, Trash2, RotateCcw, CheckCircle2, Activity, Settings, Columns3, Search, SlidersHorizontal, ShieldCheck, Globe2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { storage } from '@/lib/storage'
@@ -14,7 +14,7 @@ import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-
 import { RuntimeSettingsDialog } from '@/components/runtime-settings-dialog'
 import { PolicyDialog } from '@/components/policy-dialog'
 import { AccountTable, type AccountColumn, type AccountColumnKey, type AccountSortKey } from '@/components/account-table'
-import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useClearCooldown, useClearCooldownBatch, useSetDisabled } from '@/hooks/use-credentials'
+import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useClearCooldown, useClearCooldownBatch, useSetDisabled, useBindDynamicProxy, useRotateDynamicProxy, useVerifyDynamicProxy, useClearDynamicProxy, useDynamicProxyBatchAction } from '@/hooks/use-credentials'
 import { getCredentialBalance, forceRefreshToken, exportCredentials, getRuntimeStatus } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import type { BalanceResponse, CredentialStatusItem, ExportedCredential, RuntimeStatusResponse } from '@/types/api'
@@ -105,6 +105,7 @@ const DEFAULT_VISIBLE_COLUMNS = [
   'failures',
   'lastUsed',
   'endpoint',
+  'dynamicProxy',
   'actions',
 ] as const
 
@@ -122,6 +123,7 @@ const columnLabels: Record<ColumnKey, string> = {
   failures: '失败',
   lastUsed: '最近使用',
   endpoint: '端点/代理',
+  dynamicProxy: '动态 IP',
   actions: '操作',
 }
 
@@ -202,6 +204,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const { mutate: setDisabled } = useSetDisabled()
   const { mutate: clearCooldown } = useClearCooldown()
   const { mutate: clearCooldownBatch } = useClearCooldownBatch()
+  const { mutate: bindDynamicProxy } = useBindDynamicProxy()
+  const { mutate: rotateDynamicProxy } = useRotateDynamicProxy()
+  const { mutate: verifyDynamicProxy } = useVerifyDynamicProxy()
+  const { mutate: clearDynamicProxy } = useClearDynamicProxy()
+  const { mutate: dynamicProxyBatchAction, isPending: dynamicProxyBatching } = useDynamicProxyBatchAction()
   const { data: loadBalancingData } = useLoadBalancingMode()
   const { mutate: setLoadBalancingMode, isPending: isSettingMode } = useSetLoadBalancingMode()
 
@@ -237,8 +244,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
       if (dispatchFilter === 'full' && credential.inFlight < credential.maxConcurrent) return false
       if (dispatchFilter === 'blocked' && credential.availableForDispatch) return false
       if (endpointFilter !== 'all' && credential.endpoint !== endpointFilter) return false
-      if (proxyFilter === 'proxy' && !credential.hasProxy) return false
-      if (proxyFilter === 'direct' && credential.hasProxy) return false
+      const hasAnyProxy = credential.hasProxy || Boolean(credential.dynamicProxy)
+      if (proxyFilter === 'proxy' && !hasAnyProxy) return false
+      if (proxyFilter === 'direct' && hasAnyProxy) return false
+      if (proxyFilter === 'dynamic' && !credential.dynamicProxy) return false
       return true
     })
     .sort((a, b) => {
@@ -426,6 +435,55 @@ export function Dashboard({ onLogout }: DashboardProps) {
       onSuccess: () => toast.success('凭据已删除'),
       onError: error => toast.error(`删除失败: ${extractErrorMessage(error)}`),
     })
+  }
+
+  const handleDynamicProxyAction = (
+    id: number,
+    action: 'bind' | 'rotate' | 'verify' | 'clear',
+  ) => {
+    const callbacks = {
+      onSuccess: () => {
+        toast.success(
+          action === 'bind' ? '动态代理已绑定' :
+          action === 'rotate' ? '动态代理已换绑' :
+          action === 'verify' ? '动态代理验证成功' :
+          '动态代理已清除'
+        )
+        fetchRuntimeStatus()
+      },
+      onError: (error: unknown) => toast.error(`动态代理操作失败: ${extractErrorMessage(error)}`),
+    }
+    if (action === 'bind') bindDynamicProxy(id, callbacks)
+    if (action === 'rotate') rotateDynamicProxy(id, callbacks)
+    if (action === 'verify') verifyDynamicProxy(id, callbacks)
+    if (action === 'clear') clearDynamicProxy(id, callbacks)
+  }
+
+  const handleBatchDynamicProxy = (action: 'bind' | 'rotate' | 'verify' | 'clear') => {
+    if (selectedIds.size === 0) {
+      toast.error('请先选择凭据')
+      return
+    }
+    dynamicProxyBatchAction(
+      { action, ids: Array.from(selectedIds) },
+      {
+        onSuccess: result => {
+          const actionLabel =
+            action === 'bind' ? '绑定' :
+            action === 'rotate' ? '换绑' :
+            action === 'verify' ? '验证' :
+            '清除'
+          if (result.failed === 0) {
+            toast.success(`动态代理${actionLabel}成功：${result.succeeded}/${result.requested}`)
+          } else {
+            toast.warning(`动态代理${actionLabel}：成功 ${result.succeeded}，失败 ${result.failed}`)
+          }
+          fetchRuntimeStatus()
+          deselectAll()
+        },
+        onError: error => toast.error(`动态代理批量操作失败: ${extractErrorMessage(error)}`),
+      }
+    )
   }
 
   const handleToggleSelectAllCurrentPage = () => {
@@ -888,14 +946,20 @@ export function Dashboard({ onLogout }: DashboardProps) {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">上游延迟</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">动态 IP</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold tabular-nums">
-                {formatMs(runtimeStatus?.requestMetrics.p95TotalMs)}
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={runtimeStatus?.dynamicProxy.enabled ? 'success' : 'outline'}>
+                  {runtimeStatus?.dynamicProxy.enabled ? '已启用' : '未启用'}
+                </Badge>
+                <Badge variant="outline">绑定 {runtimeStatus?.dynamicProxy.bound ?? 0}</Badge>
+                <Badge variant={(runtimeStatus?.dynamicProxy.failed ?? 0) > 0 ? 'destructive' : 'outline'}>
+                  失败 {runtimeStatus?.dynamicProxy.failed ?? 0}
+                </Badge>
               </div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                P50 上游 {formatMs(runtimeStatus?.requestMetrics.p50UpstreamMs)} · 样本 {runtimeStatus?.requestMetrics.requestCount ?? 0}
+              <div className="mt-2 text-xs text-muted-foreground">
+                未绑定 {runtimeStatus?.dynamicProxy.unbound ?? 0}，即将续绑 {runtimeStatus?.dynamicProxy.expiringSoon ?? 0}
               </div>
             </CardContent>
           </Card>
@@ -1047,6 +1111,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <select value={proxyFilter} onChange={event => setProxyFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
               <option value="all">全部代理</option>
               <option value="proxy">有代理</option>
+              <option value="dynamic">动态 IP</option>
               <option value="direct">直连</option>
             </select>
           </div>
@@ -1064,6 +1129,19 @@ export function Dashboard({ onLogout }: DashboardProps) {
               <Button size="sm" variant="outline" onClick={handleBatchVerify}>
                 <CheckCircle2 className="h-4 w-4" />
                 验活
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleBatchDynamicProxy('bind')} disabled={dynamicProxyBatching}>
+                <Globe2 className="h-4 w-4" />
+                绑 IP
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleBatchDynamicProxy('rotate')} disabled={dynamicProxyBatching}>
+                换 IP
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleBatchDynamicProxy('verify')} disabled={dynamicProxyBatching}>
+                验 IP
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleBatchDynamicProxy('clear')} disabled={dynamicProxyBatching}>
+                清 IP
               </Button>
               <Button size="sm" variant="outline" onClick={handleBatchForceRefresh} disabled={batchRefreshing}>
                 <RefreshCw className={`h-4 w-4 ${batchRefreshing ? 'animate-spin' : ''}`} />
@@ -1098,6 +1176,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
             onClearCooldown={handleClearCooldown}
             onForceRefresh={handleForceRefreshOne}
             onDelete={handleDeleteOne}
+            onBindDynamicProxy={id => handleDynamicProxyAction(id, 'bind')}
+            onRotateDynamicProxy={id => handleDynamicProxyAction(id, 'rotate')}
+            onVerifyDynamicProxy={id => handleDynamicProxyAction(id, 'verify')}
+            onClearDynamicProxy={id => handleDynamicProxyAction(id, 'clear')}
           />
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm text-muted-foreground">

@@ -49,6 +49,81 @@ pub async fn set_runtime_settings(
     }
 }
 
+/// GET /api/admin/dynamic-proxy/bindings
+/// 获取动态代理绑定列表
+pub async fn get_dynamic_proxy_bindings(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_dynamic_proxy_bindings())
+}
+
+/// POST /api/admin/credentials/:id/dynamic-proxy/bind
+/// 绑定动态代理
+pub async fn bind_dynamic_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.bind_dynamic_proxy(id).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credentials/:id/dynamic-proxy/rotate
+/// 换绑动态代理
+pub async fn rotate_dynamic_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.rotate_dynamic_proxy(id).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credentials/:id/dynamic-proxy/verify
+/// 验证动态代理
+pub async fn verify_dynamic_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.verify_dynamic_proxy(id).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// DELETE /api/admin/credentials/:id/dynamic-proxy
+/// 清除动态代理绑定
+pub async fn clear_dynamic_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.clear_dynamic_proxy(id) {
+        Ok(_) => Json(SuccessResponse::new(format!(
+            "凭据 #{} 动态代理绑定已清除",
+            id
+        )))
+        .into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/dynamic-proxy/batch/:action
+/// 批量动态代理操作
+pub async fn dynamic_proxy_batch_action(
+    State(state): State<AdminState>,
+    Path(action): Path<String>,
+    Json(payload): Json<BatchCredentialIdsRequest>,
+) -> impl IntoResponse {
+    match state
+        .service
+        .dynamic_proxy_batch_action(&action, payload)
+        .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
 /// POST /api/admin/credentials/:id/disabled
 /// 设置凭据禁用状态
 pub async fn set_credential_disabled(

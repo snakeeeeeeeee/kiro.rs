@@ -51,3 +51,10 @@
 - Later-turn cache creation often stayed at `virtualCacheMinCreationTokens` because the observed context delta can be small, so the configured floor dominated.
 - A safer natural mode is configurable rather than forced: estimate ordinary input from the latest user message, then clamp it; vary cache creation from context delta, output size, deterministic jitter, and optional burst turns.
 - The deterministic jitter uses stable hashing instead of random state so tests remain reproducible and the in-memory ledger remains simple.
+
+## Dynamic Proxy Findings
+- WindsurfAPI's dynamic proxy implementation is a binding state machine, not just an extra proxy field: generate provider credentials, verify egress IP, persist active/failed/expired status, renew expiring bindings, and rotate failed bindings.
+- `kiro.rs` already has manual per-account proxy fields (`proxy_url`, `proxy_username`, `proxy_password`) plus global proxy fallback. Token refresh and Kiro API calls already compute an effective proxy.
+- The missing piece in `kiro.rs` is dynamic binding persistence and lifecycle: SQLite binding table, runtime settings, Rust proxy verifier, background worker, Admin actions, and proxy-error-triggered rotation.
+- Effective proxy order should become dynamic active binding > manual account proxy > global proxy, with existing `direct` manual proxy still bypassing global proxy when no dynamic active binding exists.
+- Dynamic proxy helps account/IP isolation and proxy failure recovery; it should not be presented as a fix for upstream model-capacity errors such as `INSUFFICIENT_MODEL_CAPACITY`.

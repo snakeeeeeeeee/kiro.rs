@@ -8,6 +8,7 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::kiro::dynamic_proxy::DynamicProxyManager;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownManager;
 use crate::kiro::settings::CredentialPolicy;
@@ -19,6 +20,7 @@ use super::error::AdminServiceError;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, BatchCredentialIdsRequest,
     BatchCredentialPolicyRequest, CredentialStatusItem, CredentialsStatusResponse,
+    DynamicProxyActionResponse, DynamicProxyBatchActionResponse, DynamicProxyBindingsResponse,
     ExportCredentialsRequest, ExportCredentialsResponse, LoadBalancingModeResponse,
     RuntimeCredentialStatus, RuntimeSettingsResponse, RuntimeStatusResponse,
     SetCredentialPolicyRequest, SetLoadBalancingModeRequest, SetRuntimeSettingsRequest,
@@ -44,6 +46,7 @@ pub struct AdminService {
     runtime_limiter: Arc<RuntimeLimiter>,
     metrics: Arc<MetricsRecorder>,
     model_cooldowns: Arc<ModelCooldownManager>,
+    dynamic_proxy: Arc<DynamicProxyManager>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
@@ -56,6 +59,7 @@ impl AdminService {
         runtime_limiter: Arc<RuntimeLimiter>,
         metrics: Arc<MetricsRecorder>,
         model_cooldowns: Arc<ModelCooldownManager>,
+        dynamic_proxy: Arc<DynamicProxyManager>,
         known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
@@ -69,6 +73,7 @@ impl AdminService {
             runtime_limiter,
             metrics,
             model_cooldowns,
+            dynamic_proxy,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
@@ -79,6 +84,7 @@ impl AdminService {
     pub fn get_all_credentials(&self) -> CredentialsStatusResponse {
         let snapshot = self.token_manager.snapshot();
         let default_endpoint = self.token_manager.config().default_endpoint.clone();
+        let dynamic_bindings = self.dynamic_proxy_bindings_map();
 
         let mut credentials: Vec<CredentialStatusItem> = snapshot
             .entries
@@ -113,6 +119,7 @@ impl AdminService {
                 is_cooling_down: entry.is_cooling_down,
                 available_for_dispatch: entry.available_for_dispatch,
                 session_affinity_bindings: entry.session_affinity_bindings,
+                dynamic_proxy: dynamic_bindings.get(&entry.id).cloned(),
             })
             .collect();
 
@@ -130,6 +137,25 @@ impl AdminService {
     /// 获取运行时状态
     pub fn get_runtime_status(&self) -> RuntimeStatusResponse {
         let snapshot = self.token_manager.snapshot();
+        let settings = self.token_manager.runtime_settings();
+        let credentials_lite = self.token_manager.credential_lites();
+        let dynamic_proxy_summary = self
+            .dynamic_proxy
+            .summary(&settings, &credentials_lite)
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "获取动态代理摘要失败");
+                crate::kiro::dynamic_proxy::DynamicProxySummary {
+                    enabled: settings.dynamic_proxy_enabled,
+                    bound: 0,
+                    expiring_soon: 0,
+                    failed: 0,
+                    expired: 0,
+                    verifying: 0,
+                    rotating: 0,
+                    unbound: 0,
+                }
+            });
+        let dynamic_bindings = self.dynamic_proxy_bindings_map();
         RuntimeStatusResponse {
             global_in_flight: snapshot.global_in_flight,
             global_max_concurrent: snapshot.global_max_concurrent,
@@ -154,6 +180,7 @@ impl AdminService {
             session_affinity_bindings: snapshot.session_affinity_bindings,
             request_metrics: self.metrics.snapshot(),
             model_cooldowns: self.model_cooldowns.snapshot(),
+            dynamic_proxy: dynamic_proxy_summary,
             credentials: snapshot
                 .entries
                 .into_iter()
@@ -169,9 +196,24 @@ impl AdminService {
                     is_cooling_down: entry.is_cooling_down,
                     available_for_dispatch: entry.available_for_dispatch,
                     session_affinity_bindings: entry.session_affinity_bindings,
+                    dynamic_proxy: dynamic_bindings.get(&entry.id).cloned(),
                 })
                 .collect(),
         }
+    }
+
+    fn dynamic_proxy_bindings_map(
+        &self,
+    ) -> HashMap<u64, crate::kiro::dynamic_proxy::DynamicProxyBindingView> {
+        self.dynamic_proxy
+            .binding_views()
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "读取动态代理绑定失败");
+                Vec::new()
+            })
+            .into_iter()
+            .map(|binding| (binding.credential_id, binding))
+            .collect()
     }
 
     /// 设置凭据禁用状态
@@ -213,6 +255,136 @@ impl AdminService {
             .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
         self.runtime_limiter.notify_capacity_available();
         Ok(req)
+    }
+
+    pub fn get_dynamic_proxy_bindings(&self) -> DynamicProxyBindingsResponse {
+        DynamicProxyBindingsResponse {
+            bindings: self.dynamic_proxy_bindings_map().into_values().collect(),
+        }
+    }
+
+    pub async fn bind_dynamic_proxy(
+        &self,
+        id: u64,
+    ) -> Result<DynamicProxyActionResponse, AdminServiceError> {
+        self.ensure_credential_exists(id)?;
+        let settings = self.token_manager.runtime_settings();
+        let result = self
+            .dynamic_proxy
+            .bind(id, &settings, true, false)
+            .await
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))?;
+        Ok(DynamicProxyActionResponse {
+            success: result.success,
+            binding: result.binding,
+            attempts: result.attempts,
+        })
+    }
+
+    pub async fn rotate_dynamic_proxy(
+        &self,
+        id: u64,
+    ) -> Result<DynamicProxyActionResponse, AdminServiceError> {
+        self.ensure_credential_exists(id)?;
+        let settings = self.token_manager.runtime_settings();
+        let result = self
+            .dynamic_proxy
+            .rotate(id, &settings, true)
+            .await
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))?;
+        Ok(DynamicProxyActionResponse {
+            success: result.success,
+            binding: result.binding,
+            attempts: result.attempts,
+        })
+    }
+
+    pub async fn verify_dynamic_proxy(
+        &self,
+        id: u64,
+    ) -> Result<DynamicProxyActionResponse, AdminServiceError> {
+        self.ensure_credential_exists(id)?;
+        let settings = self.token_manager.runtime_settings();
+        let result = self
+            .dynamic_proxy
+            .verify(id, &settings, true)
+            .await
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))?;
+        Ok(DynamicProxyActionResponse {
+            success: result.success,
+            binding: result.binding,
+            attempts: result.attempts,
+        })
+    }
+
+    pub fn clear_dynamic_proxy(&self, id: u64) -> Result<(), AdminServiceError> {
+        self.ensure_credential_exists(id)?;
+        self.dynamic_proxy
+            .clear(id)
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn dynamic_proxy_batch_action(
+        &self,
+        action: &str,
+        req: BatchCredentialIdsRequest,
+    ) -> Result<DynamicProxyBatchActionResponse, AdminServiceError> {
+        if req.ids.is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "请选择要操作的凭据".to_string(),
+            ));
+        }
+        let settings = self.token_manager.runtime_settings();
+        let requested = req.ids.len();
+        let mut succeeded = 0usize;
+        let mut errors = Vec::new();
+        for id in req.ids {
+            let result = match action {
+                "bind" => self
+                    .dynamic_proxy
+                    .bind(id, &settings, true, false)
+                    .await
+                    .map(|_| ()),
+                "rotate" => self
+                    .dynamic_proxy
+                    .rotate(id, &settings, true)
+                    .await
+                    .map(|_| ()),
+                "verify" => self
+                    .dynamic_proxy
+                    .verify(id, &settings, true)
+                    .await
+                    .map(|_| ()),
+                "clear" => self.dynamic_proxy.clear(id).map(|_| ()),
+                _ => Err(anyhow::anyhow!("未知动态代理操作: {}", action)),
+            };
+            match result {
+                Ok(_) => succeeded += 1,
+                Err(err) => errors.push(format!("#{}: {}", id, err)),
+            }
+        }
+        Ok(DynamicProxyBatchActionResponse {
+            success: errors.is_empty(),
+            requested,
+            succeeded,
+            failed: errors.len(),
+            errors,
+        })
+    }
+
+    fn ensure_credential_exists(&self, id: u64) -> Result<(), AdminServiceError> {
+        if self
+            .token_manager
+            .snapshot()
+            .entries
+            .into_iter()
+            .any(|entry| entry.id == id)
+        {
+            Ok(())
+        } else {
+            Err(AdminServiceError::NotFound { id })
+        }
     }
 
     pub fn set_policy(

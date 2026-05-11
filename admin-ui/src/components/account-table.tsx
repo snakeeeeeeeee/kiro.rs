@@ -1,4 +1,4 @@
-import { Edit3, RefreshCw, Snowflake, Trash2 } from 'lucide-react'
+import { Edit3, Globe2, RefreshCw, RotateCw, Snowflake, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { BalanceResponse, CredentialStatusItem } from '@/types/api'
@@ -15,6 +15,7 @@ export type AccountColumnKey =
   | 'failures'
   | 'lastUsed'
   | 'endpoint'
+  | 'dynamicProxy'
   | 'actions'
 
 export type AccountSortKey =
@@ -49,6 +50,10 @@ interface AccountTableProps {
   onClearCooldown: (credential: CredentialStatusItem) => void
   onForceRefresh: (id: number) => void
   onDelete: (id: number) => void
+  onBindDynamicProxy: (id: number) => void
+  onRotateDynamicProxy: (id: number) => void
+  onVerifyDynamicProxy: (id: number) => void
+  onClearDynamicProxy: (id: number) => void
 }
 
 function credentialName(credential: CredentialStatusItem): string {
@@ -99,6 +104,14 @@ function authLabel(value: string | null | undefined) {
   return 'Social'
 }
 
+function dynamicProxyBadge(credential: CredentialStatusItem) {
+  const binding = credential.dynamicProxy
+  if (!binding) return <Badge variant="outline">未绑定</Badge>
+  if (binding.status === 'active') return <Badge variant="success">已绑定</Badge>
+  if (binding.status === 'failed' || binding.status === 'expired') return <Badge variant="destructive">{binding.status}</Badge>
+  return <Badge variant="warning">{binding.status}</Badge>
+}
+
 export function AccountTable({
   credentials,
   selectedIds,
@@ -116,6 +129,10 @@ export function AccountTable({
   onClearCooldown,
   onForceRefresh,
   onDelete,
+  onBindDynamicProxy,
+  onRotateDynamicProxy,
+  onVerifyDynamicProxy,
+  onClearDynamicProxy,
 }: AccountTableProps) {
   const allSelected = credentials.length > 0 && credentials.every(c => selectedIds.has(c.id))
 
@@ -239,6 +256,24 @@ export function AccountTable({
                             <div className="text-xs text-muted-foreground">{credential.hasProxy ? '代理' : '直连'}</div>
                           </div>
                         )}
+                        {column.key === 'dynamicProxy' && (
+                          <div className="space-y-1">
+                            {dynamicProxyBadge(credential)}
+                            {credential.dynamicProxy?.egressIp && (
+                              <div className="font-mono text-xs">{credential.dynamicProxy.egressIp}</div>
+                            )}
+                            {credential.dynamicProxy?.expiresAt && (
+                              <div className="text-xs text-muted-foreground">
+                                {formatRelativeTime(credential.dynamicProxy.expiresAt)}
+                              </div>
+                            )}
+                            {credential.dynamicProxy?.verifyError && (
+                              <div className="max-w-[220px] truncate text-xs text-destructive" title={credential.dynamicProxy.verifyError}>
+                                {credential.dynamicProxy.verifyError}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         {column.key === 'actions' && (
                           <div className="flex items-center gap-1">
                             <Button size="sm" variant="ghost" onClick={() => onEditPolicy(credential)} title="策略">
@@ -249,6 +284,24 @@ export function AccountTable({
                             </Button>
                             <Button size="sm" variant="ghost" onClick={() => onForceRefresh(credential.id)} title="刷新 Token">
                               <RefreshCw className="h-4 w-4" />
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => onBindDynamicProxy(credential.id)} title="绑定动态代理">
+                              <Globe2 className="h-4 w-4" />
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => onRotateDynamicProxy(credential.id)} title="换绑动态代理">
+                              <RotateCw className="h-4 w-4" />
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => onVerifyDynamicProxy(credential.id)} title="验证动态代理">
+                              验 IP
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => onClearDynamicProxy(credential.id)}
+                              disabled={!credential.dynamicProxy}
+                              title="清除动态代理"
+                            >
+                              清 IP
                             </Button>
                             <Button
                               size="sm"
@@ -283,4 +336,3 @@ export function AccountTable({
     </div>
   )
 }
-

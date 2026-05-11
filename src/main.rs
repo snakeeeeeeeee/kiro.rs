@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
+use kiro::dynamic_proxy::{DynamicProxyManager, spawn_dynamic_proxy_worker};
 use kiro::endpoint::{IdeEndpoint, KiroEndpoint};
 use kiro::model::credentials::{CredentialsConfig, KiroCredentials};
 use kiro::model_cooldown::ModelCooldownManager;
@@ -186,10 +187,14 @@ async fn main() {
     let endpoint_names: Vec<String> = endpoints.keys().cloned().collect();
 
     // 创建 MultiTokenManager 和 KiroProvider
+    let dynamic_proxy_manager =
+        Arc::new(DynamicProxyManager::new(store.clone(), config.tls_backend));
+
     let token_manager = MultiTokenManager::from_stored_credentials(
         config.clone(),
         stored_credentials,
         proxy_config.clone(),
+        Some(dynamic_proxy_manager.clone()),
         Some(credentials_path.into()),
         is_multiple_format,
         Some(store),
@@ -212,6 +217,7 @@ async fn main() {
         config.default_endpoint.clone(),
     );
     spawn_token_auto_refresh(token_manager.clone());
+    spawn_dynamic_proxy_worker(dynamic_proxy_manager.clone(), token_manager.clone());
 
     // 初始化 count_tokens 配置
     token::init_config(token::CountTokensConfig {
@@ -248,6 +254,7 @@ async fn main() {
                 runtime_limiter.clone(),
                 metrics.clone(),
                 model_cooldowns.clone(),
+                dynamic_proxy_manager.clone(),
                 endpoint_names.clone(),
             );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
