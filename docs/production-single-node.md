@@ -88,7 +88,7 @@ Start with local build:
 docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
 ```
 
-The default Docker port mapping is `0.0.0.0:8990->8990`, so the service is reachable from outside the host if your firewall allows it:
+The default Docker port mapping is `0.0.0.0:18990->8990`, so the service is reachable from outside the host if your firewall allows it:
 
 ```bash
 curl -fsS http://127.0.0.1:8990/healthz
@@ -127,12 +127,12 @@ SKIP_OPUS=1 API_KEY='your-api-key' ADMIN_API_KEY='your-admin-api-key' scripts/pr
 
 ## Network Exposure
 
-`docker-compose-prod.yml` binds to `0.0.0.0:8990` by default.
+`docker-compose-prod.yml` binds to `0.0.0.0:18990` by default and forwards it to container port `8990`.
 
 Use environment variables only when you need a different bind address or host port:
 
 ```bash
-KIRO_RS_BIND=127.0.0.1 KIRO_RS_PORT=8990 docker compose -f docker-compose-prod.yml up -d
+KIRO_RS_BIND=127.0.0.1 KIRO_RS_PORT=18990 docker compose -f docker-compose-prod.yml up -d
 ```
 
 If you keep the default public bind, limit inbound traffic to trusted IPs with your firewall/security group. Admin UI should not be reachable from the whole public internet.
