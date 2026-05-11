@@ -186,10 +186,11 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `region` | string | `us-east-1` | AWS 区域 |
 | `authRegion` | string | - | Auth Region（用于 Token 刷新），未配置时回退到 region |
 | `apiRegion` | string | - | API Region（用于 API 请求），未配置时回退到 region |
-| `kiroVersion` | string | `0.9.2` | Kiro 版本号 |
+| `kiroVersion` | string | `0.12.155` | Kiro 版本号 |
 | `machineId` | string | - | 自定义机器码（64位十六进制），不定义则自动生成 |
 | `systemVersion` | string | 随机 | 系统版本标识 |
-| `nodeVersion` | string | `22.21.1` | Node.js 版本标识 |
+| `nodeVersion` | string | `22.22.0` | Node.js 版本标识 |
+| `requestDiagnosticsEnabled` | boolean | `false` | 是否打印上游请求摘要诊断日志；只包含模型、版本、数量和长度，不包含 prompt/token 明文 |
 | `tlsBackend` | string | `rustls` | TLS 后端：`rustls` 或 `native-tls` |
 | `countTokensApiUrl` | string | - | 外部 count_tokens API 地址 |
 | `countTokensApiKey` | string | - | 外部 count_tokens API 密钥 |
@@ -220,10 +221,11 @@ docker compose -f docker-compose-dev.yml up -d --build
    "apiKey": "sk-kiro-rs-qazWSXedcRFV123456",
    "region": "us-east-1",
    "tlsBackend": "rustls",
-   "kiroVersion": "0.9.2",
+   "kiroVersion": "0.12.155",
    "machineId": "64位十六进制机器码",
    "systemVersion": "darwin#24.6.0",
-   "nodeVersion": "22.21.1",
+   "nodeVersion": "22.22.0",
+   "requestDiagnosticsEnabled": false,
    "authRegion": "us-east-1",
    "apiRegion": "us-east-1",
    "countTokensApiUrl": "https://api.example.com/v1/messages/count_tokens",

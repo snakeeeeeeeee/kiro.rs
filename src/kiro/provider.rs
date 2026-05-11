@@ -92,6 +92,24 @@ struct UpstreamErrorInfo {
     retry_after_ms: Option<u64>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct RequestDiagnostics {
+    model: Option<String>,
+    conversation_id: Option<String>,
+    agent_task_type: Option<String>,
+    chat_trigger_type: Option<String>,
+    current_content_chars: usize,
+    history_len: usize,
+    history_user_count: usize,
+    history_assistant_count: usize,
+    tools_count: usize,
+    tool_results_count: usize,
+    current_images_count: usize,
+    profile_arn_present: bool,
+    request_bytes: usize,
+    thinking_directives_present: bool,
+}
+
 struct ResponseTimingGuard {
     metrics: Arc<MetricsRecorder>,
     record: Option<ApiTimingRecord>,
@@ -685,6 +703,34 @@ impl KiroProvider {
 
             let url = endpoint.api_url(&rctx);
             let body = endpoint.transform_api_body(request_body, &rctx);
+            if config.request_diagnostics_enabled {
+                let request_diagnostics = Self::diagnose_api_request_body(&body);
+                tracing::info!(
+                    model = request_diagnostics.model.as_deref().unwrap_or("unknown"),
+                    external_model = model_for_metrics.as_str(),
+                    credential_id = ctx.id,
+                    endpoint = endpoint.name(),
+                    api_region = rctx.credentials.effective_api_region(config),
+                    kiro_version = config.kiro_version.as_str(),
+                    node_version = config.node_version.as_str(),
+                    system_version = config.system_version.as_str(),
+                    stream = is_stream,
+                    conversation_id = request_diagnostics.conversation_id.as_deref(),
+                    agent_task_type = request_diagnostics.agent_task_type.as_deref(),
+                    chat_trigger_type = request_diagnostics.chat_trigger_type.as_deref(),
+                    history_len = request_diagnostics.history_len,
+                    history_user_count = request_diagnostics.history_user_count,
+                    history_assistant_count = request_diagnostics.history_assistant_count,
+                    current_content_chars = request_diagnostics.current_content_chars,
+                    tools_count = request_diagnostics.tools_count,
+                    tool_results_count = request_diagnostics.tool_results_count,
+                    current_images_count = request_diagnostics.current_images_count,
+                    profile_arn_present = request_diagnostics.profile_arn_present,
+                    request_bytes = request_diagnostics.request_bytes,
+                    thinking_directives_present = request_diagnostics.thinking_directives_present,
+                    "kiro_api_request_diagnostics"
+                );
+            }
 
             let base = self
                 .client_for(ctx.id, &ctx.credentials)?
@@ -1057,6 +1103,88 @@ impl KiroProvider {
             .map(|s| s.to_string())
     }
 
+    fn diagnose_api_request_body(request_body: &str) -> RequestDiagnostics {
+        use serde_json::Value;
+
+        let mut diagnostics = RequestDiagnostics {
+            request_bytes: request_body.len(),
+            thinking_directives_present: request_body.contains("<thinking_mode>"),
+            ..Default::default()
+        };
+
+        let Ok(json) = serde_json::from_str::<Value>(request_body) else {
+            return diagnostics;
+        };
+
+        diagnostics.profile_arn_present = json.get("profileArn").and_then(Value::as_str).is_some();
+
+        let Some(state) = json.get("conversationState") else {
+            return diagnostics;
+        };
+
+        diagnostics.conversation_id = state
+            .get("conversationId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        diagnostics.agent_task_type = state
+            .get("agentTaskType")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        diagnostics.chat_trigger_type = state
+            .get("chatTriggerType")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        if let Some(history) = state.get("history").and_then(Value::as_array) {
+            diagnostics.history_len = history.len();
+            for item in history {
+                if item.get("userInputMessage").is_some() {
+                    diagnostics.history_user_count += 1;
+                }
+                if item.get("assistantResponseMessage").is_some() {
+                    diagnostics.history_assistant_count += 1;
+                }
+            }
+        }
+
+        let Some(user_input) = state
+            .get("currentMessage")
+            .and_then(|v| v.get("userInputMessage"))
+        else {
+            return diagnostics;
+        };
+
+        diagnostics.model = user_input
+            .get("modelId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        diagnostics.current_content_chars = user_input
+            .get("content")
+            .and_then(Value::as_str)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
+        diagnostics.current_images_count = user_input
+            .get("images")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+
+        if let Some(context) = user_input.get("userInputMessageContext") {
+            diagnostics.tools_count = context
+                .get("tools")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            diagnostics.tool_results_count = context
+                .get("toolResults")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+        }
+
+        diagnostics
+    }
+
     fn retry_delay(attempt: usize) -> Duration {
         // 指数退避 + 少量抖动，避免上游抖动时放大故障
         const BASE_MS: u64 = 200;
@@ -1102,5 +1230,45 @@ mod tests {
             .as_deref(),
             Some("INSUFFICIENT_MODEL_CAPACITY")
         );
+    }
+
+    #[test]
+    fn api_request_diagnostics_extracts_safe_summary() {
+        let body = r#"{
+            "conversationState": {
+                "conversationId": "conv-1",
+                "agentTaskType": "vibe",
+                "chatTriggerType": "MANUAL",
+                "history": [
+                    {"userInputMessage": {"content": "old", "modelId": "claude-opus-4.6"}},
+                    {"assistantResponseMessage": {"content": "ok"}}
+                ],
+                "currentMessage": {
+                    "userInputMessage": {
+                        "content": "<thinking_mode>adaptive</thinking_mode>hello",
+                        "modelId": "claude-opus-4.7",
+                        "images": [{"format": "png", "source": {"bytes": "abc"}}],
+                        "userInputMessageContext": {
+                            "tools": [{"toolSpecification": {"name": "read"}}],
+                            "toolResults": [{"toolUseId": "toolu_1"}]
+                        }
+                    }
+                }
+            },
+            "profileArn": "arn:test"
+        }"#;
+
+        let summary = KiroProvider::diagnose_api_request_body(body);
+        assert_eq!(summary.model.as_deref(), Some("claude-opus-4.7"));
+        assert_eq!(summary.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(summary.history_len, 2);
+        assert_eq!(summary.history_user_count, 1);
+        assert_eq!(summary.history_assistant_count, 1);
+        assert_eq!(summary.tools_count, 1);
+        assert_eq!(summary.tool_results_count, 1);
+        assert_eq!(summary.current_images_count, 1);
+        assert!(summary.profile_arn_present);
+        assert!(summary.thinking_directives_present);
+        assert!(summary.request_bytes > 0);
     }
 }

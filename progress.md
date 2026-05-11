@@ -135,3 +135,9 @@
 - `GET /api/admin/runtime`: returns `dynamicProxy` summary.
 - `GET /api/admin/settings/runtime`: returns dynamic proxy configuration fields.
 - `docker compose -f docker-compose-dev.yml ps`: `kiro-rs-dev` healthy.
+
+## Completed: Opus 4.7 Latency Investigation
+- Updated default and local config Kiro version from 0.11.107 to 0.12.155.
+- Added safe request diagnostics logging behind config requestDiagnosticsEnabled. Local config enables it for comparison.
+- Added tests proving 4.6/4.7 conversion differs only by modelId and random agentContinuationId.
+- Validation: cargo fmt -- --check, cargo check, cargo test, pnpm --dir admin-ui build all passed.

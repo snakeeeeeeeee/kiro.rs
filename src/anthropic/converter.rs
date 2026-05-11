@@ -1000,6 +1000,112 @@ mod tests {
     }
 
     #[test]
+    fn test_opus_4_6_and_4_7_conversion_only_differs_by_model_id() {
+        use super::super::types::{
+            Message as AnthropicMessage, Metadata, SystemMessage, Tool as AnthropicTool,
+        };
+
+        let mut schema = std::collections::HashMap::new();
+        schema.insert("type".to_string(), serde_json::json!("object"));
+        schema.insert(
+            "properties".to_string(),
+            serde_json::json!({"path": {"type": "string"}}),
+        );
+
+        let build_req = |model: &str| MessagesRequest {
+            model: model.to_string(),
+            max_tokens: 256,
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("first turn"),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!("first answer"),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!([
+                        {"type": "text", "text": "same prompt"}
+                    ]),
+                },
+            ],
+            stream: true,
+            system: Some(vec![SystemMessage {
+                text: "same system".to_string(),
+                cache_control: None,
+            }]),
+            tools: Some(vec![AnthropicTool {
+                name: "Read".to_string(),
+                description: "Read a file".to_string(),
+                input_schema: schema.clone(),
+                tool_type: None,
+                max_uses: None,
+                cache_control: None,
+            }]),
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            metadata: Some(Metadata {
+                user_id: Some(
+                    r#"{"session_id":"8bb5523b-ec7c-4540-a9ca-beb6d79f1552"}"#.to_string(),
+                ),
+            }),
+        };
+
+        let mut opus_46 = serde_json::to_value(
+            convert_request(&build_req("claude-opus-4-6"))
+                .unwrap()
+                .conversation_state,
+        )
+        .unwrap();
+        let mut opus_47 = serde_json::to_value(
+            convert_request(&build_req("claude-opus-4-7"))
+                .unwrap()
+                .conversation_state,
+        )
+        .unwrap();
+
+        assert_eq!(
+            opus_46
+                .pointer("/currentMessage/userInputMessage/modelId")
+                .and_then(|v| v.as_str()),
+            Some("claude-opus-4.6")
+        );
+        assert_eq!(
+            opus_47
+                .pointer("/currentMessage/userInputMessage/modelId")
+                .and_then(|v| v.as_str()),
+            Some("claude-opus-4.7")
+        );
+
+        opus_46["currentMessage"]["userInputMessage"]["modelId"] =
+            serde_json::json!("MODEL_PLACEHOLDER");
+        opus_47["currentMessage"]["userInputMessage"]["modelId"] =
+            serde_json::json!("MODEL_PLACEHOLDER");
+        opus_46["agentContinuationId"] = serde_json::json!("AGENT_CONTINUATION_PLACEHOLDER");
+        opus_47["agentContinuationId"] = serde_json::json!("AGENT_CONTINUATION_PLACEHOLDER");
+
+        if let Some(history) = opus_46.get_mut("history").and_then(|v| v.as_array_mut()) {
+            for item in history {
+                if let Some(user) = item.get_mut("userInputMessage") {
+                    user["modelId"] = serde_json::json!("MODEL_PLACEHOLDER");
+                }
+            }
+        }
+        if let Some(history) = opus_47.get_mut("history").and_then(|v| v.as_array_mut()) {
+            for item in history {
+                if let Some(user) = item.get_mut("userInputMessage") {
+                    user["modelId"] = serde_json::json!("MODEL_PLACEHOLDER");
+                }
+            }
+        }
+
+        assert_eq!(opus_46, opus_47);
+    }
+
+    #[test]
     fn test_map_model_thinking_suffix_haiku() {
         // thinking 后缀不应影响 haiku 模型映射
         let result = map_model("claude-haiku-4-5-20251001-thinking");

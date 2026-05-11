@@ -55,6 +55,10 @@ pub struct Config {
     #[serde(default = "default_node_version")]
     pub node_version: String,
 
+    /// 是否打印上游请求摘要诊断日志（不包含 prompt/token 明文）
+    #[serde(default)]
+    pub request_diagnostics_enabled: bool,
+
     #[serde(default = "default_tls_backend")]
     pub tls_backend: TlsBackend,
 
@@ -311,7 +315,7 @@ fn default_region() -> String {
 }
 
 fn default_kiro_version() -> String {
-    "0.11.107".to_string()
+    "0.12.155".to_string()
 }
 
 fn default_system_version() -> String {
@@ -520,6 +524,7 @@ impl Default for Config {
             api_key: None,
             system_version: default_system_version(),
             node_version: default_node_version(),
+            request_diagnostics_enabled: false,
             tls_backend: default_tls_backend(),
             count_tokens_api_url: None,
             count_tokens_api_key: None,

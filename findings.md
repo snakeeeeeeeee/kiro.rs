@@ -58,3 +58,8 @@
 - The missing piece in `kiro.rs` is dynamic binding persistence and lifecycle: SQLite binding table, runtime settings, Rust proxy verifier, background worker, Admin actions, and proxy-error-triggered rotation.
 - Effective proxy order should become dynamic active binding > manual account proxy > global proxy, with existing `direct` manual proxy still bypassing global proxy when no dynamic active binding exists.
 - Dynamic proxy helps account/IP isolation and proxy failure recovery; it should not be presented as a fix for upstream model-capacity errors such as `INSUFFICIENT_MODEL_CAPACITY`.
+
+## Opus 4.7 Latency Investigation
+- Verified by unit test: identical Anthropic request converted to Opus 4.6 vs 4.7 has the same Kiro request structure after normalizing modelId and random agentContinuationId. Plain claude-opus-4-7 does not enable thinking.
+- Public Kiro changelog says Claude Opus 4.7 uses model id claude-opus-4.7 and adaptive thinking needs Kiro IDE 0.11.133+ / CLI 2.2.0+ for best performance and efficiency. Existing config/default used KiroIDE 0.11.107, which is a credible cause of poor 4.7 behavior.
+- Updated default/local kiroVersion to 0.12.155 and added requestDiagnosticsEnabled for safe upstream request summary logging.
