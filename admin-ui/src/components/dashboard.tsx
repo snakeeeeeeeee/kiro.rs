@@ -928,6 +928,22 @@ export function Dashboard({ onLogout }: DashboardProps) {
           </div>
         ) : null}
 
+        {runtimeStatus?.modelCooldowns.length ? (
+          <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950">
+            <div className="mb-2 text-sm font-medium">模型冷却</div>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {runtimeStatus.modelCooldowns.map(item => (
+                <div key={item.model} className="rounded-md border border-amber-200 bg-white/70 px-3 py-2">
+                  <div className="truncate text-sm font-medium" title={item.model}>{item.model}</div>
+                  <div className="mt-1 text-xs text-amber-800">
+                    {formatMs(item.remainingMs)} · {item.reason}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">

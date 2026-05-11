@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheFallbackScope'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope'>
   label: string
   hint: string
 }> = [
@@ -32,10 +32,20 @@ const numberFields: Array<{
   { key: 'perAccountDefaultRpm', label: '默认账号 RPM', hint: '0 表示不限速' },
   { key: 'rateLimitCooldownMs', label: '429 冷却 ms', hint: '建议 60000' },
   { key: 'transientCooldownMs', label: '瞬态错误冷却 ms', hint: '建议 10000' },
+  { key: 'maxRetryAccounts', label: '单请求换号上限', hint: '默认 3，1 表示不换号' },
+  { key: 'modelCapacityCooldownMs', label: '模型容量冷却 ms', hint: '建议 10000' },
+  { key: 'tokenAutoRefreshIntervalSecs', label: 'Token 刷新扫描秒数', hint: '默认 300' },
+  { key: 'tokenAutoRefreshWindowSecs', label: 'Token 提前刷新窗口秒数', hint: '默认 1800' },
   { key: 'virtualCacheUncachedInputTokens', label: '虚拟普通输入 Tokens', hint: '默认 1' },
+  { key: 'virtualCacheMinInputTokens', label: '动态普通输入下限', hint: '建议 8' },
+  { key: 'virtualCacheMaxInputTokens', label: '动态普通输入上限', hint: '建议 96' },
   { key: 'virtualCacheWarmupTokens', label: '虚拟首轮缓存创建', hint: '建议 18000' },
   { key: 'virtualCacheMinCreationTokens', label: '虚拟最小缓存创建', hint: '建议 128' },
   { key: 'virtualCacheMaxCreationTokens', label: '虚拟最大缓存创建', hint: '建议 1200' },
+  { key: 'virtualCacheCreationJitterRatio', label: '动态创建抖动比例', hint: '0-1，例如 0.25' },
+  { key: 'virtualCacheBurstEveryTurns', label: '动态突增间隔轮数', hint: '0 表示关闭，建议 7' },
+  { key: 'virtualCacheBurstMinTokens', label: '动态突增最小创建', hint: '建议 1500' },
+  { key: 'virtualCacheBurstMaxTokens', label: '动态突增最大创建', hint: '建议 3000' },
 ]
 
 export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDialogProps) {
@@ -50,7 +60,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
   }, [data, open])
 
   const updateNumber = (
-    key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheFallbackScope'>,
+    key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope'>,
     value: string,
   ) => {
     const next = Number(value)
@@ -99,6 +109,20 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
             </div>
 
             <div className="space-y-2">
+              <label className="text-sm font-medium">Token 自动刷新</label>
+              <select
+                value={form.tokenAutoRefreshEnabled ? 'enabled' : 'disabled'}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, tokenAutoRefreshEnabled: event.target.value === 'enabled' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="enabled">启用</option>
+                <option value="disabled">关闭</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
               <label className="text-sm font-medium">虚拟缓存 Usage</label>
               <select
                 value={form.virtualCacheUsageEnabled ? 'enabled' : 'disabled'}
@@ -123,6 +147,34 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               >
                 <option value="5m">5 分钟</option>
                 <option value="1h">1 小时</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">普通输入模式</label>
+              <select
+                value={form.virtualCacheInputMode}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, virtualCacheInputMode: event.target.value as 'fixed' | 'estimated_user_delta' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="fixed">固定输入</option>
+                <option value="estimated_user_delta">按最新用户输入估算</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">缓存创建模式</label>
+              <select
+                value={form.virtualCacheCreationMode}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, virtualCacheCreationMode: event.target.value as 'fixed' | 'dynamic' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="fixed">固定下限</option>
+                <option value="dynamic">动态变化</option>
               </select>
             </div>
 

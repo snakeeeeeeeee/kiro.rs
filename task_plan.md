@@ -5,6 +5,12 @@ Upgrade `kiro.rs` Admin from a credential-card view to a table-oriented account 
 
 Current extension: add virtual cache usage accounting so Anthropic-compatible responses expose cache read/write token fields for new-api/cctest-style billing and audit.
 
+Current extension: split 429 handling into account-level limits vs model-capacity errors, add bounded request-local account failover, and expose model cooldown state for single-node production operation.
+
+Current extension: add configurable background token auto-refresh so expiring Social/IdC credentials are refreshed before first request latency is hit.
+
+Current extension: add optional natural dynamic virtual cache usage accounting so ordinary input tokens and cache creation tokens do not have to stay fixed.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -19,6 +25,9 @@ Current extension: add virtual cache usage accounting so Anthropic-compatible re
 - [completed] Add virtual cache usage accounting with configurable 5m/1h TTL
 - [completed] Wire virtual cache usage into non-stream and stream Anthropic responses
 - [completed] Add runtime/Admin controls and verify builds/tests
+- [in_progress] Implement medium-weight rate-limit dispatch: account failover, model-capacity cooldown, Retry-After parsing, and Admin runtime visibility
+- [completed] Add configurable background Token auto-refresh scheduler
+- [completed] Add dynamic virtual cache usage input/creation modes and Admin controls
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -28,6 +37,9 @@ Current extension: add virtual cache usage accounting so Anthropic-compatible re
 - Keep JSON import/export compatibility for KAM/sub2api-style backup flows.
 - Session affinity is runtime-only memory state with TTL; do not persist it to SQLite and do not block failover when the bound account is disabled, cooling, full, or RPM-limited.
 - Virtual cache usage is intentionally synthetic accounting for downstream billing compatibility; it is not persisted and does not claim to match Kiro upstream billing.
+- Treat `INSUFFICIENT_MODEL_CAPACITY` as model capacity pressure rather than account-wide rate limit; use short model-level cooldown and do not cool the account for that reason.
+- Token auto-refresh defaults to enabled, scans every 300 seconds, and refreshes refreshable credentials expiring within 1800 seconds.
+- Dynamic virtual cache usage stays configurable and defaults to fixed mode for compatibility; Admin can enable `estimated_user_delta` input mode and `dynamic` creation mode.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -37,3 +49,4 @@ Current extension: add virtual cache usage accounting so Anthropic-compatible re
 | Policy smoke-test shell command passed an env var to Python incorrectly and left a temporary override | 1 | Restored credential #1 policy to `null/null` and verified runtime returned to default effective values |
 | Session-affinity smoke command used zsh read-only variable `status` | 1 | Re-ran the smoke command through `bash` with `http_status`; request returned 200 and runtime showed one affinity binding |
 | Virtual usage preview initially passed an owned ledger entry to a mutable helper | 1 | Changed the call to pass `&mut entry`; `cargo check` passed afterward |
+| Request-local account exclusion could loop when no replacement account was dispatchable | 1 | Break out of provider retry loop when acquiring the next non-excluded account fails |

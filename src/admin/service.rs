@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::model_cooldown::ModelCooldownManager;
 use crate::kiro::settings::CredentialPolicy;
 use crate::kiro::token_manager::MultiTokenManager;
 use crate::metrics::MetricsRecorder;
@@ -42,6 +43,7 @@ pub struct AdminService {
     token_manager: Arc<MultiTokenManager>,
     runtime_limiter: Arc<RuntimeLimiter>,
     metrics: Arc<MetricsRecorder>,
+    model_cooldowns: Arc<ModelCooldownManager>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
@@ -53,6 +55,7 @@ impl AdminService {
         token_manager: Arc<MultiTokenManager>,
         runtime_limiter: Arc<RuntimeLimiter>,
         metrics: Arc<MetricsRecorder>,
+        model_cooldowns: Arc<ModelCooldownManager>,
         known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
@@ -65,6 +68,7 @@ impl AdminService {
             token_manager,
             runtime_limiter,
             metrics,
+            model_cooldowns,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
@@ -137,6 +141,11 @@ impl AdminService {
             queue_timeout_ms: snapshot.queue_timeout_ms,
             rate_limit_cooldown_ms: snapshot.rate_limit_cooldown_ms,
             transient_cooldown_ms: snapshot.transient_cooldown_ms,
+            max_retry_accounts: snapshot.max_retry_accounts,
+            model_capacity_cooldown_ms: snapshot.model_capacity_cooldown_ms,
+            token_auto_refresh_enabled: snapshot.token_auto_refresh_enabled,
+            token_auto_refresh_interval_secs: snapshot.token_auto_refresh_interval_secs,
+            token_auto_refresh_window_secs: snapshot.token_auto_refresh_window_secs,
             load_balancing_mode: snapshot.load_balancing_mode,
             total_credentials: snapshot.total,
             available_credentials: snapshot.available,
@@ -144,6 +153,7 @@ impl AdminService {
             cooling_down_credentials: snapshot.cooling_down,
             session_affinity_bindings: snapshot.session_affinity_bindings,
             request_metrics: self.metrics.snapshot(),
+            model_cooldowns: self.model_cooldowns.snapshot(),
             credentials: snapshot
                 .entries
                 .into_iter()

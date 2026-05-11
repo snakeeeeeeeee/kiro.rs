@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::kiro::settings::{RuntimeSettings, normalize_virtual_cache_ttl};
+use crate::token;
 
 use super::converter::extract_session_id;
 use super::types::MessagesRequest;
@@ -44,6 +46,7 @@ pub struct VirtualUsageInput {
     pub model: String,
     pub session_key: String,
     pub observed_total_input_tokens: i32,
+    pub estimated_uncached_input_tokens: Option<i32>,
     pub output_tokens: i32,
     pub creation_ttl: CacheTtl,
 }
@@ -177,8 +180,8 @@ impl VirtualCacheUsageManager {
 
         let key = LedgerKey {
             credential_id: input.credential_id,
-            model: input.model,
-            session_key: input.session_key,
+            model: input.model.clone(),
+            session_key: input.session_key.clone(),
         };
 
         let mut entry = self.ledgers.lock().get(&key).cloned().unwrap_or_default();
@@ -187,20 +190,10 @@ impl VirtualCacheUsageManager {
         let read_tokens = entry
             .cached_5m_tokens
             .saturating_add(entry.cached_1h_tokens);
-        let uncached = settings
-            .virtual_cache_uncached_input_tokens
-            .min(observed_total as u32) as i32;
+        let uncached = compute_uncached_tokens(settings, &input, observed_total);
 
-        let creation_tokens = if entry.turn_count == 0 {
-            observed_total
-                .saturating_sub(uncached)
-                .max(settings.virtual_cache_warmup_tokens as i32)
-        } else {
-            let delta = observed_total.saturating_sub(entry.last_observed_input_tokens);
-            delta
-                .max(settings.virtual_cache_min_creation_tokens as i32)
-                .clamp(0, settings.virtual_cache_max_creation_tokens as i32)
-        };
+        let creation_tokens =
+            compute_creation_tokens(settings, &input, &entry, observed_total, uncached);
 
         let (ephemeral_5m_input_tokens, ephemeral_1h_input_tokens) = match input.creation_ttl {
             CacheTtl::FiveMinutes => (creation_tokens, 0),
@@ -254,6 +247,152 @@ impl VirtualCacheUsageManager {
     }
 }
 
+fn compute_uncached_tokens(
+    settings: &RuntimeSettings,
+    input: &VirtualUsageInput,
+    observed_total: i32,
+) -> i32 {
+    if settings.virtual_cache_input_mode == "estimated_user_delta" {
+        let estimated = input
+            .estimated_uncached_input_tokens
+            .unwrap_or(settings.virtual_cache_uncached_input_tokens as i32)
+            .max(1);
+        estimated
+            .clamp(
+                settings.virtual_cache_min_input_tokens as i32,
+                settings.virtual_cache_max_input_tokens as i32,
+            )
+            .min(observed_total)
+            .max(1)
+    } else {
+        settings
+            .virtual_cache_uncached_input_tokens
+            .min(observed_total as u32) as i32
+    }
+}
+
+fn compute_creation_tokens(
+    settings: &RuntimeSettings,
+    input: &VirtualUsageInput,
+    entry: &LedgerEntry,
+    observed_total: i32,
+    uncached: i32,
+) -> i32 {
+    if entry.turn_count == 0 {
+        return observed_total
+            .saturating_sub(uncached)
+            .max(settings.virtual_cache_warmup_tokens as i32);
+    }
+
+    let delta = observed_total.saturating_sub(entry.last_observed_input_tokens);
+    if settings.virtual_cache_creation_mode != "dynamic" {
+        return delta
+            .max(settings.virtual_cache_min_creation_tokens as i32)
+            .clamp(0, settings.virtual_cache_max_creation_tokens as i32);
+    }
+
+    let base = delta
+        .max(input.estimated_uncached_input_tokens.unwrap_or_default())
+        .max(settings.virtual_cache_min_creation_tokens as i32);
+    let output_component = input.output_tokens.max(0).min(2_000) / 2;
+    let mut creation = base.saturating_add(output_component);
+    creation = apply_creation_jitter(settings, input, entry.turn_count, creation);
+    creation = creation.clamp(
+        settings.virtual_cache_min_creation_tokens as i32,
+        settings.virtual_cache_max_creation_tokens as i32,
+    );
+
+    let next_turn = entry.turn_count.saturating_add(1);
+    if should_apply_burst(settings, next_turn) {
+        creation = creation.saturating_add(deterministic_range(
+            input,
+            next_turn,
+            "burst",
+            settings.virtual_cache_burst_min_tokens,
+            settings.virtual_cache_burst_max_tokens,
+        ));
+        let burst_ceiling = settings
+            .virtual_cache_max_creation_tokens
+            .max(settings.virtual_cache_burst_max_tokens) as i32;
+        creation = creation.clamp(
+            settings.virtual_cache_min_creation_tokens as i32,
+            burst_ceiling,
+        );
+    }
+
+    creation.max(0)
+}
+
+fn apply_creation_jitter(
+    settings: &RuntimeSettings,
+    input: &VirtualUsageInput,
+    turn_count: u64,
+    value: i32,
+) -> i32 {
+    if value <= 0 || settings.virtual_cache_creation_jitter_ratio <= 0.0 {
+        return value;
+    }
+
+    let ratio = settings.virtual_cache_creation_jitter_ratio.clamp(0.0, 1.0);
+    let spread = ((value as f64) * ratio).round() as i32;
+    if spread <= 0 {
+        return value;
+    }
+
+    let offset = deterministic_range_i32(input, turn_count, "jitter", -spread, spread);
+    value.saturating_add(offset)
+}
+
+fn should_apply_burst(settings: &RuntimeSettings, next_turn: u64) -> bool {
+    settings.virtual_cache_burst_every_turns > 0
+        && settings.virtual_cache_burst_max_tokens > 0
+        && next_turn % settings.virtual_cache_burst_every_turns as u64 == 0
+}
+
+fn deterministic_range(
+    input: &VirtualUsageInput,
+    turn_count: u64,
+    salt: &str,
+    min: u32,
+    max: u32,
+) -> i32 {
+    if max <= min {
+        return min as i32;
+    }
+    deterministic_range_i32(input, turn_count, salt, min as i32, max as i32)
+}
+
+fn deterministic_range_i32(
+    input: &VirtualUsageInput,
+    turn_count: u64,
+    salt: &str,
+    min: i32,
+    max: i32,
+) -> i32 {
+    if max <= min {
+        return min;
+    }
+
+    let hash = stable_hash(input, turn_count, salt);
+    let span = (max as i64 - min as i64 + 1) as u64;
+    min.saturating_add((hash % span) as i32)
+}
+
+fn stable_hash(input: &VirtualUsageInput, turn_count: u64, salt: &str) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(input.credential_id.to_le_bytes());
+    hasher.update(input.model.as_bytes());
+    hasher.update(input.session_key.as_bytes());
+    hasher.update(turn_count.to_le_bytes());
+    hasher.update(input.observed_total_input_tokens.to_le_bytes());
+    hasher.update(input.output_tokens.to_le_bytes());
+    hasher.update(salt.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(bytes)
+}
+
 fn expire_entry(entry: &mut LedgerEntry, now: DateTime<Utc>) {
     if entry
         .cached_5m_expires_at
@@ -269,6 +408,43 @@ fn expire_entry(entry: &mut LedgerEntry, now: DateTime<Utc>) {
         entry.cached_1h_tokens = 0;
         entry.cached_1h_expires_at = None;
     }
+}
+
+pub fn estimate_latest_user_input_tokens(req: &MessagesRequest) -> i32 {
+    req.messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| estimate_content_tokens(&message.content))
+        .unwrap_or(0)
+        .max(1)
+}
+
+fn estimate_content_tokens(value: &Value) -> i32 {
+    match value {
+        Value::String(text) => token::count_tokens(text) as i32,
+        Value::Array(items) => items.iter().map(estimate_content_tokens).sum(),
+        Value::Object(map) => {
+            let mut total = 0;
+            if let Some(text) = map.get("text").and_then(Value::as_str) {
+                total += token::count_tokens(text) as i32;
+            }
+            if let Some(content) = map.get("content") {
+                total += estimate_content_tokens(content);
+            }
+            if let Some(input) = map.get("input") {
+                total += estimate_json_tokens(input);
+            }
+            total
+        }
+        _ => 0,
+    }
+}
+
+fn estimate_json_tokens(value: &Value) -> i32 {
+    serde_json::to_string(value)
+        .map(|text| token::count_tokens(&text) as i32)
+        .unwrap_or(0)
 }
 
 pub fn session_key_for_request(req: &MessagesRequest, model: &str, fallback_scope: &str) -> String {
@@ -368,13 +544,26 @@ mod tests {
             global_rpm: 0,
             rate_limit_cooldown_ms: 60_000,
             transient_cooldown_ms: 10_000,
+            max_retry_accounts: 3,
+            model_capacity_cooldown_ms: 10_000,
+            token_auto_refresh_enabled: true,
+            token_auto_refresh_interval_secs: 300,
+            token_auto_refresh_window_secs: 1_800,
             load_balancing_mode: "priority".to_string(),
             virtual_cache_usage_enabled: true,
             virtual_cache_default_ttl: "5m".to_string(),
             virtual_cache_uncached_input_tokens: 1,
+            virtual_cache_input_mode: "fixed".to_string(),
+            virtual_cache_min_input_tokens: 8,
+            virtual_cache_max_input_tokens: 96,
             virtual_cache_warmup_tokens: 18_000,
             virtual_cache_min_creation_tokens: 128,
             virtual_cache_max_creation_tokens: 1_200,
+            virtual_cache_creation_mode: "fixed".to_string(),
+            virtual_cache_creation_jitter_ratio: 0.25,
+            virtual_cache_burst_every_turns: 7,
+            virtual_cache_burst_min_tokens: 1_500,
+            virtual_cache_burst_max_tokens: 3_000,
             virtual_cache_fallback_scope: "model".to_string(),
         }
     }
@@ -385,6 +574,7 @@ mod tests {
             model: "claude-sonnet-4-5-20250929".to_string(),
             session_key: session.to_string(),
             observed_total_input_tokens: observed,
+            estimated_uncached_input_tokens: None,
             output_tokens: 7,
             creation_ttl: ttl,
         }
@@ -483,6 +673,96 @@ mod tests {
         assert!(json.get("cache_read_input_tokens").is_none());
         assert!(json.get("cache_creation_input_tokens").is_none());
         assert!(json.get("cache_creation").is_none());
+    }
+
+    #[test]
+    fn estimated_user_delta_input_mode_uses_latest_user_estimate_with_clamps() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_input_mode = "estimated_user_delta".to_string();
+        settings.virtual_cache_min_input_tokens = 8;
+        settings.virtual_cache_max_input_tokens = 96;
+
+        let usage = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                estimated_uncached_input_tokens: Some(42),
+                ..input("session-a", 1000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(usage.input_tokens, 42);
+
+        let low = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                estimated_uncached_input_tokens: Some(2),
+                ..input("session-b", 1000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(low.input_tokens, 8);
+
+        let high = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                estimated_uncached_input_tokens: Some(300),
+                ..input("session-c", 1000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(high.input_tokens, 96);
+    }
+
+    #[test]
+    fn dynamic_creation_mode_varies_after_warmup() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_creation_mode = "dynamic".to_string();
+        settings.virtual_cache_creation_jitter_ratio = 0.25;
+        settings.virtual_cache_burst_every_turns = 0;
+
+        let _ = manager.build_usage(&settings, input("session-a", 1000, CacheTtl::FiveMinutes));
+        let second = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                estimated_uncached_input_tokens: Some(80),
+                output_tokens: 350,
+                ..input("session-a", 1050, CacheTtl::FiveMinutes)
+            },
+        );
+
+        assert_ne!(second.cache_creation_input_tokens, 128);
+        assert!(
+            (settings.virtual_cache_min_creation_tokens as i32
+                ..=settings.virtual_cache_max_creation_tokens as i32)
+                .contains(&second.cache_creation_input_tokens)
+        );
+    }
+
+    #[test]
+    fn dynamic_burst_can_exceed_normal_creation_max() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_creation_mode = "dynamic".to_string();
+        settings.virtual_cache_creation_jitter_ratio = 0.0;
+        settings.virtual_cache_burst_every_turns = 2;
+        settings.virtual_cache_burst_min_tokens = 1_500;
+        settings.virtual_cache_burst_max_tokens = 3_000;
+
+        let _ = manager.build_usage(&settings, input("session-a", 1000, CacheTtl::FiveMinutes));
+        let burst = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                estimated_uncached_input_tokens: Some(80),
+                output_tokens: 200,
+                ..input("session-a", 1050, CacheTtl::FiveMinutes)
+            },
+        );
+
+        assert!(
+            burst.cache_creation_input_tokens > settings.virtual_cache_max_creation_tokens as i32
+        );
+        assert!(
+            burst.cache_creation_input_tokens <= settings.virtual_cache_burst_max_tokens as i32
+        );
     }
 
     #[test]

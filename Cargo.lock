@@ -939,6 +939,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "httpdate",
  "mime_guess",
  "parking_lot",
  "reqwest",

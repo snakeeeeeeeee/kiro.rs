@@ -50,6 +50,11 @@ export interface RuntimeStatusResponse {
   queueTimeoutMs: number
   rateLimitCooldownMs: number
   transientCooldownMs: number
+  maxRetryAccounts: number
+  modelCapacityCooldownMs: number
+  tokenAutoRefreshEnabled: boolean
+  tokenAutoRefreshIntervalSecs: number
+  tokenAutoRefreshWindowSecs: number
   loadBalancingMode: 'priority' | 'balanced'
   totalCredentials: number
   availableCredentials: number
@@ -57,6 +62,7 @@ export interface RuntimeStatusResponse {
   coolingDownCredentials: number
   sessionAffinityBindings: number
   requestMetrics: RuntimeMetricsSnapshot
+  modelCooldowns: ModelCooldownSnapshot[]
   credentials: RuntimeCredentialStatus[]
 }
 
@@ -98,6 +104,13 @@ export interface StatusCountSnapshot {
 export interface CredentialCountSnapshot {
   credentialId: number
   count: number
+}
+
+export interface ModelCooldownSnapshot {
+  model: string
+  cooldownUntil: string
+  remainingMs: number
+  reason: string
 }
 
 export interface RuntimeCredentialStatus {
@@ -157,13 +170,26 @@ export interface RuntimeSettings {
   globalRpm: number
   rateLimitCooldownMs: number
   transientCooldownMs: number
+  maxRetryAccounts: number
+  modelCapacityCooldownMs: number
+  tokenAutoRefreshEnabled: boolean
+  tokenAutoRefreshIntervalSecs: number
+  tokenAutoRefreshWindowSecs: number
   loadBalancingMode: 'priority' | 'balanced'
   virtualCacheUsageEnabled: boolean
   virtualCacheDefaultTtl: '5m' | '1h'
   virtualCacheUncachedInputTokens: number
+  virtualCacheInputMode: 'fixed' | 'estimated_user_delta'
+  virtualCacheMinInputTokens: number
+  virtualCacheMaxInputTokens: number
   virtualCacheWarmupTokens: number
   virtualCacheMinCreationTokens: number
   virtualCacheMaxCreationTokens: number
+  virtualCacheCreationMode: 'fixed' | 'dynamic'
+  virtualCacheCreationJitterRatio: number
+  virtualCacheBurstEveryTurns: number
+  virtualCacheBurstMinTokens: number
+  virtualCacheBurstMaxTokens: number
   virtualCacheFallbackScope: 'model' | 'none'
 }
 

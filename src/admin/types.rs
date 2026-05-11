@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::model_cooldown::ModelCooldownSnapshot;
 use crate::kiro::settings::RuntimeSettings;
 use crate::metrics::RuntimeMetricsSnapshot;
 
@@ -103,6 +104,11 @@ pub struct RuntimeStatusResponse {
     pub queue_timeout_ms: u64,
     pub rate_limit_cooldown_ms: u64,
     pub transient_cooldown_ms: u64,
+    pub max_retry_accounts: usize,
+    pub model_capacity_cooldown_ms: u64,
+    pub token_auto_refresh_enabled: bool,
+    pub token_auto_refresh_interval_secs: u64,
+    pub token_auto_refresh_window_secs: u64,
     pub load_balancing_mode: String,
     pub total_credentials: usize,
     pub available_credentials: usize,
@@ -110,6 +116,7 @@ pub struct RuntimeStatusResponse {
     pub cooling_down_credentials: usize,
     pub session_affinity_bindings: usize,
     pub request_metrics: RuntimeMetricsSnapshot,
+    pub model_cooldowns: Vec<ModelCooldownSnapshot>,
     pub credentials: Vec<RuntimeCredentialStatus>,
 }
 

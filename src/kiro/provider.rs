@@ -19,6 +19,7 @@ use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::model_cooldown::ModelCooldownManager;
 use crate::kiro::token_manager::{CredentialLease, MultiTokenManager};
 use crate::metrics::{MetricsRecorder, RequestTimingSample, UpstreamOutcome, duration_ms};
 use crate::model::config::TlsBackend;
@@ -38,6 +39,7 @@ const MAX_TOTAL_RETRIES: usize = 9;
 pub struct KiroProvider {
     token_manager: Arc<MultiTokenManager>,
     metrics: Arc<MetricsRecorder>,
+    model_cooldowns: Arc<ModelCooldownManager>,
     /// 全局代理配置（用于凭据无自定义代理时的回退）
     global_proxy: Option<ProxyConfig>,
     /// Client 缓存：key = effective proxy config, value = reqwest::Client
@@ -70,6 +72,25 @@ struct ApiTimingRecord {
     acquire_ms: u64,
     upstream_ms: u64,
     total_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct ProviderRateLimitError {
+    pub message: String,
+    pub retry_after_secs: Option<u64>,
+}
+
+impl std::fmt::Display for ProviderRateLimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ProviderRateLimitError {}
+
+struct UpstreamErrorInfo {
+    reason: Option<String>,
+    retry_after_ms: Option<u64>,
 }
 
 struct ResponseTimingGuard {
@@ -230,6 +251,44 @@ fn record_api_timing(metrics: &MetricsRecorder, record: ApiTimingRecord) {
     });
 }
 
+fn parse_retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds.saturating_mul(1_000));
+    }
+    httpdate::parse_http_date(value)
+        .ok()
+        .and_then(|instant| instant.duration_since(std::time::SystemTime::now()).ok())
+        .map(duration_ms)
+}
+
+fn extract_upstream_reason(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value
+        .get("reason")
+        .and_then(|reason| reason.as_str())
+        .map(str::to_string)
+}
+
+fn retry_after_secs(retry_after_ms: Option<u64>) -> Option<u64> {
+    retry_after_ms.map(|ms| ms.div_ceil(1_000).max(1))
+}
+
+fn provider_rate_limit_error(
+    message: impl Into<String>,
+    retry_after_ms: Option<u64>,
+) -> anyhow::Error {
+    ProviderRateLimitError {
+        message: message.into(),
+        retry_after_secs: retry_after_secs(retry_after_ms),
+    }
+    .into()
+}
+
 impl KiroProvider {
     /// 创建带代理配置和端点注册表的 KiroProvider 实例
     ///
@@ -241,6 +300,7 @@ impl KiroProvider {
     pub fn with_proxy(
         token_manager: Arc<MultiTokenManager>,
         metrics: Arc<MetricsRecorder>,
+        model_cooldowns: Arc<ModelCooldownManager>,
         proxy: Option<ProxyConfig>,
         endpoints: HashMap<String, Arc<dyn KiroEndpoint>>,
         default_endpoint: String,
@@ -260,6 +320,7 @@ impl KiroProvider {
         Self {
             token_manager,
             metrics,
+            model_cooldowns,
             global_proxy: proxy,
             client_cache: Mutex::new(cache),
             tls_backend,
@@ -523,25 +584,62 @@ impl KiroProvider {
     ) -> anyhow::Result<LeasedResponse> {
         let total_started_at = Instant::now();
         let total_credentials = self.token_manager.total_count();
-        let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
+        let settings = self.token_manager.runtime_settings();
+        let max_retry_accounts = settings.max_retry_accounts.min(total_credentials).max(1);
         let mut last_error: Option<anyhow::Error> = None;
         let mut force_refreshed: HashSet<u64> = HashSet::new();
+        let mut excluded_credentials: HashSet<u64> = HashSet::new();
+        let mut attempted_credentials: Vec<u64> = Vec::new();
+        let mut http_attempts = 0usize;
+        let mut model_capacity_failures = 0usize;
+        let mut last_retry_after_ms: Option<u64> = None;
         let api_type = if is_stream { "流式" } else { "非流式" };
 
         // 尝试从请求体中提取模型信息
         let model = Self::extract_model_from_request(request_body);
         let model_for_metrics = model.clone().unwrap_or_else(|| "unknown".to_string());
+        if let Some(cooldown) = self.model_cooldowns.check(&model_for_metrics) {
+            let retry_after_ms = Some(cooldown.remaining_ms);
+            let total_ms = duration_ms(total_started_at.elapsed());
+            self.record_api_timing(ApiTimingRecord {
+                model: model_for_metrics.clone(),
+                is_stream,
+                credential_id: None,
+                status: Some(429),
+                outcome: UpstreamOutcome::Error,
+                attempts: 0,
+                queue_ms,
+                acquire_ms: 0,
+                upstream_ms: 0,
+                total_ms,
+            });
+            return Err(provider_rate_limit_error(
+                format!(
+                    "{} API 请求失败：模型 {} 正在冷却，请稍后重试",
+                    api_type, model_for_metrics
+                ),
+                retry_after_ms,
+            ));
+        }
         let mut last_credential_id: Option<u64> = None;
         let mut last_status: Option<u16> = None;
         let mut acquire_ms_total = 0;
         let mut upstream_ms_total = 0;
 
-        for attempt in 0..max_retries {
+        loop {
+            if attempted_credentials.len() >= max_retry_accounts {
+                break;
+            }
+
             // 获取调用上下文（绑定 index、credentials、token）
             let acquire_started_at = Instant::now();
             let ctx = match self
                 .token_manager
-                .acquire_context_with_session(model.as_deref(), session_id)
+                .acquire_context_with_session_excluding(
+                    model.as_deref(),
+                    session_id,
+                    &excluded_credentials,
+                )
                 .await
             {
                 Ok(c) => {
@@ -551,10 +649,13 @@ impl KiroProvider {
                 Err(e) => {
                     acquire_ms_total += duration_ms(acquire_started_at.elapsed());
                     last_error = Some(e);
-                    continue;
+                    break;
                 }
             };
             last_credential_id = Some(ctx.id);
+            if !attempted_credentials.contains(&ctx.id) {
+                attempted_credentials.push(ctx.id);
+            }
 
             let config = self.token_manager.config();
             let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
@@ -592,25 +693,30 @@ impl KiroProvider {
                 Err(e) => {
                     upstream_ms_total += duration_ms(upstream_started_at.elapsed());
                     tracing::warn!(
-                        "API 请求发送失败（尝试 {}/{}）: {}",
-                        attempt + 1,
-                        max_retries,
+                        credential_id = ctx.id,
+                        attempted_credentials = ?attempted_credentials,
+                        excluded_credential_ids = ?excluded_credentials,
+                        "API 请求发送失败（尝试账号 {}/{}）: {}",
+                        attempted_credentials.len(),
+                        max_retry_accounts,
                         e
                     );
-                    // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
-                    // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
-                    self.token_manager.report_transient_error(ctx.id);
+                    self.token_manager
+                        .report_transient_error_for(ctx.id, settings.transient_cooldown_ms);
+                    excluded_credentials.insert(ctx.id);
                     last_error = Some(e.into());
-                    if attempt + 1 < max_retries {
-                        sleep(Self::retry_delay(attempt)).await;
+                    if attempted_credentials.len() < max_retry_accounts {
+                        sleep(Self::retry_delay(http_attempts)).await;
                     }
                     continue;
                 }
             };
+            http_attempts += 1;
             upstream_ms_total += duration_ms(upstream_started_at.elapsed());
 
             let status = response.status();
             last_status = Some(status.as_u16());
+            let retry_after_ms = parse_retry_after_ms(response.headers());
 
             // 成功响应：耗时指标延后到响应体消费完成时记录。
             if status.is_success() {
@@ -623,7 +729,7 @@ impl KiroProvider {
                         credential_id: Some(ctx.id),
                         status: Some(status.as_u16()),
                         outcome: UpstreamOutcome::Success,
-                        attempts: attempt + 1,
+                        attempts: http_attempts,
                         queue_ms,
                         acquire_ms: acquire_ms_total,
                         upstream_ms: upstream_ms_total,
@@ -645,13 +751,21 @@ impl KiroProvider {
             let body = response.text().await.unwrap_or_default();
             upstream_ms_total =
                 upstream_ms_total.saturating_add(duration_ms(body_started_at.elapsed()));
+            let upstream_error = UpstreamErrorInfo {
+                reason: extract_upstream_reason(&body),
+                retry_after_ms,
+            };
+            last_retry_after_ms = upstream_error.retry_after_ms.or(last_retry_after_ms);
 
             // 402 Payment Required 且额度用尽：禁用凭据并故障转移
             if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
                 tracing::warn!(
-                    "API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
+                    credential_id = ctx.id,
+                    attempted_credentials = ?attempted_credentials,
+                    excluded_credential_ids = ?excluded_credentials,
+                    "API 请求失败（额度已用尽，禁用凭据并切换，尝试账号 {}/{}）: {} {}",
+                    attempted_credentials.len(),
+                    max_retry_accounts,
                     status,
                     body
                 );
@@ -665,7 +779,7 @@ impl KiroProvider {
                         credential_id: Some(ctx.id),
                         status: Some(status.as_u16()),
                         outcome: UpstreamOutcome::Error,
-                        attempts: attempt + 1,
+                        attempts: http_attempts,
                         queue_ms,
                         acquire_ms: acquire_ms_total,
                         upstream_ms: upstream_ms_total,
@@ -685,6 +799,7 @@ impl KiroProvider {
                     status,
                     body
                 ));
+                excluded_credentials.insert(ctx.id);
                 continue;
             }
 
@@ -697,7 +812,7 @@ impl KiroProvider {
                     credential_id: Some(ctx.id),
                     status: Some(status.as_u16()),
                     outcome: UpstreamOutcome::Error,
-                    attempts: attempt + 1,
+                    attempts: http_attempts,
                     queue_ms,
                     acquire_ms: acquire_ms_total,
                     upstream_ms: upstream_ms_total,
@@ -709,9 +824,13 @@ impl KiroProvider {
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
                 tracing::warn!(
-                    "API 请求失败（可能为凭据错误，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
+                    credential_id = ctx.id,
+                    upstream_reason = upstream_error.reason.as_deref(),
+                    attempted_credentials = ?attempted_credentials,
+                    excluded_credential_ids = ?excluded_credentials,
+                    "API 请求失败（可能为凭据错误，尝试账号 {}/{}）: {} {}",
+                    attempted_credentials.len(),
+                    max_retry_accounts,
                     status,
                     body
                 );
@@ -727,6 +846,7 @@ impl KiroProvider {
                         .is_ok()
                     {
                         tracing::info!("凭据 #{} token 强制刷新成功，重试请求", ctx.id);
+                        attempted_credentials.retain(|id| *id != ctx.id);
                         continue;
                     }
                     tracing::warn!("凭据 #{} token 强制刷新失败，计入失败", ctx.id);
@@ -741,7 +861,7 @@ impl KiroProvider {
                         credential_id: Some(ctx.id),
                         status: Some(status.as_u16()),
                         outcome: UpstreamOutcome::Error,
-                        attempts: attempt + 1,
+                        attempts: http_attempts,
                         queue_ms,
                         acquire_ms: acquire_ms_total,
                         upstream_ms: upstream_ms_total,
@@ -761,21 +881,38 @@ impl KiroProvider {
                     status,
                     body
                 ));
+                excluded_credentials.insert(ctx.id);
                 continue;
             }
 
             // 429/408/5xx - 瞬态上游错误：重试但不禁用或切换凭据
             // （避免 429 high traffic / 502 high load 等瞬态错误把所有凭据锁死）
             if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
-                if status.as_u16() == 429 {
-                    self.token_manager.report_rate_limited(ctx.id);
+                let is_model_capacity = status.as_u16() == 429
+                    && upstream_error.reason.as_deref() == Some("INSUFFICIENT_MODEL_CAPACITY");
+                if is_model_capacity {
+                    model_capacity_failures += 1;
+                    last_retry_after_ms = upstream_error.retry_after_ms.or(last_retry_after_ms);
+                } else if status.as_u16() == 429 {
+                    let cooldown_ms = upstream_error
+                        .retry_after_ms
+                        .unwrap_or(settings.rate_limit_cooldown_ms);
+                    self.token_manager
+                        .report_rate_limited_for(ctx.id, cooldown_ms);
                 } else {
-                    self.token_manager.report_transient_error(ctx.id);
+                    self.token_manager
+                        .report_transient_error_for(ctx.id, settings.transient_cooldown_ms);
                 }
                 tracing::warn!(
-                    "API 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
+                    credential_id = ctx.id,
+                    upstream_reason = upstream_error.reason.as_deref(),
+                    retry_after_ms = upstream_error.retry_after_ms,
+                    cooldown_scope = if is_model_capacity { "model" } else { "account" },
+                    attempted_credentials = ?attempted_credentials,
+                    excluded_credential_ids = ?excluded_credentials,
+                    "API 请求失败（上游瞬态错误，尝试账号 {}/{}）: {} {}",
+                    attempted_credentials.len(),
+                    max_retry_accounts,
                     status,
                     body
                 );
@@ -785,8 +922,9 @@ impl KiroProvider {
                     status,
                     body
                 ));
-                if attempt + 1 < max_retries {
-                    sleep(Self::retry_delay(attempt)).await;
+                excluded_credentials.insert(ctx.id);
+                if attempted_credentials.len() < max_retry_accounts {
+                    sleep(Self::retry_delay(http_attempts)).await;
                 }
                 continue;
             }
@@ -800,7 +938,7 @@ impl KiroProvider {
                     credential_id: Some(ctx.id),
                     status: Some(status.as_u16()),
                     outcome: UpstreamOutcome::Error,
-                    attempts: attempt + 1,
+                    attempts: http_attempts,
                     queue_ms,
                     acquire_ms: acquire_ms_total,
                     upstream_ms: upstream_ms_total,
@@ -811,9 +949,13 @@ impl KiroProvider {
 
             // 兜底：当作可重试的瞬态错误处理（不切换凭据）
             tracing::warn!(
-                "API 请求失败（未知错误，尝试 {}/{}）: {} {}",
-                attempt + 1,
-                max_retries,
+                credential_id = ctx.id,
+                upstream_reason = upstream_error.reason.as_deref(),
+                attempted_credentials = ?attempted_credentials,
+                excluded_credential_ids = ?excluded_credentials,
+                "API 请求失败（未知错误，尝试账号 {}/{}）: {} {}",
+                attempted_credentials.len(),
+                max_retry_accounts,
                 status,
                 body
             );
@@ -823,17 +965,34 @@ impl KiroProvider {
                 status,
                 body
             ));
-            if attempt + 1 < max_retries {
-                sleep(Self::retry_delay(attempt)).await;
+            excluded_credentials.insert(ctx.id);
+            if attempted_credentials.len() < max_retry_accounts {
+                sleep(Self::retry_delay(http_attempts)).await;
             }
+        }
+
+        if model_capacity_failures > 0 && model_capacity_failures == attempted_credentials.len() {
+            let cooldown_ms = last_retry_after_ms.unwrap_or(settings.model_capacity_cooldown_ms);
+            self.model_cooldowns.set_cooldown(
+                &model_for_metrics,
+                cooldown_ms,
+                "INSUFFICIENT_MODEL_CAPACITY",
+            );
+            last_error = Some(provider_rate_limit_error(
+                format!(
+                    "{} API 请求失败：模型 {} 容量不足，请稍后重试",
+                    api_type, model_for_metrics
+                ),
+                Some(cooldown_ms),
+            ));
         }
 
         // 所有重试都失败
         let error = last_error.unwrap_or_else(|| {
             anyhow::anyhow!(
-                "{} API 请求失败：已达到最大重试次数（{}次）",
+                "{} API 请求失败：已达到最大尝试账号数（{}个）",
                 api_type,
-                max_retries
+                max_retry_accounts
             )
         });
         let total_ms = duration_ms(total_started_at.elapsed());
@@ -843,7 +1002,7 @@ impl KiroProvider {
             credential_id: last_credential_id,
             status: last_status,
             outcome: UpstreamOutcome::Error,
-            attempts: max_retries,
+            attempts: http_attempts,
             queue_ms,
             acquire_ms: acquire_ms_total,
             upstream_ms: upstream_ms_total,
@@ -881,5 +1040,41 @@ impl KiroProvider {
         let jitter_max = (backoff / 4).max(1);
         let jitter = fastrand::u64(0..=jitter_max);
         Duration::from_millis(backoff.saturating_add(jitter))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+    #[test]
+    fn retry_after_seconds_header_is_parsed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("7"));
+        assert_eq!(parse_retry_after_ms(&headers), Some(7_000));
+    }
+
+    #[test]
+    fn retry_after_http_date_header_is_parsed() {
+        let retry_at = std::time::SystemTime::now() + std::time::Duration::from_secs(3);
+        let retry_at = httpdate::fmt_http_date(retry_at);
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_str(&retry_at).unwrap());
+
+        let parsed = parse_retry_after_ms(&headers).expect("Retry-After date should parse");
+        assert!(parsed <= 3_000);
+        assert!(parsed > 0);
+    }
+
+    #[test]
+    fn upstream_reason_is_extracted_from_json_body() {
+        assert_eq!(
+            extract_upstream_reason(
+                r#"{"message":"I am experiencing high traffic","reason":"INSUFFICIENT_MODEL_CAPACITY"}"#
+            )
+            .as_deref(),
+            Some("INSUFFICIENT_MODEL_CAPACITY")
+        );
     }
 }

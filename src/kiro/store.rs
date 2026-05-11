@@ -273,6 +273,23 @@ fn runtime_settings_pairs(
             "transientCooldownMs",
             settings.transient_cooldown_ms.to_string(),
         ),
+        ("maxRetryAccounts", settings.max_retry_accounts.to_string()),
+        (
+            "modelCapacityCooldownMs",
+            settings.model_capacity_cooldown_ms.to_string(),
+        ),
+        (
+            "tokenAutoRefreshEnabled",
+            settings.token_auto_refresh_enabled.to_string(),
+        ),
+        (
+            "tokenAutoRefreshIntervalSecs",
+            settings.token_auto_refresh_interval_secs.to_string(),
+        ),
+        (
+            "tokenAutoRefreshWindowSecs",
+            settings.token_auto_refresh_window_secs.to_string(),
+        ),
         ("loadBalancingMode", settings.load_balancing_mode.clone()),
         (
             "virtualCacheUsageEnabled",
@@ -287,6 +304,18 @@ fn runtime_settings_pairs(
             settings.virtual_cache_uncached_input_tokens.to_string(),
         ),
         (
+            "virtualCacheInputMode",
+            settings.virtual_cache_input_mode.clone(),
+        ),
+        (
+            "virtualCacheMinInputTokens",
+            settings.virtual_cache_min_input_tokens.to_string(),
+        ),
+        (
+            "virtualCacheMaxInputTokens",
+            settings.virtual_cache_max_input_tokens.to_string(),
+        ),
+        (
             "virtualCacheWarmupTokens",
             settings.virtual_cache_warmup_tokens.to_string(),
         ),
@@ -297,6 +326,26 @@ fn runtime_settings_pairs(
         (
             "virtualCacheMaxCreationTokens",
             settings.virtual_cache_max_creation_tokens.to_string(),
+        ),
+        (
+            "virtualCacheCreationMode",
+            settings.virtual_cache_creation_mode.clone(),
+        ),
+        (
+            "virtualCacheCreationJitterRatio",
+            settings.virtual_cache_creation_jitter_ratio.to_string(),
+        ),
+        (
+            "virtualCacheBurstEveryTurns",
+            settings.virtual_cache_burst_every_turns.to_string(),
+        ),
+        (
+            "virtualCacheBurstMinTokens",
+            settings.virtual_cache_burst_min_tokens.to_string(),
+        ),
+        (
+            "virtualCacheBurstMaxTokens",
+            settings.virtual_cache_burst_max_tokens.to_string(),
         ),
         (
             "virtualCacheFallbackScope",
@@ -321,6 +370,15 @@ fn apply_runtime_setting(
         "globalRpm" => settings.global_rpm = parse_u32(key, value)?,
         "rateLimitCooldownMs" => settings.rate_limit_cooldown_ms = parse_u64(key, value)?,
         "transientCooldownMs" => settings.transient_cooldown_ms = parse_u64(key, value)?,
+        "maxRetryAccounts" => settings.max_retry_accounts = parse_usize(key, value)?,
+        "modelCapacityCooldownMs" => settings.model_capacity_cooldown_ms = parse_u64(key, value)?,
+        "tokenAutoRefreshEnabled" => settings.token_auto_refresh_enabled = parse_bool(key, value)?,
+        "tokenAutoRefreshIntervalSecs" => {
+            settings.token_auto_refresh_interval_secs = parse_u64(key, value)?
+        }
+        "tokenAutoRefreshWindowSecs" => {
+            settings.token_auto_refresh_window_secs = parse_u64(key, value)?
+        }
         "loadBalancingMode" => settings.load_balancing_mode = value.to_string(),
         "virtualCacheUsageEnabled" => {
             settings.virtual_cache_usage_enabled = parse_bool(key, value)?
@@ -332,12 +390,38 @@ fn apply_runtime_setting(
         "virtualCacheUncachedInputTokens" => {
             settings.virtual_cache_uncached_input_tokens = parse_u32(key, value)?
         }
+        "virtualCacheInputMode" => {
+            settings.virtual_cache_input_mode =
+                crate::kiro::settings::normalize_virtual_cache_input_mode(value)
+        }
+        "virtualCacheMinInputTokens" => {
+            settings.virtual_cache_min_input_tokens = parse_u32(key, value)?
+        }
+        "virtualCacheMaxInputTokens" => {
+            settings.virtual_cache_max_input_tokens = parse_u32(key, value)?
+        }
         "virtualCacheWarmupTokens" => settings.virtual_cache_warmup_tokens = parse_u32(key, value)?,
         "virtualCacheMinCreationTokens" => {
             settings.virtual_cache_min_creation_tokens = parse_u32(key, value)?
         }
         "virtualCacheMaxCreationTokens" => {
             settings.virtual_cache_max_creation_tokens = parse_u32(key, value)?
+        }
+        "virtualCacheCreationMode" => {
+            settings.virtual_cache_creation_mode =
+                crate::kiro::settings::normalize_virtual_cache_creation_mode(value)
+        }
+        "virtualCacheCreationJitterRatio" => {
+            settings.virtual_cache_creation_jitter_ratio = parse_f64(key, value)?
+        }
+        "virtualCacheBurstEveryTurns" => {
+            settings.virtual_cache_burst_every_turns = parse_u32(key, value)?
+        }
+        "virtualCacheBurstMinTokens" => {
+            settings.virtual_cache_burst_min_tokens = parse_u32(key, value)?
+        }
+        "virtualCacheBurstMaxTokens" => {
+            settings.virtual_cache_burst_max_tokens = parse_u32(key, value)?
         }
         "virtualCacheFallbackScope" => {
             settings.virtual_cache_fallback_scope =
@@ -364,6 +448,12 @@ fn parse_u64(key: &str, value: &str) -> anyhow::Result<u64> {
     value
         .parse::<u64>()
         .with_context(|| format!("runtime setting {} 不是有效整数", key))
+}
+
+fn parse_f64(key: &str, value: &str) -> anyhow::Result<f64> {
+    value
+        .parse::<f64>()
+        .with_context(|| format!("runtime setting {} 不是有效数字", key))
 }
 
 fn parse_bool(key: &str, value: &str) -> anyhow::Result<bool> {

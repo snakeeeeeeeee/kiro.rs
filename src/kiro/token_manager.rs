@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{
@@ -599,6 +599,16 @@ pub struct ManagerSnapshot {
     pub rate_limit_cooldown_ms: u64,
     /// 瞬态错误冷却时间
     pub transient_cooldown_ms: u64,
+    /// 单次请求最多尝试账号数
+    pub max_retry_accounts: usize,
+    /// 模型容量不足冷却时间
+    pub model_capacity_cooldown_ms: u64,
+    /// 是否启用后台 Token 自动刷新
+    pub token_auto_refresh_enabled: bool,
+    /// 后台 Token 自动刷新扫描间隔
+    pub token_auto_refresh_interval_secs: u64,
+    /// Token 距离过期多少秒内触发后台刷新
+    pub token_auto_refresh_window_secs: u64,
     /// 负载均衡模式
     pub load_balancing_mode: String,
     /// 当前活跃会话亲和绑定数
@@ -977,18 +987,20 @@ impl MultiTokenManager {
         settings: &RuntimeSettings,
         now: DateTime<Utc>,
         is_opus: bool,
+        excluded_ids: &HashSet<u64>,
     ) -> Option<(u64, KiroCredentials)> {
         let available: Vec<usize> = entries
             .iter()
             .enumerate()
             .filter_map(|(idx, e)| {
-                Self::is_entry_dispatch_available(
-                    e,
-                    now,
-                    Self::entry_effective_max_concurrent(e, settings),
-                    Self::entry_effective_rpm(e, settings),
-                    is_opus,
-                )
+                (!excluded_ids.contains(&e.id)
+                    && Self::is_entry_dispatch_available(
+                        e,
+                        now,
+                        Self::entry_effective_max_concurrent(e, settings),
+                        Self::entry_effective_rpm(e, settings),
+                        is_opus,
+                    ))
                 .then_some(idx)
             })
             .collect();
@@ -1020,7 +1032,11 @@ impl MultiTokenManager {
     ///
     /// # 参数
     /// - `model`: 可选的模型名称，用于过滤支持该模型的凭据（如 opus 模型需要付费订阅）
-    fn select_next_credential(&self, model: Option<&str>) -> Option<(u64, KiroCredentials)> {
+    fn select_next_credential_excluding(
+        &self,
+        model: Option<&str>,
+        excluded_ids: &HashSet<u64>,
+    ) -> Option<(u64, KiroCredentials)> {
         let mut entries = self.entries.lock();
         let now = Utc::now();
         let settings = self.runtime_settings.lock().clone();
@@ -1031,7 +1047,7 @@ impl MultiTokenManager {
             .unwrap_or(false);
 
         Self::cleanup_entries_for_dispatch(&mut entries, now);
-        Self::select_next_credential_locked(&mut entries, &settings, now, is_opus)
+        Self::select_next_credential_locked(&mut entries, &settings, now, is_opus, excluded_ids)
     }
 
     fn normalize_session_key(session_id: Option<&str>) -> Option<String> {
@@ -1080,6 +1096,7 @@ impl MultiTokenManager {
         &self,
         model: Option<&str>,
         session_id: Option<&str>,
+        excluded_ids: &HashSet<u64>,
     ) -> Option<(u64, KiroCredentials)> {
         let session_key = Self::normalize_session_key(session_id)?;
         let now = Utc::now();
@@ -1091,6 +1108,10 @@ impl MultiTokenManager {
             .unwrap_or(false);
 
         if let Some(bound_id) = self.session_affinity_target(&session_key, now) {
+            if excluded_ids.contains(&bound_id) {
+                self.remove_session_affinity(&session_key);
+                return None;
+            }
             let mut entries = self.entries.lock();
             Self::cleanup_entries_for_dispatch(&mut entries, now);
             if let Some(entry) = entries.iter_mut().find(|e| e.id == bound_id) {
@@ -1111,7 +1132,7 @@ impl MultiTokenManager {
 
         let mut entries = self.entries.lock();
         Self::cleanup_entries_for_dispatch(&mut entries, now);
-        Self::select_next_credential_locked(&mut entries, &settings, now, is_opus)
+        Self::select_next_credential_locked(&mut entries, &settings, now, is_opus, excluded_ids)
     }
 
     /// 获取 API 调用上下文
@@ -1137,6 +1158,16 @@ impl MultiTokenManager {
         model: Option<&str>,
         session_id: Option<&str>,
     ) -> anyhow::Result<CallContext> {
+        self.acquire_context_with_session_excluding(model, session_id, &HashSet::new())
+            .await
+    }
+
+    pub async fn acquire_context_with_session_excluding(
+        self: &Arc<Self>,
+        model: Option<&str>,
+        session_id: Option<&str>,
+        excluded_ids: &HashSet<u64>,
+    ) -> anyhow::Result<CallContext> {
         let total = self.total_count();
         let max_attempts = (total * MAX_FAILURES_PER_CREDENTIAL as usize).max(1);
         let mut attempt_count = 0;
@@ -1153,7 +1184,8 @@ impl MultiTokenManager {
             let (id, credentials) = {
                 let settings = self.runtime_settings.lock().clone();
                 let is_balanced = settings.load_balancing_mode == "balanced";
-                let affine_hit = self.select_session_affine_credential(model, session_id);
+                let affine_hit =
+                    self.select_session_affine_credential(model, session_id, excluded_ids);
 
                 // balanced 模式：每次请求都重新均衡选择，不固定 current_id
                 // priority 模式：优先使用 current_id 指向的凭据
@@ -1170,6 +1202,7 @@ impl MultiTokenManager {
                         .iter_mut()
                         .find(|e| {
                             e.id == current_id
+                                && !excluded_ids.contains(&e.id)
                                 && Self::is_entry_dispatch_available(
                                     e,
                                     now,
@@ -1189,7 +1222,7 @@ impl MultiTokenManager {
                     hit
                 } else {
                     // 当前凭据不可用或 balanced 模式，根据负载均衡策略选择
-                    let mut best = self.select_next_credential(model);
+                    let mut best = self.select_next_credential_excluding(model, excluded_ids);
 
                     // 没有可用凭据：如果是"自动禁用导致全灭"，做一次类似重启的自愈
                     if best.is_none() {
@@ -1208,7 +1241,7 @@ impl MultiTokenManager {
                                 }
                             }
                             drop(entries);
-                            best = self.select_next_credential(model);
+                            best = self.select_next_credential_excluding(model, excluded_ids);
                         }
                     }
 
@@ -1437,9 +1470,71 @@ impl MultiTokenManager {
         self.set_cooldown(id, cooldown_ms, "rate limit");
     }
 
+    pub fn report_rate_limited_for(&self, id: u64, cooldown_ms: u64) {
+        self.set_cooldown(id, cooldown_ms, "rate limit");
+    }
+
     pub fn report_transient_error(&self, id: u64) {
         let cooldown_ms = self.runtime_settings.lock().transient_cooldown_ms;
         self.set_cooldown(id, cooldown_ms, "transient error");
+    }
+
+    pub fn report_transient_error_for(&self, id: u64, cooldown_ms: u64) {
+        self.set_cooldown(id, cooldown_ms, "transient error");
+    }
+
+    fn refresh_candidate_ids(&self, window_secs: u64) -> Vec<u64> {
+        let now = Utc::now();
+        let refresh_before = now + Duration::seconds(window_secs as i64);
+        let entries = self.entries.lock();
+        entries
+            .iter()
+            .filter(|entry| !entry.disabled && !entry.credentials.is_api_key_credential())
+            .filter_map(|entry| {
+                let expires_at = entry
+                    .credentials
+                    .expires_at
+                    .as_ref()
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.with_timezone(&Utc))?;
+                (expires_at <= refresh_before).then_some(entry.id)
+            })
+            .collect()
+    }
+
+    pub async fn refresh_expiring_tokens(&self) -> (usize, usize) {
+        let settings = self.runtime_settings();
+        if !settings.token_auto_refresh_enabled {
+            return (0, 0);
+        }
+
+        let ids = self.refresh_candidate_ids(settings.token_auto_refresh_window_secs);
+        if ids.is_empty() {
+            return (0, 0);
+        }
+
+        tracing::info!(
+            candidate_count = ids.len(),
+            window_secs = settings.token_auto_refresh_window_secs,
+            "后台 Token 自动刷新扫描到即将过期凭据"
+        );
+
+        let mut success = 0usize;
+        let mut failed = 0usize;
+        for id in ids {
+            match self.force_refresh_token_for(id).await {
+                Ok(_) => success += 1,
+                Err(err) => {
+                    failed += 1;
+                    tracing::warn!(credential_id = id, error = %err, "后台 Token 自动刷新失败");
+                }
+            }
+        }
+
+        if success > 0 || failed > 0 {
+            tracing::info!(success, failed, "后台 Token 自动刷新完成");
+        }
+        (success, failed)
     }
 
     fn set_cooldown(&self, id: u64, cooldown_ms: u64, reason: &str) {
@@ -2056,6 +2151,11 @@ impl MultiTokenManager {
             queue_timeout_ms: settings.queue_timeout_ms,
             rate_limit_cooldown_ms: settings.rate_limit_cooldown_ms,
             transient_cooldown_ms: settings.transient_cooldown_ms,
+            max_retry_accounts: settings.max_retry_accounts,
+            model_capacity_cooldown_ms: settings.model_capacity_cooldown_ms,
+            token_auto_refresh_enabled: settings.token_auto_refresh_enabled,
+            token_auto_refresh_interval_secs: settings.token_auto_refresh_interval_secs,
+            token_auto_refresh_window_secs: settings.token_auto_refresh_window_secs,
             load_balancing_mode: settings.load_balancing_mode,
             session_affinity_bindings,
         }
@@ -2678,6 +2778,30 @@ mod tests {
     }
 
     #[test]
+    fn test_refresh_candidate_ids_only_include_near_expiring_refreshable_credentials() {
+        let config = Config::default();
+
+        let mut near = KiroCredentials::default();
+        near.access_token = Some("near".to_string());
+        near.refresh_token = Some("r".repeat(150));
+        near.expires_at = Some((Utc::now() + Duration::minutes(20)).to_rfc3339());
+
+        let mut far = KiroCredentials::default();
+        far.access_token = Some("far".to_string());
+        far.refresh_token = Some("s".repeat(150));
+        far.expires_at = Some((Utc::now() + Duration::hours(2)).to_rfc3339());
+
+        let mut api_key = KiroCredentials::default();
+        api_key.auth_method = Some("api_key".to_string());
+        api_key.kiro_api_key = Some("ksk_test_key".to_string());
+
+        let manager =
+            MultiTokenManager::new(config, vec![near, far, api_key], None, None, false).unwrap();
+
+        assert_eq!(manager.refresh_candidate_ids(1_800), vec![1]);
+    }
+
+    #[test]
     fn test_validate_refresh_token_missing() {
         let credentials = KiroCredentials::default();
         let result = validate_refresh_token(&credentials);
@@ -3151,6 +3275,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(next.id, rebound_id);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_context_skips_excluded_session_affinity_target() {
+        let mut config = Config::default();
+        config.load_balancing_mode = "balanced".to_string();
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("token-1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("token-2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = Arc::new(
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap(),
+        );
+
+        let first = manager
+            .acquire_context_with_session(None, Some("session-excluded"))
+            .await
+            .unwrap();
+        let excluded_id = first.id;
+        drop(first);
+
+        let mut excluded = HashSet::new();
+        excluded.insert(excluded_id);
+        let second = manager
+            .acquire_context_with_session_excluding(None, Some("session-excluded"), &excluded)
+            .await
+            .unwrap();
+
+        assert_ne!(second.id, excluded_id);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_context_returns_when_all_credentials_excluded() {
+        let config = Config::default();
+
+        let mut cred = KiroCredentials::default();
+        cred.access_token = Some("token-1".to_string());
+        cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager =
+            Arc::new(MultiTokenManager::new(config, vec![cred], None, None, false).unwrap());
+
+        let mut excluded = HashSet::new();
+        excluded.insert(1);
+
+        let err = manager
+            .acquire_context_with_session_excluding(None, None, &excluded)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+
+        assert!(
+            err.contains("没有可调度凭据"),
+            "错误应提示没有可调度凭据，实际: {}",
+            err
+        );
     }
 
     #[test]

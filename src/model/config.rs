@@ -123,6 +123,26 @@ pub struct Config {
     #[serde(default = "default_transient_cooldown_ms")]
     pub transient_cooldown_ms: u64,
 
+    /// 单次请求最多尝试的不同账号数
+    #[serde(default = "default_max_retry_accounts")]
+    pub max_retry_accounts: usize,
+
+    /// 模型容量不足后的模型级冷却时间（毫秒）
+    #[serde(default = "default_model_capacity_cooldown_ms")]
+    pub model_capacity_cooldown_ms: u64,
+
+    /// 是否启用后台 Token 自动刷新
+    #[serde(default = "default_token_auto_refresh_enabled")]
+    pub token_auto_refresh_enabled: bool,
+
+    /// 后台 Token 自动刷新扫描间隔（秒）
+    #[serde(default = "default_token_auto_refresh_interval_secs")]
+    pub token_auto_refresh_interval_secs: u64,
+
+    /// Token 距离过期多少秒内触发后台刷新
+    #[serde(default = "default_token_auto_refresh_window_secs")]
+    pub token_auto_refresh_window_secs: u64,
+
     /// 是否启用虚拟缓存 usage 字段（用于下游网关计费展示）
     #[serde(default = "default_virtual_cache_usage_enabled")]
     pub virtual_cache_usage_enabled: bool,
@@ -135,6 +155,18 @@ pub struct Config {
     #[serde(default = "default_virtual_cache_uncached_input_tokens")]
     pub virtual_cache_uncached_input_tokens: u32,
 
+    /// 虚拟普通输入计算模式："fixed" 或 "estimated_user_delta"
+    #[serde(default = "default_virtual_cache_input_mode")]
+    pub virtual_cache_input_mode: String,
+
+    /// 动态普通输入最小 tokens
+    #[serde(default = "default_virtual_cache_min_input_tokens")]
+    pub virtual_cache_min_input_tokens: u32,
+
+    /// 动态普通输入最大 tokens
+    #[serde(default = "default_virtual_cache_max_input_tokens")]
+    pub virtual_cache_max_input_tokens: u32,
+
     /// 首轮虚拟缓存创建下限
     #[serde(default = "default_virtual_cache_warmup_tokens")]
     pub virtual_cache_warmup_tokens: u32,
@@ -146,6 +178,26 @@ pub struct Config {
     /// 后续轮次虚拟缓存创建上限
     #[serde(default = "default_virtual_cache_max_creation_tokens")]
     pub virtual_cache_max_creation_tokens: u32,
+
+    /// 虚拟缓存创建计算模式："fixed" 或 "dynamic"
+    #[serde(default = "default_virtual_cache_creation_mode")]
+    pub virtual_cache_creation_mode: String,
+
+    /// 动态缓存创建抖动比例，0.25 表示 +/-25%
+    #[serde(default = "default_virtual_cache_creation_jitter_ratio")]
+    pub virtual_cache_creation_jitter_ratio: f64,
+
+    /// 每多少轮追加一次较大的动态缓存创建，0 表示关闭
+    #[serde(default = "default_virtual_cache_burst_every_turns")]
+    pub virtual_cache_burst_every_turns: u32,
+
+    /// 动态突增缓存创建最小 tokens
+    #[serde(default = "default_virtual_cache_burst_min_tokens")]
+    pub virtual_cache_burst_min_tokens: u32,
+
+    /// 动态突增缓存创建最大 tokens
+    #[serde(default = "default_virtual_cache_burst_max_tokens")]
+    pub virtual_cache_burst_max_tokens: u32,
 
     /// 无 metadata 时的 fallback 范围："model" 或 "none"
     #[serde(default = "default_virtual_cache_fallback_scope")]
@@ -239,6 +291,26 @@ fn default_transient_cooldown_ms() -> u64 {
     10_000
 }
 
+fn default_max_retry_accounts() -> usize {
+    3
+}
+
+fn default_model_capacity_cooldown_ms() -> u64 {
+    10_000
+}
+
+fn default_token_auto_refresh_enabled() -> bool {
+    true
+}
+
+fn default_token_auto_refresh_interval_secs() -> u64 {
+    300
+}
+
+fn default_token_auto_refresh_window_secs() -> u64 {
+    1_800
+}
+
 fn default_virtual_cache_usage_enabled() -> bool {
     true
 }
@@ -251,6 +323,18 @@ fn default_virtual_cache_uncached_input_tokens() -> u32 {
     1
 }
 
+fn default_virtual_cache_input_mode() -> String {
+    "fixed".to_string()
+}
+
+fn default_virtual_cache_min_input_tokens() -> u32 {
+    8
+}
+
+fn default_virtual_cache_max_input_tokens() -> u32 {
+    96
+}
+
 fn default_virtual_cache_warmup_tokens() -> u32 {
     18_000
 }
@@ -261,6 +345,26 @@ fn default_virtual_cache_min_creation_tokens() -> u32 {
 
 fn default_virtual_cache_max_creation_tokens() -> u32 {
     1_200
+}
+
+fn default_virtual_cache_creation_mode() -> String {
+    "fixed".to_string()
+}
+
+fn default_virtual_cache_creation_jitter_ratio() -> f64 {
+    0.25
+}
+
+fn default_virtual_cache_burst_every_turns() -> u32 {
+    7
+}
+
+fn default_virtual_cache_burst_min_tokens() -> u32 {
+    1_500
+}
+
+fn default_virtual_cache_burst_max_tokens() -> u32 {
+    3_000
 }
 
 fn default_virtual_cache_fallback_scope() -> String {
@@ -309,12 +413,25 @@ impl Default for Config {
             global_rpm: 0,
             rate_limit_cooldown_ms: default_rate_limit_cooldown_ms(),
             transient_cooldown_ms: default_transient_cooldown_ms(),
+            max_retry_accounts: default_max_retry_accounts(),
+            model_capacity_cooldown_ms: default_model_capacity_cooldown_ms(),
+            token_auto_refresh_enabled: default_token_auto_refresh_enabled(),
+            token_auto_refresh_interval_secs: default_token_auto_refresh_interval_secs(),
+            token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),
             virtual_cache_usage_enabled: default_virtual_cache_usage_enabled(),
             virtual_cache_default_ttl: default_virtual_cache_default_ttl(),
             virtual_cache_uncached_input_tokens: default_virtual_cache_uncached_input_tokens(),
+            virtual_cache_input_mode: default_virtual_cache_input_mode(),
+            virtual_cache_min_input_tokens: default_virtual_cache_min_input_tokens(),
+            virtual_cache_max_input_tokens: default_virtual_cache_max_input_tokens(),
             virtual_cache_warmup_tokens: default_virtual_cache_warmup_tokens(),
             virtual_cache_min_creation_tokens: default_virtual_cache_min_creation_tokens(),
             virtual_cache_max_creation_tokens: default_virtual_cache_max_creation_tokens(),
+            virtual_cache_creation_mode: default_virtual_cache_creation_mode(),
+            virtual_cache_creation_jitter_ratio: default_virtual_cache_creation_jitter_ratio(),
+            virtual_cache_burst_every_turns: default_virtual_cache_burst_every_turns(),
+            virtual_cache_burst_min_tokens: default_virtual_cache_burst_min_tokens(),
+            virtual_cache_burst_max_tokens: default_virtual_cache_burst_max_tokens(),
             virtual_cache_fallback_scope: default_virtual_cache_fallback_scope(),
             shutdown_drain_timeout_secs: default_shutdown_drain_timeout_secs(),
             extract_thinking: default_extract_thinking(),

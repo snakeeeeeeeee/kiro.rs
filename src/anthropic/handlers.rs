@@ -5,6 +5,7 @@ use std::{convert::Infallible, sync::Arc};
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
+use crate::kiro::provider::ProviderRateLimitError;
 use crate::runtime::GlobalRequestPermit;
 use crate::token;
 use anyhow::Error;
@@ -30,8 +31,8 @@ use super::types::{
     OutputConfig, Thinking,
 };
 use super::usage::{
-    AnthropicUsage, CacheTtl, VirtualCacheUsageManager, VirtualUsageInput, request_cache_ttl,
-    session_key_for_request,
+    AnthropicUsage, CacheTtl, VirtualCacheUsageManager, VirtualUsageInput,
+    estimate_latest_user_input_tokens, request_cache_ttl, session_key_for_request,
 };
 use super::websearch;
 
@@ -107,6 +108,24 @@ fn map_provider_error(err: Error) -> Response {
             )),
         )
             .into_response();
+    }
+
+    if let Some(rate_limit) = err.downcast_ref::<ProviderRateLimitError>() {
+        tracing::warn!(error = %err, retry_after_secs = rate_limit.retry_after_secs, "上游请求被限流");
+        let mut response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse::new(
+                "rate_limit_error",
+                rate_limit.message.clone(),
+            )),
+        )
+            .into_response();
+        if let Some(seconds) = rate_limit.retry_after_secs {
+            if let Ok(value) = seconds.to_string().parse() {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+        }
+        return response;
     }
 
     if err_str.contains("所有凭据均已禁用") || err_str.contains("所有凭据已用尽") {
@@ -294,6 +313,7 @@ pub async fn post_messages(
         &usage_settings.virtual_cache_fallback_scope,
     );
     let request_ttl = request_cache_ttl(&payload, CacheTtl::from_runtime_default(&usage_settings));
+    let estimated_uncached_input_tokens = estimate_latest_user_input_tokens(&payload);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
@@ -397,6 +417,7 @@ pub async fn post_messages(
             &request_body,
             &payload.model,
             input_tokens,
+            estimated_uncached_input_tokens,
             thinking_enabled,
             tool_name_map,
             Some(session_affinity_key.as_str()),
@@ -414,6 +435,7 @@ pub async fn post_messages(
             &request_body,
             &payload.model,
             input_tokens,
+            estimated_uncached_input_tokens,
             extract_thinking,
             tool_name_map,
             Some(session_affinity_key.as_str()),
@@ -432,6 +454,7 @@ async fn handle_stream_request(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    estimated_uncached_input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
@@ -459,6 +482,7 @@ async fn handle_stream_request(
             model: model.to_string(),
             session_key: usage_session_key,
             observed_total_input_tokens: input_tokens,
+            estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
             output_tokens: 1,
             creation_ttl: request_ttl,
         },
@@ -605,6 +629,7 @@ fn build_virtual_usage(
     model: &str,
     session_key: String,
     observed_total_input_tokens: i32,
+    estimated_uncached_input_tokens: i32,
     output_tokens: i32,
     creation_ttl: CacheTtl,
 ) -> AnthropicUsage {
@@ -615,6 +640,7 @@ fn build_virtual_usage(
             model: model.to_string(),
             session_key,
             observed_total_input_tokens,
+            estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
             output_tokens,
             creation_ttl,
         },
@@ -627,6 +653,7 @@ async fn handle_non_stream_request(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    estimated_uncached_input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
@@ -804,6 +831,7 @@ async fn handle_non_stream_request(
         model,
         usage_session_key,
         final_input_tokens,
+        estimated_uncached_input_tokens,
         output_tokens,
         request_ttl,
     );
@@ -930,6 +958,7 @@ pub async fn post_messages_cc(
         &usage_settings.virtual_cache_fallback_scope,
     );
     let request_ttl = request_cache_ttl(&payload, CacheTtl::from_runtime_default(&usage_settings));
+    let estimated_uncached_input_tokens = estimate_latest_user_input_tokens(&payload);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
@@ -1033,6 +1062,7 @@ pub async fn post_messages_cc(
             &request_body,
             &payload.model,
             input_tokens,
+            estimated_uncached_input_tokens,
             thinking_enabled,
             tool_name_map,
             Some(session_affinity_key.as_str()),
@@ -1050,6 +1080,7 @@ pub async fn post_messages_cc(
             &request_body,
             &payload.model,
             input_tokens,
+            estimated_uncached_input_tokens,
             extract_thinking,
             tool_name_map,
             Some(session_affinity_key.as_str()),
@@ -1071,6 +1102,7 @@ async fn handle_stream_request_buffered(
     request_body: &str,
     model: &str,
     estimated_input_tokens: i32,
+    estimated_uncached_input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
@@ -1108,6 +1140,7 @@ async fn handle_stream_request_buffered(
                     model: model.clone(),
                     session_key: usage_session_key,
                     observed_total_input_tokens: final_input_tokens,
+                    estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
                     output_tokens,
                     creation_ttl: request_ttl,
                 },

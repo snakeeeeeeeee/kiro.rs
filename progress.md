@@ -61,3 +61,59 @@
 - `pnpm --dir admin-ui build`: passed.
 - `docker compose -f docker-compose-dev.yml up -d --build`: passed.
 - `docker compose -f docker-compose-dev.yml ps`: `kiro-rs-dev` is healthy.
+
+## In Progress: Medium Rate-Limit Dispatch
+- Added runtime settings for `maxRetryAccounts` and `modelCapacityCooldownMs`.
+- Added in-memory model cooldown manager with Admin runtime snapshot support.
+- Added upstream error classification for HTTP status, JSON `reason`, and `Retry-After` seconds/date parsing.
+- Changed `/v1/messages` and `/cc/v1/messages` provider flow to maintain a request-local excluded credential set and try up to the configured number of different accounts.
+- `INSUFFICIENT_MODEL_CAPACITY` no longer sets account cooldown; if all attempted accounts hit model capacity for the same model, the model enters short cooldown.
+- Other 429 responses still apply account cooldown, using `Retry-After` when present.
+- 408/5xx/network failures apply transient account cooldown and can fail over to another account.
+- Fixed a retry-loop edge case where no dispatchable replacement account could cause repeated acquire attempts.
+- Added tests for excluded session-affinity dispatch, all-excluded acquire failure, `Retry-After` seconds/date parsing, upstream reason extraction, and model cooldown expiry.
+
+## Latest Validation: Medium Rate-Limit Dispatch
+- `cargo fmt -- --check`: passed after formatting.
+- `cargo check`: passed.
+- `cargo test`: passed, 226 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `docker compose -f docker-compose-dev.yml up -d --build`: passed; `kiro-rs-dev` healthy.
+- `GET /healthz`: 200.
+- `GET /api/admin/settings/runtime`: returns `maxRetryAccounts: 3`, `modelCapacityCooldownMs: 10000`.
+- `GET /api/admin/runtime`: returns `modelCooldowns` and the new runtime fields.
+- Local dev DB `rateLimitCooldownMs` was restored from temporary diagnostic `0` to `60000`.
+
+## Completed: Token Auto Refresh Scheduler
+- Added runtime settings:
+  - `tokenAutoRefreshEnabled` default `true`
+  - `tokenAutoRefreshIntervalSecs` default `300`
+  - `tokenAutoRefreshWindowSecs` default `1800`
+- Persisted the new settings in SQLite and exposed them through Admin runtime settings/status.
+- Added a background Tokio task that reads the latest runtime settings each loop, scans refreshable Social/IdC credentials, and force-refreshes tokens expiring inside the configured window.
+- API Key credentials are skipped by the scheduler.
+- Admin runtime settings dialog now exposes the auto-refresh switch and timing fields.
+
+## Latest Validation: Token Auto Refresh Scheduler
+- `cargo check`: passed.
+- `cargo test`: passed, 227 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `docker compose -f docker-compose-dev.yml up -d --build`: passed; `kiro-rs-dev` healthy.
+- `GET /healthz`: 200.
+- `GET /api/admin/settings/runtime`: returns `tokenAutoRefreshEnabled: true`, `tokenAutoRefreshIntervalSecs: 300`, `tokenAutoRefreshWindowSecs: 1800`.
+- `GET /api/admin/runtime`: returns the same auto-refresh runtime fields.
+
+## Completed: Dynamic Virtual Cache Usage
+- Added runtime settings for fixed vs estimated latest-user input tokens and fixed vs dynamic cache creation tokens.
+- Added SQLite persistence keys and Admin runtime settings controls for the new virtual usage modes.
+- Implemented deterministic dynamic cache creation using context delta, output size, jitter, and optional burst writes.
+- Threaded latest user input token estimates into non-stream, normal stream, and buffered `/cc/v1/messages` usage builders.
+
+## Latest Validation: Dynamic Virtual Cache Usage
+- `cargo check`: passed.
+- `cargo test`: passed, 230 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `docker compose -f docker-compose-dev.yml up -d --build`: passed; `kiro-rs-dev` healthy.
+- `GET /healthz`: 200.
+- `GET /api/admin/settings/runtime`: returns the new virtual cache dynamic mode fields.
+- `PUT /api/admin/settings/runtime`: hot update to `estimated_user_delta` + `dynamic` succeeded, then local settings were restored to the previous fixed mode.

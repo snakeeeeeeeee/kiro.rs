@@ -15,6 +15,7 @@ use std::sync::Arc;
 use clap::Parser;
 use kiro::endpoint::{IdeEndpoint, KiroEndpoint};
 use kiro::model::credentials::{CredentialsConfig, KiroCredentials};
+use kiro::model_cooldown::ModelCooldownManager;
 use kiro::provider::KiroProvider;
 use kiro::settings::RuntimeSettings;
 use kiro::store::KiroStore;
@@ -201,13 +202,16 @@ async fn main() {
     let token_manager = Arc::new(token_manager);
     let runtime_limiter = Arc::new(RuntimeLimiter::new(&config));
     let metrics = Arc::new(MetricsRecorder::new());
+    let model_cooldowns = Arc::new(ModelCooldownManager::new());
     let kiro_provider = KiroProvider::with_proxy(
         token_manager.clone(),
         metrics.clone(),
+        model_cooldowns.clone(),
         proxy_config.clone(),
         endpoints,
         config.default_endpoint.clone(),
     );
+    spawn_token_auto_refresh(token_manager.clone());
 
     // 初始化 count_tokens 配置
     token::init_config(token::CountTokensConfig {
@@ -243,6 +247,7 @@ async fn main() {
                 token_manager.clone(),
                 runtime_limiter.clone(),
                 metrics.clone(),
+                model_cooldowns.clone(),
                 endpoint_names.clone(),
             );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
@@ -289,6 +294,19 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal(token_manager.clone(), drain_timeout_secs))
         .await
         .unwrap();
+}
+
+fn spawn_token_auto_refresh(token_manager: Arc<MultiTokenManager>) {
+    tokio::spawn(async move {
+        loop {
+            let settings = token_manager.runtime_settings();
+            let interval_secs = settings.token_auto_refresh_interval_secs.max(30);
+            if settings.token_auto_refresh_enabled {
+                token_manager.refresh_expiring_tokens().await;
+            }
+            tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        }
+    });
 }
 
 async fn shutdown_signal(token_manager: Arc<MultiTokenManager>, drain_timeout_secs: u64) {

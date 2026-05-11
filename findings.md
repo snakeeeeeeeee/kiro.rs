@@ -31,3 +31,23 @@
 - The in-memory ledger key includes credential id, model, and session key. This prevents cross-account/model/session leakage while still letting repeated no-metadata tests use the configured fallback model bucket.
 - Normal `/v1/messages` streaming can only use estimated input tokens in `message_start`; `/cc/v1/messages` buffered streaming can revise `message_start.usage` after the upstream `contextUsageEvent`.
 - Streaming usage now previews before `message_start` and commits only on normal stream completion, so upstream stream errors do not inflate later `cache_read_input_tokens`.
+
+## Medium Rate-Limit Dispatch Findings
+- Recent live logs showed Opus 4.7 returning `429` with `reason=INSUFFICIENT_MODEL_CAPACITY`, while Sonnet/Opus 4.6 worked immediately on the same account. That points to model-capacity pressure, not account-wide throttling.
+- Account cooldown is still appropriate for ordinary 429 responses, but model-capacity 429 should not remove the account from other models.
+- Request-local failover needs an excluded credential set so the same failed account is not retried again within one request.
+- Session affinity must be ignored when the bound credential is in the request-local excluded set, otherwise failover can stick to the account that just failed.
+- If every candidate account hits `INSUFFICIENT_MODEL_CAPACITY`, a short model-level cooldown avoids hammering that same model while leaving other models available.
+- Provider retry loops must break when no non-excluded replacement account is dispatchable; otherwise a single-account pool can spin after the only account is excluded.
+
+## Token Auto Refresh Findings
+- Existing request path already refreshes tokens lazily when they are expired or close to expiry, but that can add latency to the first request that lands on a stale credential.
+- A background scheduler is useful for production because it moves refresh latency outside user requests while keeping the request-time refresh fallback.
+- The scheduler should skip API Key credentials because they do not use refreshToken.
+- Reading runtime settings inside every scheduler loop lets Admin changes take effect without restart.
+
+## Dynamic Virtual Usage Findings
+- The previous virtual cache mode intentionally reported `input_tokens` from `virtualCacheUncachedInputTokens`, so cctest-like repeated calls often showed `input_tokens: 1`.
+- Later-turn cache creation often stayed at `virtualCacheMinCreationTokens` because the observed context delta can be small, so the configured floor dominated.
+- A safer natural mode is configurable rather than forced: estimate ordinary input from the latest user message, then clamp it; vary cache creation from context delta, output size, deterministic jitter, and optional burst turns.
+- The deterministic jitter uses stable hashing instead of random state so tests remain reproducible and the in-memory ledger remains simple.

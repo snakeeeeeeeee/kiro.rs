@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::config::Config;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettings {
     pub global_max_concurrent: usize,
@@ -13,13 +13,26 @@ pub struct RuntimeSettings {
     pub global_rpm: u32,
     pub rate_limit_cooldown_ms: u64,
     pub transient_cooldown_ms: u64,
+    pub max_retry_accounts: usize,
+    pub model_capacity_cooldown_ms: u64,
+    pub token_auto_refresh_enabled: bool,
+    pub token_auto_refresh_interval_secs: u64,
+    pub token_auto_refresh_window_secs: u64,
     pub load_balancing_mode: String,
     pub virtual_cache_usage_enabled: bool,
     pub virtual_cache_default_ttl: String,
     pub virtual_cache_uncached_input_tokens: u32,
+    pub virtual_cache_input_mode: String,
+    pub virtual_cache_min_input_tokens: u32,
+    pub virtual_cache_max_input_tokens: u32,
     pub virtual_cache_warmup_tokens: u32,
     pub virtual_cache_min_creation_tokens: u32,
     pub virtual_cache_max_creation_tokens: u32,
+    pub virtual_cache_creation_mode: String,
+    pub virtual_cache_creation_jitter_ratio: f64,
+    pub virtual_cache_burst_every_turns: u32,
+    pub virtual_cache_burst_min_tokens: u32,
+    pub virtual_cache_burst_max_tokens: u32,
     pub virtual_cache_fallback_scope: String,
 }
 
@@ -41,15 +54,32 @@ impl RuntimeSettings {
             global_rpm: config.global_rpm,
             rate_limit_cooldown_ms: config.rate_limit_cooldown_ms,
             transient_cooldown_ms: config.transient_cooldown_ms,
+            max_retry_accounts: config.max_retry_accounts.max(1),
+            model_capacity_cooldown_ms: config.model_capacity_cooldown_ms,
+            token_auto_refresh_enabled: config.token_auto_refresh_enabled,
+            token_auto_refresh_interval_secs: config.token_auto_refresh_interval_secs,
+            token_auto_refresh_window_secs: config.token_auto_refresh_window_secs,
             load_balancing_mode: normalize_load_balancing_mode(&config.load_balancing_mode),
             virtual_cache_usage_enabled: config.virtual_cache_usage_enabled,
             virtual_cache_default_ttl: normalize_virtual_cache_ttl(
                 &config.virtual_cache_default_ttl,
             ),
             virtual_cache_uncached_input_tokens: config.virtual_cache_uncached_input_tokens.max(1),
+            virtual_cache_input_mode: normalize_virtual_cache_input_mode(
+                &config.virtual_cache_input_mode,
+            ),
+            virtual_cache_min_input_tokens: config.virtual_cache_min_input_tokens,
+            virtual_cache_max_input_tokens: config.virtual_cache_max_input_tokens,
             virtual_cache_warmup_tokens: config.virtual_cache_warmup_tokens,
             virtual_cache_min_creation_tokens: config.virtual_cache_min_creation_tokens,
             virtual_cache_max_creation_tokens: config.virtual_cache_max_creation_tokens,
+            virtual_cache_creation_mode: normalize_virtual_cache_creation_mode(
+                &config.virtual_cache_creation_mode,
+            ),
+            virtual_cache_creation_jitter_ratio: config.virtual_cache_creation_jitter_ratio,
+            virtual_cache_burst_every_turns: config.virtual_cache_burst_every_turns,
+            virtual_cache_burst_min_tokens: config.virtual_cache_burst_min_tokens,
+            virtual_cache_burst_max_tokens: config.virtual_cache_burst_max_tokens,
             virtual_cache_fallback_scope: normalize_virtual_cache_fallback_scope(
                 &config.virtual_cache_fallback_scope,
             ),
@@ -73,6 +103,14 @@ impl RuntimeSettings {
         validate_rpm("globalRpm", self.global_rpm)?;
         validate_cooldown("rateLimitCooldownMs", self.rate_limit_cooldown_ms)?;
         validate_cooldown("transientCooldownMs", self.transient_cooldown_ms)?;
+        validate_max_concurrent("maxRetryAccounts", self.max_retry_accounts, 128)?;
+        validate_cooldown("modelCapacityCooldownMs", self.model_capacity_cooldown_ms)?;
+        if !(30..=86_400).contains(&self.token_auto_refresh_interval_secs) {
+            anyhow::bail!("tokenAutoRefreshIntervalSecs 必须在 30..86400 范围内");
+        }
+        if !(60..=86_400).contains(&self.token_auto_refresh_window_secs) {
+            anyhow::bail!("tokenAutoRefreshWindowSecs 必须在 60..86400 范围内");
+        }
         if self.load_balancing_mode != "priority" && self.load_balancing_mode != "balanced" {
             anyhow::bail!("loadBalancingMode 必须是 'priority' 或 'balanced'");
         }
@@ -83,6 +121,25 @@ impl RuntimeSettings {
             || self.virtual_cache_uncached_input_tokens > 10_000
         {
             anyhow::bail!("virtualCacheUncachedInputTokens 必须在 1..10000 范围内");
+        }
+        if self.virtual_cache_input_mode != "fixed"
+            && self.virtual_cache_input_mode != "estimated_user_delta"
+        {
+            anyhow::bail!("virtualCacheInputMode 必须是 'fixed' 或 'estimated_user_delta'");
+        }
+        validate_virtual_cache_tokens(
+            "virtualCacheMinInputTokens",
+            self.virtual_cache_min_input_tokens,
+        )?;
+        validate_virtual_cache_tokens(
+            "virtualCacheMaxInputTokens",
+            self.virtual_cache_max_input_tokens,
+        )?;
+        if self.virtual_cache_min_input_tokens == 0 {
+            anyhow::bail!("virtualCacheMinInputTokens 必须大于 0");
+        }
+        if self.virtual_cache_min_input_tokens > self.virtual_cache_max_input_tokens {
+            anyhow::bail!("virtualCacheMinInputTokens 不能大于 virtualCacheMaxInputTokens");
         }
         validate_virtual_cache_tokens(
             "virtualCacheWarmupTokens",
@@ -98,6 +155,25 @@ impl RuntimeSettings {
         )?;
         if self.virtual_cache_min_creation_tokens > self.virtual_cache_max_creation_tokens {
             anyhow::bail!("virtualCacheMinCreationTokens 不能大于 virtualCacheMaxCreationTokens");
+        }
+        if self.virtual_cache_creation_mode != "fixed"
+            && self.virtual_cache_creation_mode != "dynamic"
+        {
+            anyhow::bail!("virtualCacheCreationMode 必须是 'fixed' 或 'dynamic'");
+        }
+        if !(0.0..=1.0).contains(&self.virtual_cache_creation_jitter_ratio) {
+            anyhow::bail!("virtualCacheCreationJitterRatio 必须在 0..1 范围内");
+        }
+        validate_virtual_cache_tokens(
+            "virtualCacheBurstMinTokens",
+            self.virtual_cache_burst_min_tokens,
+        )?;
+        validate_virtual_cache_tokens(
+            "virtualCacheBurstMaxTokens",
+            self.virtual_cache_burst_max_tokens,
+        )?;
+        if self.virtual_cache_burst_min_tokens > self.virtual_cache_burst_max_tokens {
+            anyhow::bail!("virtualCacheBurstMinTokens 不能大于 virtualCacheBurstMaxTokens");
         }
         if self.virtual_cache_fallback_scope != "model"
             && self.virtual_cache_fallback_scope != "none"
@@ -155,6 +231,22 @@ pub fn normalize_virtual_cache_ttl(ttl: &str) -> String {
         "1h".to_string()
     } else {
         "5m".to_string()
+    }
+}
+
+pub fn normalize_virtual_cache_input_mode(mode: &str) -> String {
+    if mode == "estimated_user_delta" {
+        "estimated_user_delta".to_string()
+    } else {
+        "fixed".to_string()
+    }
+}
+
+pub fn normalize_virtual_cache_creation_mode(mode: &str) -> String {
+    if mode == "dynamic" {
+        "dynamic".to_string()
+    } else {
+        "fixed".to_string()
     }
 }
 

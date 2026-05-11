@@ -34,9 +34,17 @@ For one account, seed conservatively:
   "virtualCacheUsageEnabled": true,
   "virtualCacheDefaultTtl": "5m",
   "virtualCacheUncachedInputTokens": 1,
+  "virtualCacheInputMode": "fixed",
+  "virtualCacheMinInputTokens": 8,
+  "virtualCacheMaxInputTokens": 96,
   "virtualCacheWarmupTokens": 18000,
   "virtualCacheMinCreationTokens": 128,
   "virtualCacheMaxCreationTokens": 1200,
+  "virtualCacheCreationMode": "fixed",
+  "virtualCacheCreationJitterRatio": 0.25,
+  "virtualCacheBurstEveryTurns": 7,
+  "virtualCacheBurstMinTokens": 1500,
+  "virtualCacheBurstMaxTokens": 3000,
   "virtualCacheFallbackScope": "model",
   "shutdownDrainTimeoutSecs": 60
 }
@@ -257,6 +265,13 @@ The proxy can return Anthropic-compatible cache usage fields for downstream gate
 This is virtual accounting for your single-node pool. It is not a claim that Kiro upstream billed the exact same cache read/write tokens.
 
 The ledger is in memory and keyed by credential, model, and session. A stable `metadata.user_id` gives the most consistent read accumulation. When no metadata is present, `virtualCacheFallbackScope: "model"` lets repeated cctest/new-api checks for the same model share a fallback bucket.
+
+By default the proxy keeps the older conservative accounting shape: `virtualCacheInputMode: "fixed"` uses `virtualCacheUncachedInputTokens`, and `virtualCacheCreationMode: "fixed"` uses the configured minimum/maximum creation range. For more natural downstream audit numbers, enable these in Admin runtime settings:
+
+- `virtualCacheInputMode: "estimated_user_delta"` reports ordinary `input_tokens` from the latest user message estimate, clamped by `virtualCacheMinInputTokens` and `virtualCacheMaxInputTokens`.
+- `virtualCacheCreationMode: "dynamic"` varies later-turn `cache_creation_input_tokens` from context delta, latest output size, deterministic jitter, and optional periodic burst creation.
+- `virtualCacheCreationJitterRatio` controls variation. `0.25` means roughly plus/minus 25% before final clamping.
+- `virtualCacheBurstEveryTurns` controls occasional larger creation writes. Set it to `0` to disable bursts.
 
 External clients can choose the write bucket by sending Anthropic cache control:
 
