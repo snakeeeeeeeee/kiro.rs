@@ -75,6 +75,18 @@ Build locally from this source tree and start:
 docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
 ```
 
+Or use the helper script:
+
+```bash
+scripts/prod-up.sh
+```
+
+Run smoke checks after startup:
+
+```bash
+RUN_SMOKE=1 API_KEY='your-api-key' ADMIN_API_KEY='your-admin-api-key' scripts/prod-up.sh
+```
+
 ## Overseas Server Deployment
 
 On an overseas production server, Docker Hub access should usually be stable, so deploy from source with the local-build override:
@@ -94,6 +106,12 @@ Start with local build:
 
 ```bash
 docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
+```
+
+Equivalent helper:
+
+```bash
+scripts/prod-up.sh
 ```
 
 The default Docker port mapping is `0.0.0.0:18990->8990`, so the service is reachable from outside the host if your firewall allows it:
