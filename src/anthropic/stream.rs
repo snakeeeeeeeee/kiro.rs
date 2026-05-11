@@ -1215,6 +1215,10 @@ impl BufferedStreamContext {
         self.usage_builder = Some(usage_builder);
     }
 
+    pub fn model(&self) -> &str {
+        &self.inner.model
+    }
+
     /// 处理 Kiro 事件并缓冲结果
     ///
     /// 复用 StreamContext 的事件处理逻辑，但把结果缓存而不是立即发送。

@@ -60,6 +60,16 @@
 - Dynamic proxy helps account/IP isolation and proxy failure recovery; it should not be presented as a fix for upstream model-capacity errors such as `INSUFFICIENT_MODEL_CAPACITY`.
 
 ## Opus 4.7 Latency Investigation
-- Verified by unit test: identical Anthropic request converted to Opus 4.6 vs 4.7 has the same Kiro request structure after normalizing modelId and random agentContinuationId. Plain claude-opus-4-7 does not enable thinking.
+- Verified by unit test: identical Anthropic request converted to Opus 4.6 vs 4.7 has the same Kiro request structure after normalizing modelId/continuation id. Plain claude-opus-4-7 does not enable thinking.
 - Public Kiro changelog says Claude Opus 4.7 uses model id claude-opus-4.7 and adaptive thinking needs Kiro IDE 0.11.133+ / CLI 2.2.0+ for best performance and efficiency. Existing config/default used KiroIDE 0.11.107, which is a credible cause of poor 4.7 behavior.
 - Updated default/local kiroVersion to 0.12.155 and added requestDiagnosticsEnabled for safe upstream request summary logging.
+
+## Opus 4.7 Stream Latency Follow-up
+- User provided stream=true samples after Kiro version upgrade: status=200, attempts=1, queue/acquire 0, but upstream_ms varied 2.9s, 3.5s, 12.6s, 14.2s for max_tokens=16. Need compare KAM request shape and public info.
+- Public Kiro docs/changelog confirm Opus 4.7 is still marked experimental, limited to us-east-1/eu-central-1 and IDC auth, and adaptive thinking needs Kiro IDE 0.11.133+ / CLI 2.2.0+ for best performance. That explains some natural variance, but does not rule out local request/client issues.
+- Compared with KAM: Opus 4.7 model id remains `claude-opus-4.7`, so the current model mapping is not the likely latency bug.
+- Compared with KAM: KAM uses a stable `agentContinuationId = conversationId`, while `kiro.rs` currently generates a fresh random `agentContinuationId` for every request. This can reduce upstream session/cache locality and is a plausible latency/consistency issue.
+- Compared with KAM: KAM tunes reqwest pooling/keepalive, while `kiro.rs` sets `Connection: close` on Kiro API requests. That defeats connection reuse and is a plausible cause of stream variability.
+- Current `upstream_ms` for stream=true includes full response body consumption; it does not separate time-to-first-upstream-chunk or time-to-first-decoded-event. Need add first-chunk/first-event logs before drawing conclusions from 12-14s totals.
+- Fix applied: `agentContinuationId` now equals `conversationId`; reqwest clients now use KAM-style pooling/keepalive; provider no longer sends `Connection: close` for upstream Kiro API/MCP requests.
+- New logs to read after a successful stream: `upstream_stream_first_chunk`, `upstream_stream_first_event`, and final `upstream_request_timing`. If first chunk/event is fast but final upstream_ms is high, UX latency is not initial response latency. If first chunk/event is high, the delay is upstream/model/account/region.

@@ -277,7 +277,9 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
         .and_then(|m| m.user_id.as_ref())
         .and_then(|user_id| extract_session_id(user_id))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let agent_continuation_id = Uuid::new_v4().to_string();
+    // Kiro 官方客户端保持 agentContinuationId 与 conversationId 稳定一致。
+    // 随机 continuation id 会削弱同一会话在上游的连续性与缓存局部性。
+    let agent_continuation_id = conversation_id.clone();
 
     // 4. 确定触发类型
     let chat_trigger_type = determine_chat_trigger_type(req);
@@ -1471,6 +1473,10 @@ mod tests {
             result.session_affinity_key,
             "a0662283-7fd3-4399-a7eb-52b9a717ae88"
         );
+        assert_eq!(
+            result.conversation_state.agent_continuation_id.as_deref(),
+            Some("a0662283-7fd3-4399-a7eb-52b9a717ae88")
+        );
     }
 
     #[test]
@@ -1505,6 +1511,10 @@ mod tests {
                 .filter(|c| *c == '-')
                 .count(),
             4
+        );
+        assert_eq!(
+            result.conversation_state.agent_continuation_id.as_deref(),
+            Some(result.conversation_state.conversation_id.as_str())
         );
     }
 

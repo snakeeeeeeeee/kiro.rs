@@ -1,6 +1,6 @@
 //! Anthropic API Handler 函数
 
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc, time::Instant};
 
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
@@ -525,6 +525,10 @@ fn create_sse_stream(
     initial_events: Vec<SseEvent>,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
+    let credential_id = response.credential_id();
+    let stream_model = ctx.model.clone();
+    let stream_started_at = Instant::now();
+
     // 先发送初始事件
     let initial_stream = stream::iter(
         initial_events
@@ -541,10 +545,25 @@ fn create_sse_stream(
             ctx,
             EventStreamDecoder::new(),
             false,
+            false,
             interval(Duration::from_secs(PING_INTERVAL_SECS)),
             Some(permit),
+            stream_model,
+            credential_id,
+            stream_started_at,
         ),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, permit)| async move {
+        |(
+            mut body_stream,
+            mut ctx,
+            mut decoder,
+            finished,
+            mut first_event_logged,
+            mut ping_interval,
+            permit,
+            stream_model,
+            credential_id,
+            stream_started_at,
+        )| async move {
             if finished {
                 return None;
             }
@@ -565,6 +584,18 @@ fn create_sse_stream(
                                 match result {
                                     Ok(frame) => {
                                         if let Ok(event) = Event::from_frame(frame) {
+                                            if !first_event_logged {
+                                                first_event_logged = true;
+                                                tracing::info!(
+                                                    target: "kiro_rs::metrics",
+                                                    model = %stream_model,
+                                                    stream = true,
+                                                    credential_id,
+                                                    first_event_ms = crate::metrics::duration_ms(stream_started_at.elapsed()),
+                                                    event_type = event_metric_name(&event),
+                                                    "upstream_stream_first_event"
+                                                );
+                                            }
                                             let sse_events = ctx.process_kiro_event(&event);
                                             events.extend(sse_events);
                                         }
@@ -581,7 +612,7 @@ fn create_sse_stream(
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, permit)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, stream_started_at)))
                         }
                         Some(Err(e)) => {
                             tracing::error!("读取响应流失败: {}", e);
@@ -592,7 +623,7 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, None)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)))
                         }
                         None => {
                             // 流结束，发送最终事件
@@ -602,7 +633,7 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, None)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)))
                         }
                     }
                 }
@@ -610,7 +641,7 @@ fn create_sse_stream(
                 _ = ping_interval.tick() => {
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, permit)))
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, stream_started_at)))
                 }
             }
         },
@@ -618,6 +649,18 @@ fn create_sse_stream(
     .flatten();
 
     initial_stream.chain(processing_stream)
+}
+
+fn event_metric_name(event: &Event) -> &'static str {
+    match event {
+        Event::AssistantResponse(_) => "assistant_response",
+        Event::ToolUse(_) => "tool_use",
+        Event::Metering(_) => "metering",
+        Event::ContextUsage(_) => "context_usage",
+        Event::Unknown {} => "unknown",
+        Event::Error { .. } => "error",
+        Event::Exception { .. } => "exception",
+    }
 }
 
 use super::converter::get_context_window_size;
@@ -1178,6 +1221,9 @@ fn create_buffered_sse_stream(
     ctx: BufferedStreamContext,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
+    let credential_id = response.credential_id();
+    let stream_model = ctx.model().to_string();
+    let stream_started_at = Instant::now();
     let body_stream = response.bytes_stream();
 
     stream::unfold(
@@ -1186,10 +1232,25 @@ fn create_buffered_sse_stream(
             ctx,
             EventStreamDecoder::new(),
             false,
+            false,
             interval(Duration::from_secs(PING_INTERVAL_SECS)),
             Some(permit),
+            stream_model,
+            credential_id,
+            stream_started_at,
         ),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, permit)| async move {
+        |(
+            mut body_stream,
+            mut ctx,
+            mut decoder,
+            finished,
+            mut first_event_logged,
+            mut ping_interval,
+            permit,
+            stream_model,
+            credential_id,
+            stream_started_at,
+        )| async move {
             if finished {
                 return None;
             }
@@ -1204,7 +1265,7 @@ fn create_buffered_sse_stream(
                     _ = ping_interval.tick() => {
                         tracing::trace!("发送 ping 保活事件（缓冲模式）");
                         let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, permit)));
+                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, stream_started_at)));
                     }
 
                     // 然后处理数据流
@@ -1220,6 +1281,19 @@ fn create_buffered_sse_stream(
                                     match result {
                                         Ok(frame) => {
                                             if let Ok(event) = Event::from_frame(frame) {
+                                                if !first_event_logged {
+                                                    first_event_logged = true;
+                                                    tracing::info!(
+                                                        target: "kiro_rs::metrics",
+                                                        model = %stream_model,
+                                                        stream = true,
+                                                        credential_id,
+                                                        buffered = true,
+                                                        first_event_ms = crate::metrics::duration_ms(stream_started_at.elapsed()),
+                                                        event_type = event_metric_name(&event),
+                                                        "upstream_stream_first_event"
+                                                    );
+                                                }
                                                 // 缓冲事件（复用 StreamContext 的处理逻辑）
                                                 ctx.process_and_buffer(&event);
                                             }
@@ -1240,7 +1314,7 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, None)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)));
                             }
                             None => {
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
@@ -1250,7 +1324,7 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, None)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)));
                             }
                         }
                     }

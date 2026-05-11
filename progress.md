@@ -139,5 +139,25 @@
 ## Completed: Opus 4.7 Latency Investigation
 - Updated default and local config Kiro version from 0.11.107 to 0.12.155.
 - Added safe request diagnostics logging behind config requestDiagnosticsEnabled. Local config enables it for comparison.
-- Added tests proving 4.6/4.7 conversion differs only by modelId and random agentContinuationId.
+- Added tests proving 4.6/4.7 conversion differs only by modelId/continuation id.
 - Validation: cargo fmt -- --check, cargo check, cargo test, pnpm --dir admin-ui build all passed.
+
+## In Progress: Opus 4.7 Stream Latency Follow-up
+- Started comparing kiro.rs with sibling kiro-account-manager and public Kiro/Opus 4.7 information.
+- Found two local differences likely to affect stream stability: `Connection: close` on upstream Kiro requests, and random per-request `agentContinuationId`.
+- Next change: enable HTTP connection reuse/keepalive, stabilize `agentContinuationId`, and add first upstream chunk/event timing logs.
+- Implemented KAM-style HTTP client keepalive/pool settings and removed `Connection: close` from Kiro API/MCP upstream requests.
+- Changed `agentContinuationId` to equal `conversationId`, matching KAM behavior and improving upstream session continuity.
+- Added stream diagnostics:
+  - `upstream_stream_first_chunk` records first upstream body chunk timing.
+  - `upstream_stream_first_event` records first decoded AWS event timing.
+- Local smoke with current dev credentials returned `INVALID_MODEL_ID` for Opus 4.7/4.6, so local accounts cannot validate real Opus latency. Diagnostics confirmed request model id, version, no thinking directive, and API region.
+
+## Latest Validation: Opus 4.7 Stream Latency Follow-up
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- `cargo test`: passed, 235 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `docker compose -f docker-compose-dev.yml up -d --build`: passed.
+- `docker compose -f docker-compose-dev.yml ps`: `kiro-rs-dev` healthy.
+- `GET /healthz`: 200.

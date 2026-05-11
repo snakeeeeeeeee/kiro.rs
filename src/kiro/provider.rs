@@ -73,6 +73,18 @@ struct ApiTimingRecord {
     total_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct StreamTimingLogContext {
+    model: String,
+    credential_id: u64,
+    status: u16,
+    attempts: usize,
+    queue_ms: u64,
+    acquire_ms: u64,
+    header_ms: u64,
+    total_started_at: Instant,
+}
+
 #[derive(Debug)]
 pub struct ProviderRateLimitError {
     pub message: String,
@@ -115,6 +127,8 @@ struct ResponseTimingGuard {
     record: Option<ApiTimingRecord>,
     total_started_at: Instant,
     body_started_at: Instant,
+    stream_log: Option<StreamTimingLogContext>,
+    first_chunk_logged: bool,
 }
 
 impl ResponseTimingGuard {
@@ -129,6 +143,38 @@ impl ResponseTimingGuard {
             record: Some(record),
             total_started_at,
             body_started_at,
+            stream_log: None,
+            first_chunk_logged: false,
+        }
+    }
+
+    fn with_stream_log(mut self, context: StreamTimingLogContext) -> Self {
+        self.stream_log = Some(context);
+        self
+    }
+
+    fn log_first_chunk(&mut self, chunk_len: usize) {
+        if self.first_chunk_logged {
+            return;
+        }
+        self.first_chunk_logged = true;
+
+        if let Some(context) = &self.stream_log {
+            tracing::info!(
+                target: "kiro_rs::metrics",
+                model = %context.model,
+                stream = true,
+                credential_id = context.credential_id,
+                status = context.status,
+                attempts = context.attempts,
+                queue_ms = context.queue_ms,
+                acquire_ms = context.acquire_ms,
+                header_ms = context.header_ms,
+                first_chunk_ms = duration_ms(context.total_started_at.elapsed()),
+                first_chunk_body_ms = duration_ms(self.body_started_at.elapsed()),
+                chunk_bytes = chunk_len,
+                "upstream_stream_first_chunk"
+            );
         }
     }
 
@@ -214,7 +260,12 @@ impl LeasedResponse {
             (body_stream, timing, lease),
             |(mut body_stream, mut timing, lease)| async move {
                 match body_stream.next().await {
-                    Some(Ok(chunk)) => Some((Ok(chunk), (body_stream, timing, lease))),
+                    Some(Ok(chunk)) => {
+                        if let Some(timing) = timing.as_mut() {
+                            timing.log_first_chunk(chunk.len());
+                        }
+                        Some((Ok(chunk), (body_stream, timing, lease)))
+                    }
                     Some(Err(err)) => {
                         if let Some(timing) = timing.as_mut() {
                             timing.finish(UpstreamOutcome::Error);
@@ -479,8 +530,7 @@ impl KiroProvider {
                 .client_for(ctx.id, &ctx.credentials)?
                 .post(&url)
                 .body(body)
-                .header("content-type", "application/json")
-                .header("Connection", "close");
+                .header("content-type", "application/json");
             let request = endpoint.decorate_mcp(base, &rctx);
 
             let response = match request.send().await {
@@ -736,8 +786,7 @@ impl KiroProvider {
                 .client_for(ctx.id, &ctx.credentials)?
                 .post(&url)
                 .body(body)
-                .header("content-type", "application/json")
-                .header("Connection", "close");
+                .header("content-type", "application/json");
             let request = endpoint.decorate_api(base, &rctx);
 
             let upstream_started_at = Instant::now();
@@ -777,7 +826,7 @@ impl KiroProvider {
             // 成功响应：耗时指标延后到响应体消费完成时记录。
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
-                let timing = ResponseTimingGuard::new(
+                let mut timing = ResponseTimingGuard::new(
                     self.metrics.clone(),
                     ApiTimingRecord {
                         model: model_for_metrics.clone(),
@@ -794,6 +843,18 @@ impl KiroProvider {
                     total_started_at,
                     Instant::now(),
                 );
+                if is_stream {
+                    timing = timing.with_stream_log(StreamTimingLogContext {
+                        model: model_for_metrics.clone(),
+                        credential_id: ctx.id,
+                        status: status.as_u16(),
+                        attempts: http_attempts,
+                        queue_ms,
+                        acquire_ms: acquire_ms_total,
+                        header_ms: upstream_ms_total,
+                        total_started_at,
+                    });
+                }
                 return Ok(LeasedResponse::new(
                     response,
                     ctx.id,
