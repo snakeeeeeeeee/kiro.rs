@@ -27,6 +27,50 @@ export interface CredentialStatusItem {
   refreshFailureCount: number
   disabledReason?: string
   endpoint: string
+  inFlight: number
+  maxConcurrent: number
+  maxConcurrentOverride?: number | null
+  rpmOverride?: number | null
+  effectiveRpm: number
+  usesDefaultPolicy: boolean
+  cooldownUntil: string | null
+  isCoolingDown: boolean
+  availableForDispatch: boolean
+  sessionAffinityBindings: number
+}
+
+export interface RuntimeStatusResponse {
+  globalInFlight: number
+  globalMaxConcurrent: number
+  perAccountDefaultMaxConcurrent: number
+  globalRpm: number
+  perAccountDefaultRpm: number
+  queueDepth: number
+  queueMaxSize: number
+  queueTimeoutMs: number
+  rateLimitCooldownMs: number
+  transientCooldownMs: number
+  loadBalancingMode: 'priority' | 'balanced'
+  totalCredentials: number
+  availableCredentials: number
+  dispatchAvailableCredentials: number
+  coolingDownCredentials: number
+  sessionAffinityBindings: number
+  credentials: RuntimeCredentialStatus[]
+}
+
+export interface RuntimeCredentialStatus {
+  id: number
+  inFlight: number
+  maxConcurrent: number
+  maxConcurrentOverride?: number | null
+  rpmOverride?: number | null
+  effectiveRpm: number
+  usesDefaultPolicy: boolean
+  cooldownUntil: string | null
+  isCoolingDown: boolean
+  availableForDispatch: boolean
+  sessionAffinityBindings: number
 }
 
 // 余额响应
@@ -63,6 +107,38 @@ export interface SetPriorityRequest {
   priority: number
 }
 
+export interface RuntimeSettings {
+  globalMaxConcurrent: number
+  perAccountDefaultMaxConcurrent: number
+  queueMaxSize: number
+  queueTimeoutMs: number
+  perAccountDefaultRpm: number
+  globalRpm: number
+  rateLimitCooldownMs: number
+  transientCooldownMs: number
+  loadBalancingMode: 'priority' | 'balanced'
+  virtualCacheUsageEnabled: boolean
+  virtualCacheDefaultTtl: '5m' | '1h'
+  virtualCacheUncachedInputTokens: number
+  virtualCacheWarmupTokens: number
+  virtualCacheMinCreationTokens: number
+  virtualCacheMaxCreationTokens: number
+  virtualCacheFallbackScope: 'model' | 'none'
+}
+
+export interface SetCredentialPolicyRequest {
+  maxConcurrentOverride?: number | null
+  rpmOverride?: number | null
+}
+
+export interface BatchCredentialPolicyRequest extends SetCredentialPolicyRequest {
+  ids: number[]
+}
+
+export interface BatchCredentialIdsRequest {
+  ids: number[]
+}
+
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken?: string
@@ -73,6 +149,7 @@ export interface AddCredentialRequest {
   authRegion?: string
   apiRegion?: string
   machineId?: string
+  email?: string
   proxyUrl?: string
   proxyUsername?: string
   proxyPassword?: string
@@ -86,4 +163,34 @@ export interface AddCredentialResponse {
   message: string
   credentialId: number
   email?: string
+}
+
+// 导出的明文凭据
+export interface ExportedCredential {
+  id?: number
+  accessToken?: string
+  refreshToken?: string
+  profileArn?: string
+  expiresAt?: string
+  authMethod?: string
+  clientId?: string
+  clientSecret?: string
+  priority?: number
+  region?: string
+  authRegion?: string
+  apiRegion?: string
+  machineId?: string
+  email?: string
+  subscriptionTitle?: string
+  proxyUrl?: string
+  proxyUsername?: string
+  proxyPassword?: string
+  disabled?: boolean
+  kiroApiKey?: string
+  endpoint?: string
+}
+
+export interface ExportCredentialsResponse {
+  count: number
+  credentials: ExportedCredential[]
 }

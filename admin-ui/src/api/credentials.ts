@@ -8,6 +8,11 @@ import type {
   SetPriorityRequest,
   AddCredentialRequest,
   AddCredentialResponse,
+  ExportCredentialsResponse,
+  RuntimeStatusResponse,
+  RuntimeSettings,
+  SetCredentialPolicyRequest,
+  BatchCredentialPolicyRequest,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -84,6 +89,53 @@ export async function addCredential(
   req: AddCredentialRequest
 ): Promise<AddCredentialResponse> {
   const { data } = await api.post<AddCredentialResponse>('/credentials', req)
+  return data
+}
+
+// 批量导出明文凭据
+export async function exportCredentials(ids: number[]): Promise<ExportCredentialsResponse> {
+  const { data } = await api.post<ExportCredentialsResponse>('/credentials/export', { ids })
+  return data
+}
+
+// 获取运行时状态
+export async function getRuntimeStatus(): Promise<RuntimeStatusResponse> {
+  const { data } = await api.get<RuntimeStatusResponse>('/runtime')
+  return data
+}
+
+export async function getRuntimeSettings(): Promise<RuntimeSettings> {
+  const { data } = await api.get<RuntimeSettings>('/settings/runtime')
+  return data
+}
+
+export async function setRuntimeSettings(settings: RuntimeSettings): Promise<RuntimeSettings> {
+  const { data } = await api.put<RuntimeSettings>('/settings/runtime', settings)
+  return data
+}
+
+export async function setCredentialPolicy(
+  id: number,
+  policy: SetCredentialPolicyRequest
+): Promise<SuccessResponse> {
+  const { data } = await api.patch<SuccessResponse>(`/credentials/${id}/policy`, policy)
+  return data
+}
+
+export async function setCredentialPolicyBatch(
+  request: BatchCredentialPolicyRequest
+): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>('/credentials/policy/batch', request)
+  return data
+}
+
+export async function clearCredentialCooldown(id: number): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>(`/credentials/${id}/cooldown/clear`)
+  return data
+}
+
+export async function clearCredentialCooldownBatch(ids: number[]): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>('/credentials/cooldown/clear-batch', { ids })
   return data
 }
 

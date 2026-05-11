@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use super::converter::extract_session_id;
 use super::stream::SseEvent;
 use super::types::{ErrorResponse, MessagesRequest};
+use crate::runtime::GlobalRequestPermit;
 
 /// MCP 请求
 #[derive(Debug, Serialize)]
@@ -220,14 +222,22 @@ pub fn create_websearch_sse_stream(
     tool_use_id: String,
     search_results: Option<WebSearchResults>,
     input_tokens: i32,
+    permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let events =
         generate_websearch_events(&model, &query, &tool_use_id, search_results, input_tokens);
 
-    stream::iter(
-        events
-            .into_iter()
-            .map(|e| Ok(Bytes::from(e.to_sse_string()))),
+    stream::unfold(
+        (events.into_iter(), Some(permit)),
+        |(mut events, permit)| async move {
+            match events.next() {
+                Some(event) => Some((Ok(Bytes::from(event.to_sse_string())), (events, permit))),
+                None => {
+                    drop(permit);
+                    None
+                }
+            }
+        },
     )
 }
 
@@ -475,6 +485,7 @@ pub async fn handle_websearch_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     payload: &MessagesRequest,
     input_tokens: i32,
+    permit: GlobalRequestPermit,
 ) -> Response {
     // 1. 提取搜索查询
     let query = match extract_search_query(payload) {
@@ -496,19 +507,32 @@ pub async fn handle_websearch_request(
     // 2. 创建 MCP 请求
     let (tool_use_id, mcp_request) = create_mcp_request(&query);
 
+    let session_affinity_key = payload
+        .metadata
+        .as_ref()
+        .and_then(|m| m.user_id.as_ref())
+        .and_then(|user_id| extract_session_id(user_id));
+
     // 3. 调用 Kiro MCP API
-    let search_results = match call_mcp_api(&provider, &mcp_request).await {
-        Ok(response) => parse_search_results(&response),
-        Err(e) => {
-            tracing::warn!("MCP API 调用失败: {}", e);
-            None
-        }
-    };
+    let search_results =
+        match call_mcp_api(&provider, &mcp_request, session_affinity_key.as_deref()).await {
+            Ok(response) => parse_search_results(&response),
+            Err(e) => {
+                tracing::warn!("MCP API 调用失败: {}", e);
+                None
+            }
+        };
 
     // 4. 生成 SSE 响应
     let model = payload.model.clone();
-    let stream =
-        create_websearch_sse_stream(model, query, tool_use_id, search_results, input_tokens);
+    let stream = create_websearch_sse_stream(
+        model,
+        query,
+        tool_use_id,
+        search_results,
+        input_tokens,
+        permit,
+    );
 
     Response::builder()
         .status(StatusCode::OK)
@@ -523,12 +547,15 @@ pub async fn handle_websearch_request(
 async fn call_mcp_api(
     provider: &crate::kiro::provider::KiroProvider,
     request: &McpRequest,
+    session_id: Option<&str>,
 ) -> anyhow::Result<McpResponse> {
     let request_body = serde_json::to_string(request)?;
 
     tracing::debug!("MCP request: {}", request_body);
 
-    let response = provider.call_mcp(&request_body).await?;
+    let response = provider
+        .call_mcp_with_session(&request_body, session_id)
+        .await?;
 
     let body = response.text().await?;
     tracing::debug!("MCP response: {}", body);
@@ -569,6 +596,7 @@ mod tests {
                 description: String::new(),
                 input_schema: Default::default(),
                 max_uses: Some(8),
+                cache_control: None,
             }]),
             tool_choice: None,
             thinking: None,
@@ -599,6 +627,7 @@ mod tests {
                     description: String::new(),
                     input_schema: Default::default(),
                     max_uses: Some(8),
+                    cache_control: None,
                 },
                 Tool {
                     tool_type: None,
@@ -606,6 +635,7 @@ mod tests {
                     description: "Other tool".to_string(),
                     input_schema: Default::default(),
                     max_uses: None,
+                    cache_control: None,
                 },
             ]),
             tool_choice: None,

@@ -6,11 +6,13 @@ use axum::{
     middleware,
     routing::{get, post},
 };
+use std::sync::Arc;
 
 use crate::kiro::provider::KiroProvider;
+use crate::runtime::RuntimeLimiter;
 
 use super::{
-    handlers::{count_tokens, get_models, post_messages, post_messages_cc},
+    handlers::{count_tokens, get_models, healthz, post_messages, post_messages_cc, readyz},
     middleware::{AppState, auth_middleware, cors_layer},
 };
 
@@ -38,8 +40,9 @@ pub fn create_router_with_provider(
     api_key: impl Into<String>,
     kiro_provider: Option<KiroProvider>,
     extract_thinking: bool,
+    runtime_limiter: Arc<RuntimeLimiter>,
 ) -> Router {
-    let mut state = AppState::new(api_key, extract_thinking);
+    let mut state = AppState::new(api_key, extract_thinking, runtime_limiter);
     if let Some(provider) = kiro_provider {
         state = state.with_kiro_provider(provider);
     }
@@ -65,6 +68,8 @@ pub fn create_router_with_provider(
         ));
 
     Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .nest("/v1", v1_routes)
         .nest("/cc/v1", cc_v1_routes)
         .layer(cors_layer())

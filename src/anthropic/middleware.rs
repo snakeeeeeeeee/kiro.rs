@@ -12,8 +12,10 @@ use axum::{
 
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
+use crate::runtime::RuntimeLimiter;
 
 use super::types::ErrorResponse;
+use super::usage::VirtualCacheUsageManager;
 
 /// 应用共享状态
 #[derive(Clone)]
@@ -25,15 +27,25 @@ pub struct AppState {
     pub kiro_provider: Option<Arc<KiroProvider>>,
     /// 是否开启非流式响应的 thinking 块提取
     pub extract_thinking: bool,
+    /// 运行时并发/队列限制器
+    pub runtime_limiter: Arc<RuntimeLimiter>,
+    /// 虚拟缓存 usage 账本
+    pub virtual_cache_usage: Arc<VirtualCacheUsageManager>,
 }
 
 impl AppState {
     /// 创建新的应用状态
-    pub fn new(api_key: impl Into<String>, extract_thinking: bool) -> Self {
+    pub fn new(
+        api_key: impl Into<String>,
+        extract_thinking: bool,
+        runtime_limiter: Arc<RuntimeLimiter>,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             kiro_provider: None,
             extract_thinking,
+            runtime_limiter,
+            virtual_cache_usage: Arc::new(VirtualCacheUsageManager::new()),
         }
     }
 

@@ -5,6 +5,7 @@
 //! 支持多凭据故障转移和重试
 //! 支持按凭据级 endpoint 切换不同 Kiro API 端点
 
+use futures::StreamExt;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
-use crate::kiro::token_manager::MultiTokenManager;
+use crate::kiro::token_manager::{CredentialLease, MultiTokenManager};
 use crate::model::config::TlsBackend;
 use parking_lot::Mutex;
 
@@ -45,6 +46,43 @@ pub struct KiroProvider {
     default_endpoint: String,
 }
 
+/// 上游 API 响应及其绑定的凭据占用守卫
+pub struct LeasedResponse {
+    response: reqwest::Response,
+    credential_id: u64,
+    _lease: CredentialLease,
+}
+
+impl LeasedResponse {
+    fn new(response: reqwest::Response, credential_id: u64, lease: CredentialLease) -> Self {
+        Self {
+            response,
+            credential_id,
+            _lease: lease,
+        }
+    }
+
+    pub fn credential_id(&self) -> u64 {
+        self.credential_id
+    }
+
+    pub async fn bytes(self) -> Result<bytes::Bytes, reqwest::Error> {
+        self.response.bytes().await
+    }
+
+    pub async fn text(self) -> Result<String, reqwest::Error> {
+        self.response.text().await
+    }
+
+    pub fn bytes_stream(self) -> impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> {
+        let lease = self._lease;
+        self.response.bytes_stream().map(move |item| {
+            let _keep_alive = &lease;
+            item
+        })
+    }
+}
+
 impl KiroProvider {
     /// 创建带代理配置和端点注册表的 KiroProvider 实例
     ///
@@ -66,8 +104,8 @@ impl KiroProvider {
         );
         let tls_backend = token_manager.config().tls_backend;
         // 预热：构建全局代理对应的 Client
-        let initial_client = build_client(proxy.as_ref(), 720, tls_backend)
-            .expect("创建 HTTP 客户端失败");
+        let initial_client =
+            build_client(proxy.as_ref(), 720, tls_backend).expect("创建 HTTP 客户端失败");
         let mut cache = HashMap::new();
         cache.insert(proxy.clone(), initial_client);
 
@@ -94,10 +132,7 @@ impl KiroProvider {
     }
 
     /// 根据凭据选择 endpoint 实现
-    fn endpoint_for(
-        &self,
-        credentials: &KiroCredentials,
-    ) -> anyhow::Result<Arc<dyn KiroEndpoint>> {
+    fn endpoint_for(&self, credentials: &KiroCredentials) -> anyhow::Result<Arc<dyn KiroEndpoint>> {
         let name = credentials
             .endpoint
             .as_deref()
@@ -111,22 +146,59 @@ impl KiroProvider {
     /// 发送非流式 API 请求
     ///
     /// 支持多凭据故障转移（见 [`Self::call_api_with_retry`]）
-    pub async fn call_api(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
-        self.call_api_with_retry(request_body, false).await
+    #[allow(dead_code)]
+    pub async fn call_api(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
+        self.call_api_with_retry(request_body, false, None).await
+    }
+
+    pub async fn call_api_with_session(
+        &self,
+        request_body: &str,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<LeasedResponse> {
+        self.call_api_with_retry(request_body, false, session_id)
+            .await
     }
 
     /// 发送流式 API 请求
-    pub async fn call_api_stream(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
-        self.call_api_with_retry(request_body, true).await
+    #[allow(dead_code)]
+    pub async fn call_api_stream(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
+        self.call_api_with_retry(request_body, true, None).await
+    }
+
+    pub async fn call_api_stream_with_session(
+        &self,
+        request_body: &str,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<LeasedResponse> {
+        self.call_api_with_retry(request_body, true, session_id)
+            .await
     }
 
     /// 发送 MCP API 请求（WebSearch 等工具调用）
-    pub async fn call_mcp(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
-        self.call_mcp_with_retry(request_body).await
+    #[allow(dead_code)]
+    pub async fn call_mcp(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
+        self.call_mcp_with_retry(request_body, None).await
+    }
+
+    pub async fn call_mcp_with_session(
+        &self,
+        request_body: &str,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<LeasedResponse> {
+        self.call_mcp_with_retry(request_body, session_id).await
+    }
+
+    pub fn token_manager(&self) -> Arc<MultiTokenManager> {
+        self.token_manager.clone()
     }
 
     /// 内部方法：带重试逻辑的 MCP API 调用
-    async fn call_mcp_with_retry(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
+    async fn call_mcp_with_retry(
+        &self,
+        request_body: &str,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<LeasedResponse> {
         let total_credentials = self.token_manager.total_count();
         let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
@@ -134,7 +206,11 @@ impl KiroProvider {
 
         for attempt in 0..max_retries {
             // MCP 调用（WebSearch 等工具）不涉及模型选择，无需按模型过滤凭据
-            let ctx = match self.token_manager.acquire_context(None).await {
+            let ctx = match self
+                .token_manager
+                .acquire_context_with_session(None, session_id)
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     last_error = Some(e);
@@ -182,6 +258,7 @@ impl KiroProvider {
                         max_retries,
                         e
                     );
+                    self.token_manager.report_transient_error(ctx.id);
                     last_error = Some(e.into());
                     if attempt + 1 < max_retries {
                         sleep(Self::retry_delay(attempt)).await;
@@ -195,7 +272,7 @@ impl KiroProvider {
             // 成功响应
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
-                return Ok(response);
+                return Ok(LeasedResponse::new(response, ctx.id, ctx.lease));
             }
 
             // 失败响应
@@ -222,7 +299,12 @@ impl KiroProvider {
                 if endpoint.is_bearer_token_invalid(&body) && !force_refreshed.contains(&ctx.id) {
                     force_refreshed.insert(ctx.id);
                     tracing::info!("凭据 #{} token 疑似被上游失效，尝试强制刷新", ctx.id);
-                    if self.token_manager.force_refresh_token_for(ctx.id).await.is_ok() {
+                    if self
+                        .token_manager
+                        .force_refresh_token_for(ctx.id)
+                        .await
+                        .is_ok()
+                    {
                         tracing::info!("凭据 #{} token 强制刷新成功，重试请求", ctx.id);
                         continue;
                     }
@@ -239,6 +321,11 @@ impl KiroProvider {
 
             // 瞬态错误
             if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
+                if status.as_u16() == 429 {
+                    self.token_manager.report_rate_limited(ctx.id);
+                } else {
+                    self.token_manager.report_transient_error(ctx.id);
+                }
                 tracing::warn!(
                     "MCP 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
                     attempt + 1,
@@ -280,7 +367,8 @@ impl KiroProvider {
         &self,
         request_body: &str,
         is_stream: bool,
-    ) -> anyhow::Result<reqwest::Response> {
+        session_id: Option<&str>,
+    ) -> anyhow::Result<LeasedResponse> {
         let total_credentials = self.token_manager.total_count();
         let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
@@ -292,7 +380,11 @@ impl KiroProvider {
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token）
-            let ctx = match self.token_manager.acquire_context(model.as_deref()).await {
+            let ctx = match self
+                .token_manager
+                .acquire_context_with_session(model.as_deref(), session_id)
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     last_error = Some(e);
@@ -341,6 +433,7 @@ impl KiroProvider {
                     );
                     // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
                     // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
+                    self.token_manager.report_transient_error(ctx.id);
                     last_error = Some(e.into());
                     if attempt + 1 < max_retries {
                         sleep(Self::retry_delay(attempt)).await;
@@ -354,7 +447,7 @@ impl KiroProvider {
             // 成功响应
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
-                return Ok(response);
+                return Ok(LeasedResponse::new(response, ctx.id, ctx.lease));
             }
 
             // 失败响应：读取 body 用于日志/错误信息
@@ -408,7 +501,12 @@ impl KiroProvider {
                 if endpoint.is_bearer_token_invalid(&body) && !force_refreshed.contains(&ctx.id) {
                     force_refreshed.insert(ctx.id);
                     tracing::info!("凭据 #{} token 疑似被上游失效，尝试强制刷新", ctx.id);
-                    if self.token_manager.force_refresh_token_for(ctx.id).await.is_ok() {
+                    if self
+                        .token_manager
+                        .force_refresh_token_for(ctx.id)
+                        .await
+                        .is_ok()
+                    {
                         tracing::info!("凭据 #{} token 强制刷新成功，重试请求", ctx.id);
                         continue;
                     }
@@ -437,6 +535,11 @@ impl KiroProvider {
             // 429/408/5xx - 瞬态上游错误：重试但不禁用或切换凭据
             // （避免 429 high traffic / 502 high load 等瞬态错误把所有凭据锁死）
             if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
+                if status.as_u16() == 429 {
+                    self.token_manager.report_rate_limited(ctx.id);
+                } else {
+                    self.token_manager.report_transient_error(ctx.id);
+                }
                 tracing::warn!(
                     "API 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
                     attempt + 1,

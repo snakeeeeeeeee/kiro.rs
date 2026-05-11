@@ -91,6 +91,70 @@ pub struct Config {
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
 
+    /// 全局最大并发请求数
+    #[serde(default = "default_global_max_concurrent")]
+    pub global_max_concurrent: usize,
+
+    /// 单个凭据最大并发请求数
+    #[serde(default = "default_per_account_max_concurrent")]
+    pub per_account_max_concurrent: usize,
+
+    /// 全局等待队列最大长度
+    #[serde(default = "default_queue_max_size")]
+    pub queue_max_size: usize,
+
+    /// 等待队列超时时间（毫秒）
+    #[serde(default = "default_queue_timeout_ms")]
+    pub queue_timeout_ms: u64,
+
+    /// 单凭据每分钟请求数限制，0 表示不限制
+    #[serde(default)]
+    pub per_account_rpm: u32,
+
+    /// 全局每分钟请求数限制，0 表示不限制
+    #[serde(default)]
+    pub global_rpm: u32,
+
+    /// 上游限流后的账号冷却时间（毫秒）
+    #[serde(default = "default_rate_limit_cooldown_ms")]
+    pub rate_limit_cooldown_ms: u64,
+
+    /// 上游瞬态错误后的账号冷却时间（毫秒）
+    #[serde(default = "default_transient_cooldown_ms")]
+    pub transient_cooldown_ms: u64,
+
+    /// 是否启用虚拟缓存 usage 字段（用于下游网关计费展示）
+    #[serde(default = "default_virtual_cache_usage_enabled")]
+    pub virtual_cache_usage_enabled: bool,
+
+    /// 未显式 cache_control 时的默认虚拟缓存 TTL："5m" 或 "1h"
+    #[serde(default = "default_virtual_cache_default_ttl")]
+    pub virtual_cache_default_ttl: String,
+
+    /// 虚拟拆账中保留为普通输入的 tokens，默认 1
+    #[serde(default = "default_virtual_cache_uncached_input_tokens")]
+    pub virtual_cache_uncached_input_tokens: u32,
+
+    /// 首轮虚拟缓存创建下限
+    #[serde(default = "default_virtual_cache_warmup_tokens")]
+    pub virtual_cache_warmup_tokens: u32,
+
+    /// 后续轮次虚拟缓存创建下限
+    #[serde(default = "default_virtual_cache_min_creation_tokens")]
+    pub virtual_cache_min_creation_tokens: u32,
+
+    /// 后续轮次虚拟缓存创建上限
+    #[serde(default = "default_virtual_cache_max_creation_tokens")]
+    pub virtual_cache_max_creation_tokens: u32,
+
+    /// 无 metadata 时的 fallback 范围："model" 或 "none"
+    #[serde(default = "default_virtual_cache_fallback_scope")]
+    pub virtual_cache_fallback_scope: String,
+
+    /// 优雅关闭等待正在处理请求的时间（秒）
+    #[serde(default = "default_shutdown_drain_timeout_secs")]
+    pub shutdown_drain_timeout_secs: u64,
+
     /// 是否开启非流式响应的 thinking 块提取（默认 true）
     ///
     /// 启用后，非流式响应中的 `<thinking>...</thinking>` 标签会被解析为
@@ -151,6 +215,62 @@ fn default_load_balancing_mode() -> String {
     "priority".to_string()
 }
 
+fn default_global_max_concurrent() -> usize {
+    32
+}
+
+fn default_per_account_max_concurrent() -> usize {
+    3
+}
+
+fn default_queue_max_size() -> usize {
+    128
+}
+
+fn default_queue_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_rate_limit_cooldown_ms() -> u64 {
+    60_000
+}
+
+fn default_transient_cooldown_ms() -> u64 {
+    10_000
+}
+
+fn default_virtual_cache_usage_enabled() -> bool {
+    true
+}
+
+fn default_virtual_cache_default_ttl() -> String {
+    "5m".to_string()
+}
+
+fn default_virtual_cache_uncached_input_tokens() -> u32 {
+    1
+}
+
+fn default_virtual_cache_warmup_tokens() -> u32 {
+    18_000
+}
+
+fn default_virtual_cache_min_creation_tokens() -> u32 {
+    128
+}
+
+fn default_virtual_cache_max_creation_tokens() -> u32 {
+    1_200
+}
+
+fn default_virtual_cache_fallback_scope() -> String {
+    "model".to_string()
+}
+
+fn default_shutdown_drain_timeout_secs() -> u64 {
+    60
+}
+
 fn default_extract_thinking() -> bool {
     true
 }
@@ -181,6 +301,22 @@ impl Default for Config {
             proxy_password: None,
             admin_api_key: None,
             load_balancing_mode: default_load_balancing_mode(),
+            global_max_concurrent: default_global_max_concurrent(),
+            per_account_max_concurrent: default_per_account_max_concurrent(),
+            queue_max_size: default_queue_max_size(),
+            queue_timeout_ms: default_queue_timeout_ms(),
+            per_account_rpm: 0,
+            global_rpm: 0,
+            rate_limit_cooldown_ms: default_rate_limit_cooldown_ms(),
+            transient_cooldown_ms: default_transient_cooldown_ms(),
+            virtual_cache_usage_enabled: default_virtual_cache_usage_enabled(),
+            virtual_cache_default_ttl: default_virtual_cache_default_ttl(),
+            virtual_cache_uncached_input_tokens: default_virtual_cache_uncached_input_tokens(),
+            virtual_cache_warmup_tokens: default_virtual_cache_warmup_tokens(),
+            virtual_cache_min_creation_tokens: default_virtual_cache_min_creation_tokens(),
+            virtual_cache_max_creation_tokens: default_virtual_cache_max_creation_tokens(),
+            virtual_cache_fallback_scope: default_virtual_cache_fallback_scope(),
+            shutdown_drain_timeout_secs: default_shutdown_drain_timeout_secs(),
             extract_thinking: default_extract_thinking(),
             default_endpoint: default_endpoint(),
             endpoints: HashMap::new(),
@@ -236,7 +372,8 @@ impl Config {
             .ok_or_else(|| anyhow::anyhow!("配置文件路径未知，无法保存配置"))?;
 
         let content = serde_json::to_string_pretty(self).context("序列化配置失败")?;
-        fs::write(path, content).with_context(|| format!("写入配置文件失败: {}", path.display()))?;
+        fs::write(path, content)
+            .with_context(|| format!("写入配置文件失败: {}", path.display()))?;
         Ok(())
     }
 }

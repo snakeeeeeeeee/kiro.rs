@@ -5,6 +5,7 @@ mod common;
 mod http_client;
 mod kiro;
 mod model;
+mod runtime;
 pub mod token;
 
 use std::collections::HashMap;
@@ -14,9 +15,13 @@ use clap::Parser;
 use kiro::endpoint::{IdeEndpoint, KiroEndpoint};
 use kiro::model::credentials::{CredentialsConfig, KiroCredentials};
 use kiro::provider::KiroProvider;
+use kiro::settings::RuntimeSettings;
+use kiro::store::KiroStore;
 use kiro::token_manager::MultiTokenManager;
 use model::arg::Args;
 use model::config::Config;
+use runtime::RuntimeLimiter;
+use tokio::time::{Duration, timeout};
 
 #[tokio::main]
 async fn main() {
@@ -40,20 +45,32 @@ async fn main() {
         std::process::exit(1);
     });
 
-    // 加载凭证（支持单对象或数组格式）
+    // 加载凭证（支持单对象或数组格式），仅作为首次 SQLite 迁移和 JSON 兼容导出来源。
+    // SQLite 有数据后是 source of truth，credentials.json 缺失或损坏不再阻止启动。
     let credentials_path = args
         .credentials
         .unwrap_or_else(|| KiroCredentials::default_credentials_path().to_string());
-    let credentials_config = CredentialsConfig::load(&credentials_path).unwrap_or_else(|e| {
-        tracing::error!("加载凭证失败: {}", e);
-        std::process::exit(1);
-    });
+    let credentials_config = match CredentialsConfig::load(&credentials_path) {
+        Ok(config) => Some(config),
+        Err(e) => {
+            tracing::warn!(
+                "credentials.json 不可用，将仅使用 SQLite / Admin 管理凭据: {}",
+                e
+            );
+            None
+        }
+    };
 
-    // 判断是否为多凭据格式（用于刷新后回写）
-    let is_multiple_format = credentials_config.is_multiple();
+    // 判断是否为多凭据格式（用于 JSON 兼容回写）
+    let is_multiple_format = credentials_config
+        .as_ref()
+        .map(CredentialsConfig::is_multiple)
+        .unwrap_or(false);
 
     // 转换为按优先级排序的凭据列表
-    let mut credentials_list = credentials_config.into_sorted_credentials();
+    let mut credentials_list = credentials_config
+        .map(CredentialsConfig::into_sorted_credentials)
+        .unwrap_or_default();
 
     // 检查 KIRO_API_KEY 环境变量，自动创建 API Key 凭据
     if let Ok(kiro_api_key) = std::env::var("KIRO_API_KEY") {
@@ -71,7 +88,47 @@ async fn main() {
         }
     }
 
-    tracing::info!("已加载 {} 个凭据配置", credentials_list.len());
+    tracing::info!("已从 JSON 加载 {} 个凭据配置", credentials_list.len());
+
+    let db_path = config
+        .config_path()
+        .map(KiroStore::default_path_for_config)
+        .unwrap_or_else(|| KiroStore::default_path_for_config(std::path::Path::new(&config_path)));
+    let store = KiroStore::open(&db_path).unwrap_or_else(|e| {
+        tracing::error!("初始化 SQLite 数据库失败: {}", e);
+        std::process::exit(1);
+    });
+    tracing::info!("SQLite 数据库: {}", store.path().display());
+
+    let default_runtime_settings = RuntimeSettings::from_config(&config);
+    store
+        .initialize_runtime_settings(&default_runtime_settings)
+        .unwrap_or_else(|e| {
+            tracing::error!("初始化运行时配置失败: {}", e);
+            std::process::exit(1);
+        });
+
+    if let Err(e) = store.import_credentials_if_empty(&credentials_list, &config) {
+        tracing::error!("导入 credentials.json 到 SQLite 失败: {}", e);
+        std::process::exit(1);
+    }
+
+    let runtime_settings = store
+        .load_runtime_settings(&default_runtime_settings)
+        .unwrap_or_else(|e| {
+            tracing::error!("加载运行时配置失败: {}", e);
+            std::process::exit(1);
+        });
+
+    let stored_credentials = store.load_credentials().unwrap_or_else(|e| {
+        tracing::error!("从 SQLite 加载凭据失败: {}", e);
+        std::process::exit(1);
+    });
+    credentials_list = stored_credentials
+        .iter()
+        .map(|stored| stored.credentials.clone())
+        .collect();
+    tracing::info!("已从 SQLite 加载 {} 个凭据配置", credentials_list.len());
 
     // 获取第一个凭据用于日志显示
     let first_credentials = credentials_list.first().cloned().unwrap_or_default();
@@ -111,10 +168,7 @@ async fn main() {
 
     // 校验所有凭据声明的端点都已注册
     for cred in &credentials_list {
-        let name = cred
-            .endpoint
-            .as_deref()
-            .unwrap_or(&config.default_endpoint);
+        let name = cred.endpoint.as_deref().unwrap_or(&config.default_endpoint);
         if !endpoints.contains_key(name) {
             tracing::error!(
                 "凭据 id={:?} 指定了未知端点 \"{}\"（已注册: {:?}）",
@@ -129,18 +183,21 @@ async fn main() {
     let endpoint_names: Vec<String> = endpoints.keys().cloned().collect();
 
     // 创建 MultiTokenManager 和 KiroProvider
-    let token_manager = MultiTokenManager::new(
+    let token_manager = MultiTokenManager::from_stored_credentials(
         config.clone(),
-        credentials_list,
+        stored_credentials,
         proxy_config.clone(),
         Some(credentials_path.into()),
         is_multiple_format,
+        Some(store),
+        runtime_settings,
     )
     .unwrap_or_else(|e| {
         tracing::error!("创建 Token 管理器失败: {}", e);
         std::process::exit(1);
     });
     let token_manager = Arc::new(token_manager);
+    let runtime_limiter = Arc::new(RuntimeLimiter::new(&config));
     let kiro_provider = KiroProvider::with_proxy(
         token_manager.clone(),
         proxy_config.clone(),
@@ -162,6 +219,7 @@ async fn main() {
         &api_key,
         Some(kiro_provider),
         config.extract_thinking,
+        runtime_limiter.clone(),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
@@ -177,8 +235,11 @@ async fn main() {
             tracing::warn!("admin_api_key 配置为空，Admin API 未启用");
             anthropic_app
         } else {
-            let admin_service =
-                admin::AdminService::new(token_manager.clone(), endpoint_names.clone());
+            let admin_service = admin::AdminService::new(
+                token_manager.clone(),
+                runtime_limiter.clone(),
+                endpoint_names.clone(),
+            );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
             let admin_app = admin::create_admin_router(admin_state);
 
@@ -200,11 +261,14 @@ async fn main() {
     tracing::info!("启动 Anthropic API 端点: {}", addr);
     tracing::info!("API Key: {}***", &api_key[..(api_key.len() / 2)]);
     tracing::info!("可用 API:");
+    tracing::info!("  GET  /healthz");
+    tracing::info!("  GET  /readyz");
     tracing::info!("  GET  /v1/models");
     tracing::info!("  POST /v1/messages");
     tracing::info!("  POST /v1/messages/count_tokens");
     if admin_key_valid {
         tracing::info!("Admin API:");
+        tracing::info!("  GET  /api/admin/runtime");
         tracing::info!("  GET  /api/admin/credentials");
         tracing::info!("  POST /api/admin/credentials/:index/disabled");
         tracing::info!("  POST /api/admin/credentials/:index/priority");
@@ -214,6 +278,62 @@ async fn main() {
         tracing::info!("  GET  /admin");
     }
 
+    let drain_timeout_secs = config.shutdown_drain_timeout_secs;
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(token_manager.clone(), drain_timeout_secs))
+        .await
+        .unwrap();
+}
+
+async fn shutdown_signal(token_manager: Arc<MultiTokenManager>, drain_timeout_secs: u64) {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::warn!("监听 Ctrl+C 失败: {}", e);
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!("监听 SIGTERM 失败: {}", e);
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("收到关闭信号，停止接收新请求并等待正在处理的请求结束");
+    let drain = async {
+        loop {
+            let snapshot = token_manager.snapshot();
+            if snapshot.global_in_flight == 0 {
+                break;
+            }
+            tracing::info!(
+                "等待 {} 个请求完成，队列长度 {}",
+                snapshot.global_in_flight,
+                snapshot.queue_depth
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    };
+
+    if timeout(Duration::from_secs(drain_timeout_secs), drain)
+        .await
+        .is_err()
+    {
+        tracing::warn!("优雅关闭等待超过 {} 秒，继续退出", drain_timeout_secs);
+    }
 }

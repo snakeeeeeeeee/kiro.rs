@@ -101,7 +101,14 @@ function isValidKamAccount(item: unknown): item is KamAccount {
 
 // 解析 KAM 导出 JSON，支持单账号和多账号格式
 function parseKamJson(raw: string): KamAccount[] {
-  const parsed = JSON.parse(raw)
+  const trimmed = raw.trim()
+  const parsed = trimmed.startsWith('[') || trimmed.startsWith('{')
+    ? JSON.parse(trimmed)
+    : raw
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
 
   let rawItems: unknown[]
 

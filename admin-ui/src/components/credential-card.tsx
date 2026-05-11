@@ -49,6 +49,13 @@ function formatLastUsed(lastUsedAt: string | null): string {
   return `${days} 天前`
 }
 
+function formatDateTime(value: string | null): string {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
 export function CredentialCard({
   credential,
   onViewBalance,
@@ -162,6 +169,12 @@ export function CredentialCard({
                 {credential.disabled && credential.disabledReason && (
                   <Badge variant="outline">{credential.disabledReason}</Badge>
                 )}
+                {credential.isCoolingDown && (
+                  <Badge variant="outline">冷却中</Badge>
+                )}
+                {!credential.disabled && !credential.isCoolingDown && credential.availableForDispatch && (
+                  <Badge variant="success">可调度</Badge>
+                )}
                 {credential.authMethod && (
                   <Badge variant="secondary">
                     {credential.authMethod === 'api_key' ? 'API Key' :
@@ -254,10 +267,22 @@ export function CredentialCard({
               <span className="text-muted-foreground">成功次数：</span>
               <span className="font-medium">{credential.successCount}</span>
             </div>
+            <div>
+              <span className="text-muted-foreground">当前并发：</span>
+              <span className={credential.inFlight >= credential.maxConcurrent ? 'text-yellow-600 font-medium' : 'font-medium'}>
+                {credential.inFlight} / {credential.maxConcurrent}
+              </span>
+            </div>
             <div className="col-span-2">
               <span className="text-muted-foreground">最后调用：</span>
               <span className="font-medium">{formatLastUsed(credential.lastUsedAt)}</span>
             </div>
+            {credential.cooldownUntil && (
+              <div className="col-span-2">
+                <span className="text-muted-foreground">冷却到：</span>
+                <span className="font-medium">{formatDateTime(credential.cooldownUntil)}</span>
+              </div>
+            )}
             {credential.maskedApiKey && (
               <div className="col-span-2">
                 <span className="text-muted-foreground">API Key：</span>

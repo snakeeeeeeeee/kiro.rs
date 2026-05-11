@@ -1,24 +1,126 @@
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Trash2, RotateCcw, CheckCircle2 } from 'lucide-react'
+import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Download, Trash2, RotateCcw, CheckCircle2, Activity, Settings, Columns3, Search, SlidersHorizontal, ShieldCheck } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { storage } from '@/lib/storage'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CredentialCard } from '@/components/credential-card'
 import { BalanceDialog } from '@/components/balance-dialog'
 import { AddCredentialDialog } from '@/components/add-credential-dialog'
 import { BatchImportDialog } from '@/components/batch-import-dialog'
 import { KamImportDialog } from '@/components/kam-import-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
-import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode } from '@/hooks/use-credentials'
-import { getCredentialBalance, forceRefreshToken } from '@/api/credentials'
+import { RuntimeSettingsDialog } from '@/components/runtime-settings-dialog'
+import { PolicyDialog } from '@/components/policy-dialog'
+import { AccountTable, type AccountColumn, type AccountColumnKey, type AccountSortKey } from '@/components/account-table'
+import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useClearCooldown, useClearCooldownBatch, useSetDisabled } from '@/hooks/use-credentials'
+import { getCredentialBalance, forceRefreshToken, exportCredentials, getRuntimeStatus } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
-import type { BalanceResponse } from '@/types/api'
+import type { BalanceResponse, CredentialStatusItem, ExportedCredential, RuntimeStatusResponse } from '@/types/api'
 
 interface DashboardProps {
   onLogout: () => void
+}
+
+function formatExportDate(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join('/') + ' ' + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join(':')
+}
+
+function createExportId(credential: ExportedCredential): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID()
+  }
+  return `kiro-rs-${credential.id ?? Date.now()}`
+}
+
+function toKamStyleExport(credential: ExportedCredential) {
+  const authMethod = credential.authMethod || (credential.kiroApiKey ? 'api_key' : 'social')
+  const isApiKey = authMethod === 'api_key' || Boolean(credential.kiroApiKey)
+  const provider = isApiKey ? 'API Key' : authMethod === 'idc' ? 'Builder ID' : 'Google'
+
+  return {
+    id: createExportId(credential),
+    email: credential.email || '',
+    password: null,
+    label: credential.email ? `Kiro ${provider} 账号` : `Kiro 凭据 #${credential.id ?? ''}`,
+    status: credential.disabled ? 'disabled' : 'active',
+    addedAt: formatExportDate(new Date()),
+    accessToken: credential.accessToken || null,
+    refreshToken: credential.refreshToken || null,
+    expiresAt: credential.expiresAt || null,
+    provider,
+    userId: '',
+    authMethod,
+    clientId: credential.clientId || null,
+    clientSecret: credential.clientSecret || null,
+    region: credential.authRegion || credential.region || null,
+    authRegion: credential.authRegion || null,
+    apiRegion: credential.apiRegion || null,
+    clientIdHash: null,
+    ssoSessionId: null,
+    idToken: null,
+    startUrl: null,
+    profileArn: credential.profileArn || null,
+    usageData: credential.subscriptionTitle ? { subscriptionTitle: credential.subscriptionTitle } : null,
+    groupId: null,
+    tagLinks: [],
+    machineId: credential.machineId || null,
+    availableModelsCache: null,
+    priority: credential.priority || 0,
+    proxyUrl: credential.proxyUrl || null,
+    endpoint: credential.endpoint || null,
+    kiroApiKey: credential.kiroApiKey || null,
+  }
+}
+
+type SortKey = AccountSortKey
+type SortOrder = 'asc' | 'desc'
+
+const COLUMN_STORAGE_KEY = 'kiro-admin-table-columns'
+const DEFAULT_VISIBLE_COLUMNS = [
+  'auth',
+  'subscription',
+  'status',
+  'dispatch',
+  'concurrency',
+  'rpm',
+  'priority',
+  'cooldown',
+  'failures',
+  'lastUsed',
+  'endpoint',
+  'actions',
+] as const
+
+type ColumnKey = AccountColumnKey
+
+const columnLabels: Record<ColumnKey, string> = {
+  auth: '认证',
+  subscription: '订阅',
+  status: '状态',
+  dispatch: '调度',
+  concurrency: '并发',
+  rpm: 'RPM',
+  priority: '优先级',
+  cooldown: '冷却',
+  failures: '失败',
+  lastUsed: '最近使用',
+  endpoint: '端点/代理',
+  actions: '操作',
+}
+
+function credentialName(credential: CredentialStatusItem): string {
+  return credential.email || credential.maskedApiKey || `凭据 #${credential.id}`
 }
 
 export function Dashboard({ onLogout }: DashboardProps) {
@@ -34,13 +136,52 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [verifyResults, setVerifyResults] = useState<Map<number, VerifyResult>>(new Map())
   const [balanceMap, setBalanceMap] = useState<Map<number, BalanceResponse>>(new Map())
   const [loadingBalanceIds, setLoadingBalanceIds] = useState<Set<number>>(new Set())
-  const [queryingInfo, setQueryingInfo] = useState(false)
-  const [queryInfoProgress, setQueryInfoProgress] = useState({ current: 0, total: 0 })
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchRefreshProgress, setBatchRefreshProgress] = useState({ current: 0, total: 0 })
+  const [exporting, setExporting] = useState(false)
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null)
+  const [runtimeSettingsOpen, setRuntimeSettingsOpen] = useState(false)
+  const [policyDialogOpen, setPolicyDialogOpen] = useState(false)
+  const [policyCredential, setPolicyCredential] = useState<CredentialStatusItem | null>(null)
+  const [batchPolicyOpen, setBatchPolicyOpen] = useState(false)
+  const [columnMenuOpen, setColumnMenuOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [authFilter, setAuthFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [dispatchFilter, setDispatchFilter] = useState('all')
+  const [endpointFilter, setEndpointFilter] = useState('all')
+  const [proxyFilter, setProxyFilter] = useState('all')
+  const [sortKey, setSortKey] = useState<SortKey>('priority')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
+  const [itemsPerPage, setItemsPerPage] = useState(50)
+  const [visibleColumns, setVisibleColumns] = useState<Set<ColumnKey>>(() => {
+    if (typeof window === 'undefined') return new Set(DEFAULT_VISIBLE_COLUMNS)
+    try {
+      const saved = window.localStorage.getItem(COLUMN_STORAGE_KEY)
+      if (!saved) return new Set(DEFAULT_VISIBLE_COLUMNS)
+      const parsed = JSON.parse(saved) as ColumnKey[]
+      const valid = parsed.filter(key => key in columnLabels)
+      return new Set(valid.length > 0 ? valid : DEFAULT_VISIBLE_COLUMNS)
+    } catch {
+      return new Set(DEFAULT_VISIBLE_COLUMNS)
+    }
+  })
+  const activeColumns: AccountColumn[] = DEFAULT_VISIBLE_COLUMNS
+    .filter(key => visibleColumns.has(key))
+    .map(key => ({
+      key,
+      label: columnLabels[key],
+      sortKey:
+        key === 'priority' ? 'priority' :
+        key === 'status' ? 'status' :
+        key === 'concurrency' ? 'inFlight' :
+        key === 'failures' ? 'failureCount' :
+        key === 'lastUsed' ? 'lastUsedAt' :
+        key === 'endpoint' ? 'endpoint' :
+        undefined,
+    }))
   const cancelVerifyRef = useRef(false)
   const [currentPage, setCurrentPage] = useState(1)
-  const itemsPerPage = 12
   const [darkMode, setDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       return document.documentElement.classList.contains('dark')
@@ -52,15 +193,80 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const { data, isLoading, error, refetch } = useCredentials()
   const { mutate: deleteCredential } = useDeleteCredential()
   const { mutate: resetFailure } = useResetFailure()
-  const { data: loadBalancingData, isLoading: isLoadingMode } = useLoadBalancingMode()
+  const { mutate: setDisabled } = useSetDisabled()
+  const { mutate: clearCooldown } = useClearCooldown()
+  const { mutate: clearCooldownBatch } = useClearCooldownBatch()
+  const { data: loadBalancingData } = useLoadBalancingMode()
   const { mutate: setLoadBalancingMode, isPending: isSettingMode } = useSetLoadBalancingMode()
 
+  const fetchRuntimeStatus = async () => {
+    try {
+      const status = await getRuntimeStatus()
+      setRuntimeStatus(status)
+    } catch {
+      setRuntimeStatus(null)
+    }
+  }
+
+  const endpointOptions = Array.from(new Set(data?.credentials.map(c => c.endpoint).filter(Boolean) || [])).sort()
+
+  const filteredCredentials = (data?.credentials || [])
+    .filter(credential => {
+      const query = searchQuery.trim().toLowerCase()
+      if (query) {
+        const haystack = [
+          credentialName(credential),
+          credential.id.toString(),
+          credential.refreshTokenHash || '',
+          credential.apiKeyHash || '',
+          credential.endpoint || '',
+        ].join(' ').toLowerCase()
+        if (!haystack.includes(query)) return false
+      }
+      if (authFilter !== 'all' && (credential.authMethod || 'social') !== authFilter) return false
+      if (statusFilter === 'active' && credential.disabled) return false
+      if (statusFilter === 'disabled' && !credential.disabled) return false
+      if (statusFilter === 'cooling' && !credential.isCoolingDown) return false
+      if (dispatchFilter === 'available' && !credential.availableForDispatch) return false
+      if (dispatchFilter === 'full' && credential.inFlight < credential.maxConcurrent) return false
+      if (dispatchFilter === 'blocked' && credential.availableForDispatch) return false
+      if (endpointFilter !== 'all' && credential.endpoint !== endpointFilter) return false
+      if (proxyFilter === 'proxy' && !credential.hasProxy) return false
+      if (proxyFilter === 'direct' && credential.hasProxy) return false
+      return true
+    })
+    .sort((a, b) => {
+      const direction = sortOrder === 'asc' ? 1 : -1
+      const value = (credential: CredentialStatusItem) => {
+        switch (sortKey) {
+          case 'email':
+            return credentialName(credential)
+          case 'status':
+            return credential.disabled ? 1 : credential.isCoolingDown ? 2 : 0
+          case 'inFlight':
+            return credential.inFlight
+          case 'lastUsedAt':
+            return credential.lastUsedAt || ''
+          case 'failureCount':
+            return credential.failureCount + credential.refreshFailureCount
+          case 'endpoint':
+            return credential.endpoint
+          case 'priority':
+          default:
+            return credential.priority
+        }
+      }
+      const av = value(a)
+      const bv = value(b)
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * direction
+      return String(av).localeCompare(String(bv)) * direction
+    })
+
   // 计算分页
-  const totalPages = Math.ceil((data?.credentials.length || 0) / itemsPerPage)
+  const totalPages = Math.max(1, Math.ceil(filteredCredentials.length / itemsPerPage))
   const startIndex = (currentPage - 1) * itemsPerPage
   const endIndex = startIndex + itemsPerPage
-  const currentCredentials = data?.credentials.slice(startIndex, endIndex) || []
-  const disabledCredentialCount = data?.credentials.filter(credential => credential.disabled).length || 0
+  const currentCredentials = filteredCredentials.slice(startIndex, endIndex)
   const selectedDisabledCount = Array.from(selectedIds).filter(id => {
     const credential = data?.credentials.find(c => c.id === id)
     return Boolean(credential?.disabled)
@@ -69,7 +275,18 @@ export function Dashboard({ onLogout }: DashboardProps) {
   // 当凭据列表变化时重置到第一页
   useEffect(() => {
     setCurrentPage(1)
-  }, [data?.credentials.length])
+  }, [data?.credentials.length, searchQuery, authFilter, statusFilter, dispatchFilter, endpointFilter, proxyFilter, itemsPerPage])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(Array.from(visibleColumns)))
+  }, [visibleColumns])
+
+  useEffect(() => {
+    fetchRuntimeStatus()
+    const timer = window.setInterval(fetchRuntimeStatus, 5000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   // 只保留当前仍存在的凭据缓存，避免删除后残留旧数据
   useEffect(() => {
@@ -117,6 +334,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   const handleRefresh = () => {
     refetch()
+    fetchRuntimeStatus()
     toast.success('已刷新凭据列表')
   }
 
@@ -139,6 +357,84 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   const deselectAll = () => {
     setSelectedIds(new Set())
+  }
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortOrder(order => order === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortOrder('asc')
+    }
+  }
+
+  const toggleColumn = (key: ColumnKey) => {
+    if (key === 'actions') return
+    setVisibleColumns(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      next.add('actions')
+      return next
+    })
+  }
+
+  const handleToggleCredentialDisabled = (credential: CredentialStatusItem) => {
+    setDisabled(
+      { id: credential.id, disabled: !credential.disabled },
+      {
+        onSuccess: () => toast.success(credential.disabled ? '已启用凭据' : '已禁用凭据'),
+        onError: error => toast.error(`操作失败: ${extractErrorMessage(error)}`),
+      }
+    )
+  }
+
+  const openPolicyDialog = (credential: CredentialStatusItem) => {
+    setPolicyCredential(credential)
+    setPolicyDialogOpen(true)
+  }
+
+  const handleClearCooldown = (credential: CredentialStatusItem) => {
+    clearCooldown(credential.id, {
+      onSuccess: () => toast.success('冷却状态已清除'),
+      onError: error => toast.error(`清除失败: ${extractErrorMessage(error)}`),
+    })
+  }
+
+  const handleForceRefreshOne = async (id: number) => {
+    try {
+      await forceRefreshToken(id)
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      toast.success('Token 已刷新')
+    } catch (error) {
+      toast.error(`刷新失败: ${extractErrorMessage(error)}`)
+    }
+  }
+
+  const handleDeleteOne = (id: number) => {
+    if (!confirm(`确定要删除凭据 #${id} 吗？此操作无法撤销。`)) return
+    deleteCredential(id, {
+      onSuccess: () => toast.success('凭据已删除'),
+      onError: error => toast.error(`删除失败: ${extractErrorMessage(error)}`),
+    })
+  }
+
+  const handleToggleSelectAllCurrentPage = () => {
+    const allSelected = currentCredentials.length > 0 && currentCredentials.every(c => selectedIds.has(c.id))
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      currentCredentials.forEach(credential => {
+        if (allSelected) {
+          next.delete(credential.id)
+        } else {
+          next.add(credential.id)
+        }
+      })
+      return next
+    })
   }
 
   // 批量删除（仅删除已禁用项）
@@ -246,6 +542,45 @@ export function Dashboard({ onLogout }: DashboardProps) {
     deselectAll()
   }
 
+  const handleBatchSetDisabled = (disabled: boolean) => {
+    if (selectedIds.size === 0) {
+      toast.error('请先选择凭据')
+      return
+    }
+    let completed = 0
+    Array.from(selectedIds).forEach(id => {
+      setDisabled(
+        { id, disabled },
+        {
+          onSuccess: () => {
+            completed += 1
+            if (completed === selectedIds.size) {
+              toast.success(disabled ? '已批量禁用' : '已批量启用')
+              deselectAll()
+            }
+          },
+          onError: error => {
+            toast.error(`操作失败: ${extractErrorMessage(error)}`)
+          },
+        }
+      )
+    })
+  }
+
+  const handleBatchClearCooldown = () => {
+    if (selectedIds.size === 0) {
+      toast.error('请先选择凭据')
+      return
+    }
+    clearCooldownBatch(Array.from(selectedIds), {
+      onSuccess: () => {
+        toast.success('已批量清除冷却')
+        deselectAll()
+      },
+      onError: error => toast.error(`清除失败: ${extractErrorMessage(error)}`),
+    })
+  }
+
   // 批量刷新 Token
   const handleBatchForceRefresh = async () => {
     if (selectedIds.size === 0) {
@@ -291,114 +626,41 @@ export function Dashboard({ onLogout }: DashboardProps) {
     deselectAll()
   }
 
-  // 一键清除所有已禁用凭据
-  const handleClearAll = async () => {
-    if (!data?.credentials || data.credentials.length === 0) {
-      toast.error('没有可清除的凭据')
+  // 批量导出明文凭据，每行一个 JSON 对象
+  const handleBatchExport = async () => {
+    if (selectedIds.size === 0) {
+      toast.error('请先选择要导出的凭据')
       return
     }
 
-    const disabledCredentials = data.credentials.filter(credential => credential.disabled)
+    setExporting(true)
 
-    if (disabledCredentials.length === 0) {
-      toast.error('没有可清除的已禁用凭据')
-      return
-    }
+    try {
+      const ids = Array.from(selectedIds)
+      const response = await exportCredentials(ids)
+      const content = response.credentials
+        .map(credential => JSON.stringify(toKamStyleExport(credential)))
+        .join('\n')
+      const blob = new Blob([content + '\n'], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-')
+        .slice(0, 19)
 
-    if (!confirm(`确定要清除所有 ${disabledCredentials.length} 个已禁用凭据吗？此操作无法撤销。`)) {
-      return
-    }
+      link.href = url
+      link.download = `kiro-credentials-${timestamp}.txt`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
 
-    let successCount = 0
-    let failCount = 0
-
-    for (const credential of disabledCredentials) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          deleteCredential(credential.id, {
-            onSuccess: () => {
-              successCount++
-              resolve()
-            },
-            onError: (err) => {
-              failCount++
-              reject(err)
-            }
-          })
-        })
-      } catch (error) {
-        // 错误已在 onError 中处理
-      }
-    }
-
-    if (failCount === 0) {
-      toast.success(`成功清除所有 ${successCount} 个已禁用凭据`)
-    } else {
-      toast.warning(`清除已禁用凭据：成功 ${successCount} 个，失败 ${failCount} 个`)
-    }
-
-    deselectAll()
-  }
-
-  // 查询当前页凭据信息（逐个查询，避免瞬时并发）
-  const handleQueryCurrentPageInfo = async () => {
-    if (currentCredentials.length === 0) {
-      toast.error('当前页没有可查询的凭据')
-      return
-    }
-
-    const ids = currentCredentials
-      .filter(credential => !credential.disabled)
-      .map(credential => credential.id)
-
-    if (ids.length === 0) {
-      toast.error('当前页没有可查询的启用凭据')
-      return
-    }
-
-    setQueryingInfo(true)
-    setQueryInfoProgress({ current: 0, total: ids.length })
-
-    let successCount = 0
-    let failCount = 0
-
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i]
-
-      setLoadingBalanceIds(prev => {
-        const next = new Set(prev)
-        next.add(id)
-        return next
-      })
-
-      try {
-        const balance = await getCredentialBalance(id)
-        successCount++
-
-        setBalanceMap(prev => {
-          const next = new Map(prev)
-          next.set(id, balance)
-          return next
-        })
-      } catch (error) {
-        failCount++
-      } finally {
-        setLoadingBalanceIds(prev => {
-          const next = new Set(prev)
-          next.delete(id)
-          return next
-        })
-      }
-
-      setQueryInfoProgress({ current: i + 1, total: ids.length })
-    }
-
-    setQueryingInfo(false)
-
-    if (failCount === 0) {
-      toast.success(`查询完成：成功 ${successCount}/${ids.length}`)
-    } else {
-      toast.warning(`查询完成：成功 ${successCount} 个，失败 ${failCount} 个`)
+      toast.success(`已导出 ${response.count} 个凭据`)
+    } catch (error) {
+      toast.error('导出失败: ' + extractErrorMessage(error))
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -537,213 +799,269 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* 顶部导航 */}
       <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container flex h-14 items-center justify-between px-4 md:px-8">
+        <div className="flex h-14 items-center justify-between px-4 md:px-6">
           <div className="flex items-center gap-2">
             <Server className="h-5 w-5" />
             <span className="font-semibold">Kiro Admin</span>
+            <Badge variant="outline">单机</Badge>
           </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleToggleLoadBalancing}
-              disabled={isLoadingMode || isSettingMode}
-              title="切换负载均衡模式"
-            >
-              {isLoadingMode ? '加载中...' : (loadBalancingData?.mode === 'priority' ? '优先级模式' : '均衡负载')}
-            </Button>
-            <Button variant="ghost" size="icon" onClick={toggleDarkMode}>
+          <div className="flex items-center gap-1 md:gap-2">
+            <Button variant="ghost" size="icon" onClick={toggleDarkMode} title="切换主题">
               {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </Button>
-            <Button variant="ghost" size="icon" onClick={handleRefresh}>
+            <Button variant="ghost" size="icon" onClick={handleRefresh} title="刷新">
               <RefreshCw className="h-5 w-5" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={handleLogout}>
+            <Button variant="ghost" size="icon" onClick={handleLogout} title="退出">
               <LogOut className="h-5 w-5" />
             </Button>
           </div>
         </div>
       </header>
 
-      {/* 主内容 */}
-      <main className="container mx-auto px-4 md:px-8 py-6">
-        {/* 统计卡片 */}
-        <div className="grid gap-4 md:grid-cols-3 mb-6">
+      <main className="w-full px-4 py-5 md:px-6">
+        <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                凭据总数
-              </CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">账号池</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{data?.total || 0}</div>
+              <div className="flex items-end gap-2">
+                <span className="text-2xl font-bold">{data?.total || 0}</span>
+                <span className="pb-1 text-sm text-muted-foreground">可用 {data?.available || 0}</span>
+              </div>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                可用凭据
-              </CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">全局并发</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-600">{data?.available || 0}</div>
+              <div className="text-2xl font-bold tabular-nums">
+                {runtimeStatus ? `${runtimeStatus.globalInFlight} / ${runtimeStatus.globalMaxConcurrent}` : '-'}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                队列 {runtimeStatus ? `${runtimeStatus.queueDepth} / ${runtimeStatus.queueMaxSize}` : '-'}
+              </div>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                当前活跃
+              <CardTitle className="text-sm font-medium text-muted-foreground">调度状态</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="secondary">可调度 {runtimeStatus?.dispatchAvailableCredentials ?? '-'}</Badge>
+                <Badge variant={runtimeStatus && runtimeStatus.coolingDownCredentials > 0 ? 'warning' : 'outline'}>
+                  冷却 {runtimeStatus?.coolingDownCredentials ?? '-'}
+                </Badge>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">当前 #{data?.currentId || '-'}</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                <Activity className="h-4 w-4" />
+                运行策略
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold flex items-center gap-2">
-                #{data?.currentId || '-'}
-                <Badge variant="success">活跃</Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline">
+                  {runtimeStatus?.loadBalancingMode === 'balanced' ? '均衡负载' : '优先级'}
+                </Badge>
+                <Badge variant="outline">默认并发 {runtimeStatus?.perAccountDefaultMaxConcurrent ?? '-'}</Badge>
+                <Badge variant="outline">会话亲和 {runtimeStatus?.sessionAffinityBindings ?? 0}</Badge>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                全局 RPM {runtimeStatus?.globalRpm || '不限'}，账号 RPM {runtimeStatus?.perAccountDefaultRpm || '不限'}
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* 凭据列表 */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <h2 className="text-xl font-semibold">凭据管理</h2>
-              {selectedIds.size > 0 && (
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary">已选择 {selectedIds.size} 个</Badge>
-                  <Button onClick={deselectAll} size="sm" variant="ghost">
-                    取消选择
-                  </Button>
-                </div>
-              )}
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" onClick={handleRefresh}>
+                <RefreshCw className="h-4 w-4" />
+                刷新
+              </Button>
+              <Button variant="outline" size="sm" disabled>
+                <RefreshCw className="h-4 w-4" />
+                自动刷新 30s
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleToggleLoadBalancing}
+                disabled={isSettingMode}
+              >
+                <ShieldCheck className="h-4 w-4" />
+                {loadBalancingData?.mode === 'priority' ? '优先级' : '均衡负载'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setRuntimeSettingsOpen(true)}>
+                <Settings className="h-4 w-4" />
+                运行策略
+              </Button>
+              <div className="relative">
+                <Button variant="outline" size="sm" onClick={() => setColumnMenuOpen(open => !open)}>
+                  <Columns3 className="h-4 w-4" />
+                  列设置
+                </Button>
+                {columnMenuOpen && (
+                  <div className="absolute left-0 z-40 mt-2 w-48 rounded-md border bg-popover p-2 shadow-lg">
+                    {DEFAULT_VISIBLE_COLUMNS.map(key => (
+                      <button
+                        key={key}
+                        className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm hover:bg-accent"
+                        onClick={() => toggleColumn(key)}
+                      >
+                        <span>{columnLabels[key]}</span>
+                        <span>{visibleColumns.has(key) ? '✓' : ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="flex gap-2">
-              {selectedIds.size > 0 && (
-                <>
-                  <Button onClick={handleBatchVerify} size="sm" variant="outline">
-                    <CheckCircle2 className="h-4 w-4 mr-2" />
-                    批量验活
-                  </Button>
-                  <Button
-                    onClick={handleBatchForceRefresh}
-                    size="sm"
-                    variant="outline"
-                    disabled={batchRefreshing}
-                  >
-                    <RefreshCw className={`h-4 w-4 mr-2 ${batchRefreshing ? 'animate-spin' : ''}`} />
-                    {batchRefreshing ? `刷新中... ${batchRefreshProgress.current}/${batchRefreshProgress.total}` : '批量刷新 Token'}
-                  </Button>
-                  <Button onClick={handleBatchResetFailure} size="sm" variant="outline">
-                    <RotateCcw className="h-4 w-4 mr-2" />
-                    恢复异常
-                  </Button>
-                  <Button
-                    onClick={handleBatchDelete}
-                    size="sm"
-                    variant="destructive"
-                    disabled={selectedDisabledCount === 0}
-                    title={selectedDisabledCount === 0 ? '只能删除已禁用凭据' : undefined}
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    批量删除
-                  </Button>
-                </>
-              )}
-              {verifying && !verifyDialogOpen && (
-                <Button onClick={() => setVerifyDialogOpen(true)} size="sm" variant="secondary">
-                  <CheckCircle2 className="h-4 w-4 mr-2 animate-spin" />
-                  验活中... {verifyProgress.current}/{verifyProgress.total}
-                </Button>
-              )}
-              {data?.credentials && data.credentials.length > 0 && (
-                <Button
-                  onClick={handleQueryCurrentPageInfo}
-                  size="sm"
-                  variant="outline"
-                  disabled={queryingInfo}
-                >
-                  <RefreshCw className={`h-4 w-4 mr-2 ${queryingInfo ? 'animate-spin' : ''}`} />
-                  {queryingInfo ? `查询中... ${queryInfoProgress.current}/${queryInfoProgress.total}` : '查询信息'}
-                </Button>
-              )}
-              {data?.credentials && data.credentials.length > 0 && (
-                <Button
-                  onClick={handleClearAll}
-                  size="sm"
-                  variant="outline"
-                  className="text-destructive hover:text-destructive"
-                  disabled={disabledCredentialCount === 0}
-                  title={disabledCredentialCount === 0 ? '没有可清除的已禁用凭据' : undefined}
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  清除已禁用
-                </Button>
-              )}
+
+            <div className="flex flex-wrap items-center gap-2">
               <Button onClick={() => setKamImportDialogOpen(true)} size="sm" variant="outline">
-                <FileUp className="h-4 w-4 mr-2" />
-                Kiro Account Manager 导入
+                <FileUp className="h-4 w-4" />
+                KAM 导入
               </Button>
               <Button onClick={() => setBatchImportDialogOpen(true)} size="sm" variant="outline">
-                <Upload className="h-4 w-4 mr-2" />
+                <Upload className="h-4 w-4" />
                 批量导入
               </Button>
+              <Button onClick={handleBatchExport} size="sm" variant="outline" disabled={selectedIds.size === 0 || exporting}>
+                <Download className="h-4 w-4" />
+                {exporting ? '导出中...' : '导出'}
+              </Button>
               <Button onClick={() => setAddDialogOpen(true)} size="sm">
-                <Plus className="h-4 w-4 mr-2" />
-                添加凭据
+                <Plus className="h-4 w-4" />
+                添加账号
               </Button>
             </div>
           </div>
-          {data?.credentials.length === 0 ? (
-            <Card>
-              <CardContent className="py-8 text-center text-muted-foreground">
-                暂无凭据
-              </CardContent>
-            </Card>
-          ) : (
-            <>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {currentCredentials.map((credential) => (
-                  <CredentialCard
-                    key={credential.id}
-                    credential={credential}
-                    onViewBalance={handleViewBalance}
-                    selected={selectedIds.has(credential.id)}
-                    onToggleSelect={() => toggleSelect(credential.id)}
-                    balance={balanceMap.get(credential.id) || null}
-                    loadingBalance={loadingBalanceIds.has(credential.id)}
-                  />
-                ))}
-              </div>
 
-              {/* 分页控件 */}
-              {totalPages > 1 && (
-                <div className="flex justify-center items-center gap-4 mt-6">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                    disabled={currentPage === 1}
-                  >
-                    上一页
-                  </Button>
-                  <span className="text-sm text-muted-foreground">
-                    第 {currentPage} / {totalPages} 页（共 {data?.credentials.length} 个凭据）
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                    disabled={currentPage === totalPages}
-                  >
-                    下一页
-                  </Button>
-                </div>
-              )}
-            </>
+          <div className="grid gap-2 rounded-lg border bg-card p-3 md:grid-cols-[minmax(220px,1.5fr)_repeat(5,minmax(140px,1fr))]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <input
+                value={searchQuery}
+                onChange={event => setSearchQuery(event.target.value)}
+                placeholder="搜索账号、ID、hash、endpoint"
+                className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm"
+              />
+            </div>
+            <select value={authFilter} onChange={event => setAuthFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="all">全部认证</option>
+              <option value="social">Social</option>
+              <option value="idc">Builder ID</option>
+              <option value="api_key">API Key</option>
+            </select>
+            <select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="all">全部状态</option>
+              <option value="active">正常</option>
+              <option value="disabled">禁用</option>
+              <option value="cooling">冷却中</option>
+            </select>
+            <select value={dispatchFilter} onChange={event => setDispatchFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="all">全部调度</option>
+              <option value="available">可调度</option>
+              <option value="full">满载</option>
+              <option value="blocked">不可调度</option>
+            </select>
+            <select value={endpointFilter} onChange={event => setEndpointFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="all">全部端点</option>
+              {endpointOptions.map(endpoint => (
+                <option key={endpoint} value={endpoint}>{endpoint}</option>
+              ))}
+            </select>
+            <select value={proxyFilter} onChange={event => setProxyFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="all">全部代理</option>
+              <option value="proxy">有代理</option>
+              <option value="direct">直连</option>
+            </select>
+          </div>
+
+          {selectedIds.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 p-3">
+              <Badge variant="secondary">已选择 {selectedIds.size} 个</Badge>
+              <Button size="sm" variant="outline" onClick={() => setBatchPolicyOpen(true)}>
+                <SlidersHorizontal className="h-4 w-4" />
+                批量策略
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleBatchSetDisabled(false)}>启用</Button>
+              <Button size="sm" variant="outline" onClick={() => handleBatchSetDisabled(true)}>禁用</Button>
+              <Button size="sm" variant="outline" onClick={handleBatchClearCooldown}>清冷却</Button>
+              <Button size="sm" variant="outline" onClick={handleBatchVerify}>
+                <CheckCircle2 className="h-4 w-4" />
+                验活
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleBatchForceRefresh} disabled={batchRefreshing}>
+                <RefreshCw className={`h-4 w-4 ${batchRefreshing ? 'animate-spin' : ''}`} />
+                {batchRefreshing ? `${batchRefreshProgress.current}/${batchRefreshProgress.total}` : '刷新 Token'}
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleBatchResetFailure}>
+                <RotateCcw className="h-4 w-4" />
+                恢复异常
+              </Button>
+              <Button size="sm" variant="destructive" onClick={handleBatchDelete} disabled={selectedDisabledCount === 0}>
+                <Trash2 className="h-4 w-4" />
+                删除已禁用
+              </Button>
+              <Button size="sm" variant="ghost" onClick={deselectAll}>取消选择</Button>
+            </div>
           )}
+
+          <AccountTable
+            credentials={currentCredentials}
+            selectedIds={selectedIds}
+            columns={activeColumns}
+            sortKey={sortKey}
+            sortOrder={sortOrder}
+            balanceMap={balanceMap}
+            loadingBalanceIds={loadingBalanceIds}
+            onSort={toggleSort}
+            onToggleSelect={toggleSelect}
+            onToggleSelectAll={handleToggleSelectAllCurrentPage}
+            onViewBalance={handleViewBalance}
+            onEditPolicy={openPolicyDialog}
+            onToggleDisabled={handleToggleCredentialDisabled}
+            onClearCooldown={handleClearCooldown}
+            onForceRefresh={handleForceRefreshOne}
+            onDelete={handleDeleteOne}
+          />
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <span>显示 {filteredCredentials.length === 0 ? 0 : startIndex + 1} 至 {Math.min(endIndex, filteredCredentials.length)}，共 {filteredCredentials.length} 条</span>
+              <select
+                value={itemsPerPage}
+                onChange={event => setItemsPerPage(Number(event.target.value))}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              >
+                <option value={20}>20 / 页</option>
+                <option value={50}>50 / 页</option>
+                <option value={100}>100 / 页</option>
+                <option value={200}>200 / 页</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>
+                上一页
+              </Button>
+              <span>第 {currentPage} / {totalPages} 页</span>
+              <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+                下一页
+              </Button>
+            </div>
+          </div>
         </div>
       </main>
 
@@ -780,6 +1098,23 @@ export function Dashboard({ onLogout }: DashboardProps) {
         progress={verifyProgress}
         results={verifyResults}
         onCancel={handleCancelVerify}
+      />
+
+      <RuntimeSettingsDialog
+        open={runtimeSettingsOpen}
+        onOpenChange={setRuntimeSettingsOpen}
+      />
+
+      <PolicyDialog
+        open={policyDialogOpen}
+        onOpenChange={setPolicyDialogOpen}
+        credential={policyCredential}
+      />
+
+      <PolicyDialog
+        open={batchPolicyOpen}
+        onOpenChange={setBatchPolicyOpen}
+        selectedIds={Array.from(selectedIds)}
       />
     </div>
   )

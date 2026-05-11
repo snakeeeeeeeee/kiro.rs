@@ -10,8 +10,14 @@ import {
   deleteCredential,
   getLoadBalancingMode,
   setLoadBalancingMode,
+  getRuntimeSettings,
+  setRuntimeSettings,
+  setCredentialPolicy,
+  setCredentialPolicyBatch,
+  clearCredentialCooldown,
+  clearCredentialCooldownBatch,
 } from '@/api/credentials'
-import type { AddCredentialRequest } from '@/types/api'
+import type { AddCredentialRequest, BatchCredentialPolicyRequest, RuntimeSettings, SetCredentialPolicyRequest } from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -115,6 +121,70 @@ export function useSetLoadBalancingMode() {
     mutationFn: setLoadBalancingMode,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['loadBalancingMode'] })
+      queryClient.invalidateQueries({ queryKey: ['runtimeSettings'] })
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useRuntimeSettings() {
+  return useQuery({
+    queryKey: ['runtimeSettings'],
+    queryFn: getRuntimeSettings,
+  })
+}
+
+export function useSetRuntimeSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (settings: RuntimeSettings) => setRuntimeSettings(settings),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['runtimeSettings'] })
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['loadBalancingMode'] })
+    },
+  })
+}
+
+export function useSetCredentialPolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, policy }: { id: number; policy: SetCredentialPolicyRequest }) =>
+      setCredentialPolicy(id, policy),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['runtimeSettings'] })
+    },
+  })
+}
+
+export function useSetCredentialPolicyBatch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (request: BatchCredentialPolicyRequest) => setCredentialPolicyBatch(request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['runtimeSettings'] })
+    },
+  })
+}
+
+export function useClearCooldown() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => clearCredentialCooldown(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useClearCooldownBatch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (ids: number[]) => clearCredentialCooldownBatch(ids),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
     },
   })
 }

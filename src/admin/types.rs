@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::settings::RuntimeSettings;
+
 // ============ 凭据状态 ============
 
 /// 所有凭据状态响应
@@ -62,6 +65,66 @@ pub struct CredentialStatusItem {
     pub disabled_reason: Option<String>,
     /// 端点名称（决定该凭据走哪套 Kiro API，已回退到默认端点）
     pub endpoint: String,
+    /// 当前正在处理的请求数
+    pub in_flight: u32,
+    /// 单账号最大并发数
+    pub max_concurrent: usize,
+    /// 单账号并发覆盖值
+    pub max_concurrent_override: Option<usize>,
+    /// 单账号 RPM 覆盖值
+    pub rpm_override: Option<u32>,
+    /// 当前生效 RPM
+    pub effective_rpm: u32,
+    /// 是否使用全局默认策略
+    pub uses_default_policy: bool,
+    /// 冷却截止时间（RFC3339）
+    pub cooldown_until: Option<String>,
+    /// 是否正在冷却
+    pub is_cooling_down: bool,
+    /// 当前是否可被调度
+    pub available_for_dispatch: bool,
+    /// 绑定到该凭据的活跃会话数
+    pub session_affinity_bindings: usize,
+}
+
+// ============ 运行时状态 ============
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStatusResponse {
+    pub global_in_flight: usize,
+    pub global_max_concurrent: usize,
+    pub per_account_default_max_concurrent: usize,
+    pub global_rpm: u32,
+    pub per_account_default_rpm: u32,
+    pub queue_depth: usize,
+    pub queue_max_size: usize,
+    pub queue_timeout_ms: u64,
+    pub rate_limit_cooldown_ms: u64,
+    pub transient_cooldown_ms: u64,
+    pub load_balancing_mode: String,
+    pub total_credentials: usize,
+    pub available_credentials: usize,
+    pub dispatch_available_credentials: usize,
+    pub cooling_down_credentials: usize,
+    pub session_affinity_bindings: usize,
+    pub credentials: Vec<RuntimeCredentialStatus>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeCredentialStatus {
+    pub id: u64,
+    pub in_flight: u32,
+    pub max_concurrent: usize,
+    pub max_concurrent_override: Option<usize>,
+    pub rpm_override: Option<u32>,
+    pub effective_rpm: u32,
+    pub uses_default_policy: bool,
+    pub cooldown_until: Option<String>,
+    pub is_cooling_down: bool,
+    pub available_for_dispatch: bool,
+    pub session_affinity_bindings: usize,
 }
 
 // ============ 操作请求 ============
@@ -81,6 +144,30 @@ pub struct SetPriorityRequest {
     /// 新优先级值
     pub priority: u32,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCredentialPolicyRequest {
+    pub max_concurrent_override: Option<usize>,
+    pub rpm_override: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchCredentialPolicyRequest {
+    pub ids: Vec<u64>,
+    pub max_concurrent_override: Option<usize>,
+    pub rpm_override: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchCredentialIdsRequest {
+    pub ids: Vec<u64>,
+}
+
+pub type RuntimeSettingsResponse = RuntimeSettings;
+pub type SetRuntimeSettingsRequest = RuntimeSettings;
 
 /// 添加凭据请求
 #[derive(Debug, Deserialize)]
@@ -154,6 +241,26 @@ pub struct AddCredentialResponse {
     /// 用户邮箱（如果获取成功）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+}
+
+// ============ 凭据导出 ============
+
+/// 批量导出凭据请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCredentialsRequest {
+    /// 要导出的凭据 ID 列表
+    pub ids: Vec<u64>,
+}
+
+/// 批量导出凭据响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCredentialsResponse {
+    /// 导出的凭据数量
+    pub count: usize,
+    /// 明文凭据列表，仅由受 Admin API Key 保护的导出接口返回
+    pub credentials: Vec<KiroCredentials>,
 }
 
 // ============ 余额查询 ============

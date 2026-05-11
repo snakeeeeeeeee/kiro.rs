@@ -9,12 +9,17 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::settings::CredentialPolicy;
 use crate::kiro::token_manager::MultiTokenManager;
+use crate::runtime::RuntimeLimiter;
 
 use super::error::AdminServiceError;
 use super::types::{
-    AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
-    CredentialsStatusResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest,
+    AddCredentialRequest, AddCredentialResponse, BalanceResponse, BatchCredentialIdsRequest,
+    BatchCredentialPolicyRequest, CredentialStatusItem, CredentialsStatusResponse,
+    ExportCredentialsRequest, ExportCredentialsResponse, LoadBalancingModeResponse,
+    RuntimeCredentialStatus, RuntimeSettingsResponse, RuntimeStatusResponse,
+    SetCredentialPolicyRequest, SetLoadBalancingModeRequest, SetRuntimeSettingsRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -34,6 +39,7 @@ struct CachedBalance {
 /// 封装所有 Admin API 的业务逻辑
 pub struct AdminService {
     token_manager: Arc<MultiTokenManager>,
+    runtime_limiter: Arc<RuntimeLimiter>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
@@ -43,6 +49,7 @@ pub struct AdminService {
 impl AdminService {
     pub fn new(
         token_manager: Arc<MultiTokenManager>,
+        runtime_limiter: Arc<RuntimeLimiter>,
         known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
@@ -53,6 +60,7 @@ impl AdminService {
 
         Self {
             token_manager,
+            runtime_limiter,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
@@ -87,6 +95,16 @@ impl AdminService {
                 refresh_failure_count: entry.refresh_failure_count,
                 disabled_reason: entry.disabled_reason,
                 endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
+                in_flight: entry.in_flight,
+                max_concurrent: entry.max_concurrent,
+                max_concurrent_override: entry.max_concurrent_override,
+                rpm_override: entry.rpm_override,
+                effective_rpm: entry.effective_rpm,
+                uses_default_policy: entry.uses_default_policy,
+                cooldown_until: entry.cooldown_until,
+                is_cooling_down: entry.is_cooling_down,
+                available_for_dispatch: entry.available_for_dispatch,
+                session_affinity_bindings: entry.session_affinity_bindings,
             })
             .collect();
 
@@ -98,6 +116,46 @@ impl AdminService {
             available: snapshot.available,
             current_id: snapshot.current_id,
             credentials,
+        }
+    }
+
+    /// 获取运行时状态
+    pub fn get_runtime_status(&self) -> RuntimeStatusResponse {
+        let snapshot = self.token_manager.snapshot();
+        RuntimeStatusResponse {
+            global_in_flight: snapshot.global_in_flight,
+            global_max_concurrent: snapshot.global_max_concurrent,
+            per_account_default_max_concurrent: snapshot.per_account_default_max_concurrent,
+            global_rpm: snapshot.global_rpm,
+            per_account_default_rpm: snapshot.per_account_default_rpm,
+            queue_depth: snapshot.queue_depth,
+            queue_max_size: snapshot.queue_max_size,
+            queue_timeout_ms: snapshot.queue_timeout_ms,
+            rate_limit_cooldown_ms: snapshot.rate_limit_cooldown_ms,
+            transient_cooldown_ms: snapshot.transient_cooldown_ms,
+            load_balancing_mode: snapshot.load_balancing_mode,
+            total_credentials: snapshot.total,
+            available_credentials: snapshot.available,
+            dispatch_available_credentials: snapshot.dispatch_available,
+            cooling_down_credentials: snapshot.cooling_down,
+            session_affinity_bindings: snapshot.session_affinity_bindings,
+            credentials: snapshot
+                .entries
+                .into_iter()
+                .map(|entry| RuntimeCredentialStatus {
+                    id: entry.id,
+                    in_flight: entry.in_flight,
+                    max_concurrent: entry.max_concurrent,
+                    max_concurrent_override: entry.max_concurrent_override,
+                    rpm_override: entry.rpm_override,
+                    effective_rpm: entry.effective_rpm,
+                    uses_default_policy: entry.uses_default_policy,
+                    cooldown_until: entry.cooldown_until,
+                    is_cooling_down: entry.is_cooling_down,
+                    available_for_dispatch: entry.available_for_dispatch,
+                    session_affinity_bindings: entry.session_affinity_bindings,
+                })
+                .collect(),
         }
     }
 
@@ -123,6 +181,75 @@ impl AdminService {
         self.token_manager
             .set_priority(id, priority)
             .map_err(|e| self.classify_error(e, id))
+    }
+
+    pub fn get_runtime_settings(&self) -> RuntimeSettingsResponse {
+        self.token_manager.runtime_settings()
+    }
+
+    pub fn set_runtime_settings(
+        &self,
+        req: SetRuntimeSettingsRequest,
+    ) -> Result<RuntimeSettingsResponse, AdminServiceError> {
+        req.validate()
+            .map_err(|e| AdminServiceError::InvalidCredential(e.to_string()))?;
+        self.token_manager
+            .update_runtime_settings(req.clone())
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        self.runtime_limiter.notify_capacity_available();
+        Ok(req)
+    }
+
+    pub fn set_policy(
+        &self,
+        id: u64,
+        req: SetCredentialPolicyRequest,
+    ) -> Result<(), AdminServiceError> {
+        let policy = CredentialPolicy {
+            max_concurrent_override: req.max_concurrent_override,
+            rpm_override: req.rpm_override,
+        };
+        self.token_manager
+            .set_policy(id, policy)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
+    pub fn set_policy_batch(
+        &self,
+        req: BatchCredentialPolicyRequest,
+    ) -> Result<(), AdminServiceError> {
+        if req.ids.is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "请选择要修改的凭据".to_string(),
+            ));
+        }
+        let policy = CredentialPolicy {
+            max_concurrent_override: req.max_concurrent_override,
+            rpm_override: req.rpm_override,
+        };
+        self.token_manager
+            .set_policy_batch(&req.ids, policy)
+            .map_err(|e| AdminServiceError::InvalidCredential(e.to_string()))
+    }
+
+    pub fn clear_cooldown(&self, id: u64) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .clear_cooldown(id)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
+    pub fn clear_cooldown_batch(
+        &self,
+        req: BatchCredentialIdsRequest,
+    ) -> Result<(), AdminServiceError> {
+        if req.ids.is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "请选择要清除冷却的凭据".to_string(),
+            ));
+        }
+        self.token_manager
+            .clear_cooldown_batch(&req.ids)
+            .map_err(|e| AdminServiceError::InvalidCredential(e.to_string()))
     }
 
     /// 重置失败计数并重新启用
@@ -257,6 +384,35 @@ impl AdminService {
         })
     }
 
+    /// 导出指定凭据的明文 JSON 数据
+    pub fn export_credentials(
+        &self,
+        req: ExportCredentialsRequest,
+    ) -> Result<ExportCredentialsResponse, AdminServiceError> {
+        if req.ids.is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "请选择要导出的凭据".to_string(),
+            ));
+        }
+
+        let credentials = self
+            .token_manager
+            .export_credentials_by_ids(&req.ids)
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("不存在") {
+                    AdminServiceError::InvalidCredential(msg)
+                } else {
+                    AdminServiceError::InternalError(msg)
+                }
+            })?;
+
+        Ok(ExportCredentialsResponse {
+            count: credentials.len(),
+            credentials,
+        })
+    }
+
     /// 删除凭据
     pub fn delete_credential(&self, id: u64) -> Result<(), AdminServiceError> {
         self.token_manager
@@ -295,6 +451,7 @@ impl AdminService {
         self.token_manager
             .set_load_balancing_mode(req.mode.clone())
             .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        self.runtime_limiter.notify_capacity_available();
 
         Ok(LoadBalancingModeResponse { mode: req.mode })
     }
@@ -448,7 +605,8 @@ impl AdminService {
         let msg = e.to_string();
         if msg.contains("不存在") {
             AdminServiceError::NotFound { id }
-        } else if msg.contains("只能删除已禁用的凭据") || msg.contains("请先禁用凭据") {
+        } else if msg.contains("只能删除已禁用的凭据") || msg.contains("请先禁用凭据")
+        {
             AdminServiceError::InvalidCredential(msg)
         } else {
             AdminServiceError::InternalError(msg)

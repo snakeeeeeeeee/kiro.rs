@@ -1,0 +1,20 @@
+services:
+  kiro-rs-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: kiro-rs:dev
+    container_name: kiro-rs-dev
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8990:8990"
+    volumes:
+      - ./config/:/app/config/
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8990/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

@@ -1,0 +1,6 @@
+services:
+  kiro-rs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: "${KIRO_RS_IMAGE:-kiro-rs:prod}"

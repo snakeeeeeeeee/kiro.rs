@@ -68,6 +68,7 @@
   - [工具调用](#工具调用)
 - [模型映射](#模型映射)
 - [Admin（可选）](#admin可选)
+- [单机生产部署](#单机生产部署)
 - [注意事项](#注意事项)
 - [项目结构](#项目结构)
 - [技术栈](#技术栈)
@@ -165,6 +166,14 @@ docker-compose up
 
 需要将 `config.json` 和 `credentials.json` 挂载到容器中，具体参见 `docker-compose.yml`。
 
+本地开发调试可使用：
+
+```bash
+docker compose -f docker-compose-dev.yml up -d --build
+```
+
+镜像内置 `HEALTHCHECK`，默认检查 `GET /healthz`。
+
 ## 配置详解
 
 ### config.json
@@ -190,6 +199,15 @@ docker-compose up
 | `proxyPassword` | string | - | 代理密码 |
 | `adminApiKey` | string | - | Admin API 密钥，配置后启用凭据管理 API 和 Web 管理界面 |
 | `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
+| `globalMaxConcurrent` | number | `32` | 全局最大并发请求数，超过后进入等待队列 |
+| `perAccountMaxConcurrent` | number | `3` | 单个凭据最大并发请求数，达到上限后调度会跳过该凭据 |
+| `queueMaxSize` | number | `128` | 全局并发满时的最大等待队列长度，队列满返回 `429` |
+| `queueTimeoutMs` | number | `30000` | 等待队列超时时间，超时返回 `429` |
+| `perAccountRpm` | number | `0` | 单凭据每分钟请求数限制，`0` 表示不限制 |
+| `globalRpm` | number | `0` | 全局每分钟请求数限制，`0` 表示不限制 |
+| `rateLimitCooldownMs` | number | `60000` | 上游返回 `429` 后该凭据的冷却时间 |
+| `transientCooldownMs` | number | `10000` | 上游 `408`、`5xx` 或网络超时后的短冷却时间 |
+| `shutdownDrainTimeoutSecs` | number | `60` | 收到关闭信号后等待已有请求结束的最长时间 |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
 
@@ -216,6 +234,15 @@ docker-compose up
    "proxyPassword": "pass",
    "adminApiKey": "sk-admin-your-secret-key",
    "loadBalancingMode": "priority",
+   "globalMaxConcurrent": 32,
+   "perAccountMaxConcurrent": 3,
+   "queueMaxSize": 128,
+   "queueTimeoutMs": 30000,
+   "perAccountRpm": 0,
+   "globalRpm": 0,
+   "rateLimitCooldownMs": 60000,
+   "transientCooldownMs": 10000,
+   "shutdownDrainTimeoutSecs": 60,
    "extractThinking": true
 }
 ```
@@ -438,6 +465,7 @@ RUST_LOG=debug ./target/release/kiro-rs
 | Anthropic 模型 | Kiro 模型 |
 |----------------|-----------|
 | `*sonnet*` | `claude-sonnet-4.5` |
+| `*opus*`（含 4.7/4-7） | `claude-opus-4.7` |
 | `*opus*`（含 4.5/4-5） | `claude-opus-4.5` |
 | `*opus*`（其他） | `claude-opus-4.6` |
 | `*haiku*` | `claude-haiku-4.5` |
@@ -447,6 +475,7 @@ RUST_LOG=debug ./target/release/kiro-rs
 当 `config.json` 配置了非空 `adminApiKey` 时，会启用：
 
 - **Admin API（认证同 API Key）**
+  - `GET /api/admin/runtime` - 获取全局并发、队列、冷却和账号占用状态
   - `GET /api/admin/credentials` - 获取所有凭据状态
   - `POST /api/admin/credentials` - 添加新凭据
   - `DELETE /api/admin/credentials/:id` - 删除凭据
@@ -457,6 +486,22 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 - **Admin UI**
   - `GET /admin` - 访问管理页面（需要在编译前构建 `admin-ui/dist`）
+
+健康检查端点无需认证：
+
+- `GET /healthz` - 进程存活检查，正常返回 `200`
+- `GET /readyz` - 至少存在一个未禁用凭据时返回 `200`，否则返回 `503`
+
+## 单机生产部署
+
+单机生产部署建议使用 `docker-compose-prod.yml`，默认只绑定 `127.0.0.1:8990`，并配置了健康检查、日志滚动、资源限制和优雅停止时间。
+
+```bash
+docker compose -f docker-compose-prod.yml up -d
+API_KEY='your-api-key' ADMIN_API_KEY='your-admin-api-key' scripts/prod-smoke.sh
+```
+
+详细上线、升级、回滚、备份和排障流程见 [docs/production-single-node.md](docs/production-single-node.md)。
 
 ## 注意事项
 

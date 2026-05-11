@@ -19,7 +19,9 @@ interface BatchImportDialogProps {
 }
 
 interface CredentialInput {
+  email?: string
   refreshToken?: string
+  accessToken?: string
   clientId?: string
   clientSecret?: string
   region?: string
@@ -30,6 +32,27 @@ interface CredentialInput {
   kiroApiKey?: string
   authMethod?: string
   endpoint?: string
+}
+
+function hasCredentialsObject(value: unknown): value is CredentialInput & { credentials: CredentialInput } {
+  if (typeof value !== 'object' || value === null) return false
+  const obj = value as Record<string, unknown>
+  return typeof obj.credentials === 'object' && obj.credentials !== null
+}
+
+function normalizeCredentialInput(value: unknown): CredentialInput {
+  if (hasCredentialsObject(value)) {
+    const nested = value.credentials
+    return {
+      ...nested,
+      email: typeof value.email === 'string' ? value.email : nested.email,
+      machineId: typeof value.machineId === 'string' ? value.machineId : nested.machineId,
+      priority: typeof value.priority === 'number' ? value.priority : nested.priority,
+      endpoint: typeof value.endpoint === 'string' ? value.endpoint : nested.endpoint,
+    }
+  }
+
+  return value as CredentialInput
 }
 
 interface VerificationResult {
@@ -88,8 +111,15 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
     // 先单独解析 JSON，给出精准的错误提示
     let credentials: CredentialInput[]
     try {
-      const parsed = JSON.parse(jsonInput)
-      credentials = Array.isArray(parsed) ? parsed : [parsed]
+      const trimmedInput = jsonInput.trim()
+      const parsed = trimmedInput.startsWith('[') || trimmedInput.startsWith('{')
+        ? JSON.parse(trimmedInput)
+        : jsonInput
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean)
+            .map(line => JSON.parse(line))
+      credentials = (Array.isArray(parsed) ? parsed : [parsed]).map(normalizeCredentialInput)
     } catch (error) {
       toast.error('JSON 格式错误: ' + extractErrorMessage(error))
       return
@@ -234,6 +264,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
               apiRegion: cred.apiRegion?.trim() || undefined,
               machineId: cred.machineId?.trim() || undefined,
               endpoint: cred.endpoint?.trim() || undefined,
+              email: cred.email?.trim() || undefined,
             })
 
             addedCredId = addedCred.credentialId
@@ -283,6 +314,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             priority: cred.priority || 0,
             machineId: cred.machineId?.trim() || undefined,
             endpoint: cred.endpoint?.trim() || undefined,
+            email: cred.email?.trim() || undefined,
           })
 
           addedCredId = addedCred.credentialId
@@ -422,7 +454,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
               JSON 格式凭据
             </label>
             <textarea
-              placeholder={'粘贴 JSON 格式的凭据（支持单个对象或数组）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n\n支持 region 字段自动映射为 authRegion'}
+              placeholder={'粘贴 JSON 格式的凭据（支持单个对象、数组或每行一个 JSON 对象）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n\n支持 region 字段自动映射为 authRegion'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}
