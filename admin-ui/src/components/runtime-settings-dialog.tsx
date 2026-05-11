@@ -82,18 +82,19 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-5xl flex-col gap-0 overflow-hidden p-0 sm:max-h-[85vh]">
+        <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>运行策略</DialogTitle>
           <DialogDescription>
             修改后立即生效，已有请求不会被中断。
           </DialogDescription>
         </DialogHeader>
 
-        {isLoading || !form ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">加载中...</div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          {isLoading || !form ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">加载中...</div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <label className="text-sm font-medium">负载模式</label>
               <select
@@ -205,9 +206,10 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               </div>
             ))}
           </div>
-        )}
+          )}
+        </div>
 
-        <DialogFooter>
+        <DialogFooter className="border-t bg-background px-6 py-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>
