@@ -441,6 +441,14 @@ fn runtime_settings_pairs(
             "opus47DiagnosticsEnabled",
             settings.opus47_diagnostics_enabled.to_string(),
         ),
+        (
+            "opus47RawDebugEnabled",
+            settings.opus47_raw_debug_enabled.to_string(),
+        ),
+        (
+            "opus47RawDebugMaxChars",
+            settings.opus47_raw_debug_max_chars.to_string(),
+        ),
         ("compatUsageShape", settings.compat_usage_shape.clone()),
         (
             "compatThinkingModel",
@@ -598,6 +606,8 @@ fn apply_runtime_setting(
                 normalize_opus47_plain_stabilization_mode(value)
         }
         "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
+        "opus47RawDebugEnabled" => settings.opus47_raw_debug_enabled = parse_bool(key, value)?,
+        "opus47RawDebugMaxChars" => settings.opus47_raw_debug_max_chars = parse_usize(key, value)?,
         "compatUsageShape" => {
             settings.compat_usage_shape = crate::kiro::settings::normalize_compat_usage_shape(value)
         }
@@ -867,6 +877,8 @@ mod tests {
         updated.session_affinity_ttl_secs = 900;
         updated.opus47_plain_stabilization_mode = "adaptive_low".to_string();
         updated.opus47_diagnostics_enabled = false;
+        updated.opus47_raw_debug_enabled = true;
+        updated.opus47_raw_debug_max_chars = 12_345;
         updated.load_balancing_mode = "balanced".to_string();
         updated.dynamic_proxy_enabled = true;
         updated.dynamic_proxy_host = "proxy.example.com".to_string();
@@ -880,6 +892,8 @@ mod tests {
         assert_eq!(loaded.session_affinity_ttl_secs, 900);
         assert_eq!(loaded.opus47_plain_stabilization_mode, "adaptive_low");
         assert!(!loaded.opus47_diagnostics_enabled);
+        assert!(loaded.opus47_raw_debug_enabled);
+        assert_eq!(loaded.opus47_raw_debug_max_chars, 12_345);
         assert_eq!(loaded.load_balancing_mode, "balanced");
         assert!(loaded.dynamic_proxy_enabled);
         assert_eq!(loaded.dynamic_proxy_host, "proxy.example.com");

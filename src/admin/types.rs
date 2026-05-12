@@ -116,6 +116,8 @@ pub struct RuntimeStatusResponse {
     pub session_affinity_ttl_secs: u64,
     pub opus47_plain_stabilization_mode: String,
     pub opus47_diagnostics_enabled: bool,
+    pub opus47_raw_debug_enabled: bool,
+    pub opus47_raw_debug_max_chars: usize,
     pub compat_usage_shape: String,
     pub compat_thinking_model: String,
     pub compat_models_shape: String,

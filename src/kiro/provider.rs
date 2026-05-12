@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
+use uuid::Uuid;
 
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::dynamic_proxy::is_proxy_error;
@@ -21,6 +22,7 @@ use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownManager;
+use crate::kiro::parser::frame::Frame;
 use crate::kiro::token_manager::{CredentialLease, MultiTokenManager};
 use crate::metrics::{MetricsRecorder, RequestTimingSample, UpstreamOutcome, duration_ms};
 use crate::model::config::TlsBackend;
@@ -57,6 +59,9 @@ pub struct LeasedResponse {
     response: Option<reqwest::Response>,
     credential_id: u64,
     attempts: usize,
+    raw_request_id: Option<String>,
+    raw_debug_enabled: bool,
+    raw_debug_max_chars: usize,
     lease: Option<CredentialLease>,
     timing: Option<ResponseTimingGuard>,
 }
@@ -202,6 +207,9 @@ impl LeasedResponse {
         response: reqwest::Response,
         credential_id: u64,
         attempts: usize,
+        raw_request_id: Option<String>,
+        raw_debug_enabled: bool,
+        raw_debug_max_chars: usize,
         lease: CredentialLease,
         timing: Option<ResponseTimingGuard>,
     ) -> Self {
@@ -209,6 +217,9 @@ impl LeasedResponse {
             response: Some(response),
             credential_id,
             attempts,
+            raw_request_id,
+            raw_debug_enabled,
+            raw_debug_max_chars,
             lease: Some(lease),
             timing,
         }
@@ -220,6 +231,18 @@ impl LeasedResponse {
 
     pub fn attempts(&self) -> usize {
         self.attempts
+    }
+
+    pub fn raw_request_id(&self) -> Option<&str> {
+        self.raw_request_id.as_deref()
+    }
+
+    pub fn raw_debug_enabled(&self) -> bool {
+        self.raw_debug_enabled
+    }
+
+    pub fn raw_debug_max_chars(&self) -> usize {
+        self.raw_debug_max_chars
     }
 
     pub async fn bytes(mut self) -> Result<bytes::Bytes, reqwest::Error> {
@@ -362,6 +385,165 @@ fn provider_rate_limit_error(
         retry_after_secs: retry_after_secs(retry_after_ms),
     }
     .into()
+}
+
+fn truncate_for_raw_debug(value: &str, max_chars: usize) -> (String, bool) {
+    let max_chars = max_chars.max(1);
+    let mut truncated = false;
+    let mut result = String::new();
+
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            truncated = true;
+            break;
+        }
+        result.push(ch);
+    }
+
+    (result, truncated)
+}
+
+fn is_opus47_raw_debug_model(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-7"
+            | "claude-opus-4.7"
+            | "claude-opus-4-7-thinking"
+            | "claude-opus-4.7-thinking"
+    )
+}
+
+fn log_kiro_raw_request(
+    raw_request_id: &str,
+    model: &str,
+    credential_id: u64,
+    endpoint_name: &str,
+    url: &str,
+    is_stream: bool,
+    body: &str,
+    max_chars: usize,
+) {
+    let (body_preview, truncated) = truncate_for_raw_debug(body, max_chars);
+    tracing::warn!(
+        target: "kiro_rs::raw_debug",
+        raw_request_id = raw_request_id,
+        model = model,
+        credential_id = credential_id,
+        endpoint = endpoint_name,
+        url = url,
+        stream = is_stream,
+        body_chars = body.chars().count(),
+        body_bytes = body.len(),
+        truncated = truncated,
+        body = %body_preview,
+        "kiro_raw_request"
+    );
+}
+
+pub(crate) fn log_kiro_raw_stream_chunk(
+    raw_request_id: Option<&str>,
+    model: &str,
+    credential_id: u64,
+    chunk_index: usize,
+    chunk: &[u8],
+    max_chars: usize,
+) {
+    let Some(raw_request_id) = raw_request_id else {
+        return;
+    };
+    let chunk_text = String::from_utf8_lossy(chunk);
+    let (chunk_preview, truncated) = truncate_for_raw_debug(&chunk_text, max_chars);
+    tracing::warn!(
+        target: "kiro_rs::raw_debug",
+        raw_request_id = raw_request_id,
+        model = model,
+        credential_id = credential_id,
+        chunk_index = chunk_index,
+        chunk_bytes = chunk.len(),
+        truncated = truncated,
+        chunk = %chunk_preview,
+        "kiro_raw_stream_chunk"
+    );
+}
+
+pub(crate) fn log_kiro_raw_stream_frame(
+    raw_request_id: Option<&str>,
+    model: &str,
+    credential_id: u64,
+    frame_index: usize,
+    frame: &Frame,
+    max_chars: usize,
+) {
+    let Some(raw_request_id) = raw_request_id else {
+        return;
+    };
+    let payload = String::from_utf8_lossy(&frame.payload);
+    let (payload_preview, truncated) = truncate_for_raw_debug(&payload, max_chars);
+    tracing::warn!(
+        target: "kiro_rs::raw_debug",
+        raw_request_id = raw_request_id,
+        model = model,
+        credential_id = credential_id,
+        frame_index = frame_index,
+        message_type = frame.message_type(),
+        event_type = frame.event_type(),
+        error_code = frame.headers.error_code(),
+        exception_type = frame.headers.exception_type(),
+        payload_bytes = frame.payload.len(),
+        truncated = truncated,
+        payload = %payload_preview,
+        "kiro_raw_stream_frame"
+    );
+}
+
+pub(crate) fn log_kiro_raw_parsed_event(
+    raw_request_id: Option<&str>,
+    model: &str,
+    credential_id: u64,
+    event_index: usize,
+    event_type: &str,
+    event_debug: &str,
+    max_chars: usize,
+) {
+    let Some(raw_request_id) = raw_request_id else {
+        return;
+    };
+    let (event_preview, truncated) = truncate_for_raw_debug(event_debug, max_chars);
+    tracing::warn!(
+        target: "kiro_rs::raw_debug",
+        raw_request_id = raw_request_id,
+        model = model,
+        credential_id = credential_id,
+        event_index = event_index,
+        event_type = event_type,
+        truncated = truncated,
+        event = %event_preview,
+        "kiro_raw_parsed_event"
+    );
+}
+
+pub(crate) fn log_kiro_raw_nonstream_body(
+    raw_request_id: Option<&str>,
+    model: &str,
+    credential_id: u64,
+    body: &[u8],
+    max_chars: usize,
+) {
+    let Some(raw_request_id) = raw_request_id else {
+        return;
+    };
+    let body_text = String::from_utf8_lossy(body);
+    let (body_preview, truncated) = truncate_for_raw_debug(&body_text, max_chars);
+    tracing::warn!(
+        target: "kiro_rs::raw_debug",
+        raw_request_id = raw_request_id,
+        model = model,
+        credential_id = credential_id,
+        body_bytes = body.len(),
+        truncated = truncated,
+        body = %body_preview,
+        "kiro_raw_nonstream_body"
+    );
 }
 
 impl KiroProvider {
@@ -570,6 +752,9 @@ impl KiroProvider {
                     response,
                     ctx.id,
                     attempt + 1,
+                    None,
+                    false,
+                    0,
                     ctx.lease,
                     None,
                 ));
@@ -766,6 +951,22 @@ impl KiroProvider {
 
             let url = endpoint.api_url(&rctx);
             let body = endpoint.transform_api_body(request_body, &rctx);
+            let raw_debug_enabled =
+                settings.opus47_raw_debug_enabled && is_opus47_raw_debug_model(&model_for_metrics);
+            let raw_debug_max_chars = settings.opus47_raw_debug_max_chars;
+            let raw_request_id = raw_debug_enabled.then(|| Uuid::new_v4().to_string());
+            if let Some(raw_request_id) = raw_request_id.as_deref() {
+                log_kiro_raw_request(
+                    raw_request_id,
+                    &model_for_metrics,
+                    ctx.id,
+                    endpoint.name(),
+                    &url,
+                    is_stream,
+                    &body,
+                    raw_debug_max_chars,
+                );
+            }
             if config.request_diagnostics_enabled {
                 let request_diagnostics = Self::diagnose_api_request_body(&body);
                 tracing::info!(
@@ -872,6 +1073,9 @@ impl KiroProvider {
                     response,
                     ctx.id,
                     http_attempts,
+                    raw_request_id,
+                    raw_debug_enabled,
+                    raw_debug_max_chars,
                     ctx.lease,
                     Some(timing),
                 ));

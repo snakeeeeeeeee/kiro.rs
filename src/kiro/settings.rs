@@ -21,6 +21,8 @@ pub struct RuntimeSettings {
     pub session_affinity_ttl_secs: u64,
     pub opus47_plain_stabilization_mode: String,
     pub opus47_diagnostics_enabled: bool,
+    pub opus47_raw_debug_enabled: bool,
+    pub opus47_raw_debug_max_chars: usize,
     pub compat_usage_shape: String,
     pub compat_thinking_model: String,
     pub compat_models_shape: String,
@@ -87,6 +89,8 @@ impl RuntimeSettings {
                 &config.opus47_plain_stabilization_mode,
             ),
             opus47_diagnostics_enabled: config.opus47_diagnostics_enabled,
+            opus47_raw_debug_enabled: config.opus47_raw_debug_enabled,
+            opus47_raw_debug_max_chars: config.opus47_raw_debug_max_chars.clamp(1_000, 200_000),
             compat_usage_shape: normalize_compat_usage_shape(&config.compat_usage_shape),
             compat_thinking_model: normalize_compat_thinking_model(&config.compat_thinking_model),
             compat_models_shape: normalize_compat_models_shape(&config.compat_models_shape),
@@ -176,6 +180,9 @@ impl RuntimeSettings {
         }
         if self.compat_usage_shape != "anthropic" && self.compat_usage_shape != "flat" {
             anyhow::bail!("compatUsageShape 必须是 'anthropic' 或 'flat'");
+        }
+        if !(1_000..=200_000).contains(&self.opus47_raw_debug_max_chars) {
+            anyhow::bail!("opus47RawDebugMaxChars 必须在 1000..200000 范围内");
         }
         if self.compat_thinking_model != "native" && self.compat_thinking_model != "plain_text" {
             anyhow::bail!("compatThinkingModel 必须是 'native' 或 'plain_text'");

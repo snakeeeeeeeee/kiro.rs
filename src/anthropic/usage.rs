@@ -566,6 +566,8 @@ mod tests {
             session_affinity_ttl_secs: 3_600,
             opus47_plain_stabilization_mode: "off".to_string(),
             opus47_diagnostics_enabled: true,
+            opus47_raw_debug_enabled: false,
+            opus47_raw_debug_max_chars: 20_000,
             compat_usage_shape: "anthropic".to_string(),
             compat_thinking_model: "native".to_string(),
             compat_models_shape: "anthropic".to_string(),

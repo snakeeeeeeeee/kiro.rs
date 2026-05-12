@@ -175,6 +175,8 @@ impl AdminService {
             session_affinity_ttl_secs: snapshot.session_affinity_ttl_secs,
             opus47_plain_stabilization_mode: snapshot.opus47_plain_stabilization_mode,
             opus47_diagnostics_enabled: snapshot.opus47_diagnostics_enabled,
+            opus47_raw_debug_enabled: snapshot.opus47_raw_debug_enabled,
+            opus47_raw_debug_max_chars: snapshot.opus47_raw_debug_max_chars,
             compat_usage_shape: snapshot.compat_usage_shape,
             compat_thinking_model: snapshot.compat_thinking_model,
             compat_models_shape: snapshot.compat_models_shape,

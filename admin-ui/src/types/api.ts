@@ -59,6 +59,8 @@ export interface RuntimeStatusResponse {
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47DiagnosticsEnabled: boolean
+  opus47RawDebugEnabled: boolean
+  opus47RawDebugMaxChars: number
   compatUsageShape: 'anthropic' | 'flat'
   compatThinkingModel: 'native' | 'plain_text'
   compatModelsShape: 'anthropic' | 'aggregator'
@@ -235,6 +237,8 @@ export interface RuntimeSettings {
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47DiagnosticsEnabled: boolean
+  opus47RawDebugEnabled: boolean
+  opus47RawDebugMaxChars: number
   compatUsageShape: 'anthropic' | 'flat'
   compatThinkingModel: 'native' | 'plain_text'
   compatModelsShape: 'anthropic' | 'aggregator'

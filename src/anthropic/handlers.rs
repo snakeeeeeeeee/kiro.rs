@@ -761,6 +761,9 @@ fn create_sse_stream(
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
+    let raw_debug_enabled = response.raw_debug_enabled();
+    let raw_debug_max_chars = response.raw_debug_max_chars();
+    let raw_request_id = response.raw_request_id().map(str::to_string);
     let stream_model = ctx.model.clone();
     let stream_started_at = Instant::now();
 
@@ -785,6 +788,12 @@ fn create_sse_stream(
             Some(permit),
             stream_model,
             credential_id,
+            raw_debug_enabled,
+            raw_debug_max_chars,
+            raw_request_id,
+            0usize,
+            0usize,
+            0usize,
             stream_started_at,
         ),
         |(
@@ -797,6 +806,12 @@ fn create_sse_stream(
             permit,
             stream_model,
             credential_id,
+            raw_debug_enabled,
+            raw_debug_max_chars,
+            raw_request_id,
+            mut raw_chunk_index,
+            mut raw_frame_index,
+            mut raw_event_index,
             stream_started_at,
         )| async move {
             if finished {
@@ -809,6 +824,18 @@ fn create_sse_stream(
                 chunk_result = body_stream.next() => {
                     match chunk_result {
                         Some(Ok(chunk)) => {
+                            raw_chunk_index += 1;
+                            if raw_debug_enabled {
+                                crate::kiro::provider::log_kiro_raw_stream_chunk(
+                                    raw_request_id.as_deref(),
+                                    &stream_model,
+                                    credential_id,
+                                    raw_chunk_index,
+                                    &chunk,
+                                    raw_debug_max_chars,
+                                );
+                            }
+
                             // 解码事件
                             if let Err(e) = decoder.feed(&chunk) {
                                 tracing::warn!("缓冲区溢出: {}", e);
@@ -818,7 +845,19 @@ fn create_sse_stream(
                             for result in decoder.decode_iter() {
                                 match result {
                                     Ok(frame) => {
+                                        raw_frame_index += 1;
+                                        if raw_debug_enabled {
+                                            crate::kiro::provider::log_kiro_raw_stream_frame(
+                                                raw_request_id.as_deref(),
+                                                &stream_model,
+                                                credential_id,
+                                                raw_frame_index,
+                                                &frame,
+                                                raw_debug_max_chars,
+                                            );
+                                        }
                                         if let Ok(event) = Event::from_frame(frame) {
+                                            raw_event_index += 1;
                                             if !first_event_logged {
                                                 first_event_logged = true;
                                                 tracing::info!(
@@ -829,6 +868,17 @@ fn create_sse_stream(
                                                     first_event_ms = crate::metrics::duration_ms(stream_started_at.elapsed()),
                                                     event_type = %event_metric_name(&event),
                                                     "upstream_stream_first_event"
+                                                );
+                                            }
+                                            if raw_debug_enabled {
+                                                crate::kiro::provider::log_kiro_raw_parsed_event(
+                                                    raw_request_id.as_deref(),
+                                                    &stream_model,
+                                                    credential_id,
+                                                    raw_event_index,
+                                                    &event_metric_name(&event),
+                                                    &format!("{:?}", event),
+                                                    raw_debug_max_chars,
                                                 );
                                             }
                                             log_unknown_kiro_event(&event);
@@ -848,7 +898,7 @@ fn create_sse_stream(
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, stream_started_at)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
                         }
                         Some(Err(e)) => {
                             tracing::error!("读取响应流失败: {}", e);
@@ -860,7 +910,7 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
                         }
                         None => {
                             // 流结束，发送最终事件
@@ -871,7 +921,7 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
                         }
                     }
                 }
@@ -879,7 +929,7 @@ fn create_sse_stream(
                 _ = ping_interval.tick() => {
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, stream_started_at)))
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
                 }
             }
         },
@@ -1028,6 +1078,9 @@ async fn handle_non_stream_request(
 
     let credential_id = response.credential_id();
     let attempts = response.attempts();
+    let raw_debug_enabled = response.raw_debug_enabled();
+    let raw_debug_max_chars = response.raw_debug_max_chars();
+    let raw_request_id = response.raw_request_id().map(str::to_string);
     let mut opus47_diagnostics = Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
         model,
@@ -1052,6 +1105,15 @@ async fn handle_non_stream_request(
                 .into_response();
         }
     };
+    if raw_debug_enabled {
+        crate::kiro::provider::log_kiro_raw_nonstream_body(
+            raw_request_id.as_deref(),
+            model,
+            credential_id,
+            &body_bytes,
+            raw_debug_max_chars,
+        );
+    }
 
     // 解析事件流
     let mut decoder = EventStreamDecoder::new();
@@ -1075,7 +1137,28 @@ async fn handle_non_stream_request(
     for result in decoder.decode_iter() {
         match result {
             Ok(frame) => {
+                if raw_debug_enabled {
+                    crate::kiro::provider::log_kiro_raw_stream_frame(
+                        raw_request_id.as_deref(),
+                        model,
+                        credential_id,
+                        0,
+                        &frame,
+                        raw_debug_max_chars,
+                    );
+                }
                 if let Ok(event) = Event::from_frame(frame) {
+                    if raw_debug_enabled {
+                        crate::kiro::provider::log_kiro_raw_parsed_event(
+                            raw_request_id.as_deref(),
+                            model,
+                            credential_id,
+                            0,
+                            &event_metric_name(&event),
+                            &format!("{:?}", event),
+                            raw_debug_max_chars,
+                        );
+                    }
                     opus47_diagnostics.observe_event(&event);
                     match event {
                         Event::AssistantResponse(resp) => {
@@ -1679,6 +1762,9 @@ fn create_buffered_sse_stream(
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
+    let raw_debug_enabled = response.raw_debug_enabled();
+    let raw_debug_max_chars = response.raw_debug_max_chars();
+    let raw_request_id = response.raw_request_id().map(str::to_string);
     let stream_model = ctx.model().to_string();
     let stream_started_at = Instant::now();
     let body_stream = response.bytes_stream();
@@ -1694,6 +1780,12 @@ fn create_buffered_sse_stream(
             Some(permit),
             stream_model,
             credential_id,
+            raw_debug_enabled,
+            raw_debug_max_chars,
+            raw_request_id,
+            0usize,
+            0usize,
+            0usize,
             stream_started_at,
         ),
         |(
@@ -1706,6 +1798,12 @@ fn create_buffered_sse_stream(
             permit,
             stream_model,
             credential_id,
+            raw_debug_enabled,
+            raw_debug_max_chars,
+            raw_request_id,
+            mut raw_chunk_index,
+            mut raw_frame_index,
+            mut raw_event_index,
             stream_started_at,
         )| async move {
             if finished {
@@ -1722,13 +1820,25 @@ fn create_buffered_sse_stream(
                     _ = ping_interval.tick() => {
                         tracing::trace!("发送 ping 保活事件（缓冲模式）");
                         let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, stream_started_at)));
+                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)));
                     }
 
                     // 然后处理数据流
                     chunk_result = body_stream.next() => {
                         match chunk_result {
                             Some(Ok(chunk)) => {
+                                raw_chunk_index += 1;
+                                if raw_debug_enabled {
+                                    crate::kiro::provider::log_kiro_raw_stream_chunk(
+                                        raw_request_id.as_deref(),
+                                        &stream_model,
+                                        credential_id,
+                                        raw_chunk_index,
+                                        &chunk,
+                                        raw_debug_max_chars,
+                                    );
+                                }
+
                                 // 解码事件
                                 if let Err(e) = decoder.feed(&chunk) {
                                     tracing::warn!("缓冲区溢出: {}", e);
@@ -1737,7 +1847,19 @@ fn create_buffered_sse_stream(
                                 for result in decoder.decode_iter() {
                                     match result {
                                         Ok(frame) => {
+                                            raw_frame_index += 1;
+                                            if raw_debug_enabled {
+                                                crate::kiro::provider::log_kiro_raw_stream_frame(
+                                                    raw_request_id.as_deref(),
+                                                    &stream_model,
+                                                    credential_id,
+                                                    raw_frame_index,
+                                                    &frame,
+                                                    raw_debug_max_chars,
+                                                );
+                                            }
                                             if let Ok(event) = Event::from_frame(frame) {
+                                                raw_event_index += 1;
                                                 if !first_event_logged {
                                                     first_event_logged = true;
                                                     tracing::info!(
@@ -1749,6 +1871,17 @@ fn create_buffered_sse_stream(
                                                         first_event_ms = crate::metrics::duration_ms(stream_started_at.elapsed()),
                                                         event_type = %event_metric_name(&event),
                                                         "upstream_stream_first_event"
+                                                    );
+                                                }
+                                                if raw_debug_enabled {
+                                                    crate::kiro::provider::log_kiro_raw_parsed_event(
+                                                        raw_request_id.as_deref(),
+                                                        &stream_model,
+                                                        credential_id,
+                                                        raw_event_index,
+                                                        &event_metric_name(&event),
+                                                        &format!("{:?}", event),
+                                                        raw_debug_max_chars,
                                                     );
                                                 }
                                                 log_unknown_kiro_event(&event);
@@ -1773,7 +1906,7 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)));
                             }
                             None => {
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
@@ -1784,7 +1917,7 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, stream_started_at)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)));
                             }
                         }
                     }

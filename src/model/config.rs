@@ -159,6 +159,14 @@ pub struct Config {
     #[serde(default = "default_opus47_diagnostics_enabled")]
     pub opus47_diagnostics_enabled: bool,
 
+    /// 是否启用 Opus 4.7 原始请求/响应调试日志（会记录正文，默认关闭）
+    #[serde(default)]
+    pub opus47_raw_debug_enabled: bool,
+
+    /// Opus 4.7 原始调试日志单字段最大字符数
+    #[serde(default = "default_opus47_raw_debug_max_chars")]
+    pub opus47_raw_debug_max_chars: usize,
+
     /// 兼容 usage 字段形态："anthropic" 或 "flat"
     #[serde(default = "default_compat_usage_shape")]
     pub compat_usage_shape: String,
@@ -419,6 +427,10 @@ fn default_opus47_diagnostics_enabled() -> bool {
     true
 }
 
+fn default_opus47_raw_debug_max_chars() -> usize {
+    20_000
+}
+
 fn default_compat_usage_shape() -> String {
     "anthropic".to_string()
 }
@@ -598,6 +610,8 @@ impl Default for Config {
             session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
             opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
+            opus47_raw_debug_enabled: false,
+            opus47_raw_debug_max_chars: default_opus47_raw_debug_max_chars(),
             compat_usage_shape: default_compat_usage_shape(),
             compat_thinking_model: default_compat_thinking_model(),
             compat_models_shape: default_compat_models_shape(),
