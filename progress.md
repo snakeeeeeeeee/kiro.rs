@@ -226,3 +226,11 @@
 - Matching requests get a short clarification prepended to the Kiro upstream current user message; no response spoofing or retry was added.
 - Added unit coverage for disabled mode, matched plain Opus 4.7 probe, non-probe text, and thinking model exclusion.
 - Validation: `cargo fmt -- --check`, `cargo check`, `cargo test` passed with 249 tests; `pnpm --dir admin-ui build` passed.
+
+## Completed: PDF / Structured Output / Signature History Follow-up
+- Added Anthropic `document` block handling for `application/pdf`: base64 PDF input is preserved as Kiro `documents` and extracted text is appended to the current user content.
+- Added `pdf-extract` plus a lightweight `Tj`/`TJ` fallback for simple text-layer PDFs.
+- Added structured-output compatibility for `output_config.format` and OpenAI-style `response_format`, injecting request-scoped JSON-only/schema instructions.
+- Added real assistant thinking signature preservation into Kiro history as `reasoningContent.reasoningText.signature`; no fake signature is generated.
+- Added converter tests for PDF extraction, JSON schema hinting, OpenAI `response_format=json_object`, and thinking signature preservation.
+- Validation: `cargo fmt -- --check` passed; `cargo test` passed with 253 tests; `pnpm --dir admin-ui build` passed.

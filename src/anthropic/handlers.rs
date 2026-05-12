@@ -332,6 +332,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            response_format: None,
             metadata: None,
         }
     }
@@ -1468,6 +1469,7 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     if is_opus_adaptive {
         payload.output_config = Some(OutputConfig {
             effort: "high".to_string(),
+            format: None,
         });
     }
 }
@@ -1541,6 +1543,7 @@ fn apply_opus47_plain_stabilization(
     });
     payload.output_config = Some(OutputConfig {
         effort: effort.to_string(),
+        format: None,
     });
 
     tracing::info!(

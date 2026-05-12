@@ -4,18 +4,20 @@
 
 use std::collections::HashMap;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::kiro::model::requests::conversation::{
     AssistantMessage, ConversationState, CurrentMessage, HistoryAssistantMessage,
-    HistoryUserMessage, KiroImage, Message, UserInputMessage, UserInputMessageContext, UserMessage,
+    HistoryUserMessage, KiroDocument, KiroImage, Message, UserInputMessage,
+    UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::tool::{
     InputSchema, Tool, ToolResult, ToolSpecification, ToolUseEntry,
 };
 
-use super::types::{ContentBlock, MessagesRequest};
+use super::types::{ContentBlock, MessagesRequest, StructuredOutputFormat};
 
 /// 规范化 JSON Schema，修复 MCP 工具定义中常见的类型问题
 ///
@@ -91,6 +93,12 @@ When the Write or Edit tool has content size limits, always comply silently. \
 Never suggest bypassing these limits via alternative tools. \
 Never ask the user whether to switch approaches. \
 Complete all chunked operations without commentary.";
+
+/// 单个 PDF base64 文档的最大解码字节数。
+const MAX_PDF_BYTES: usize = 25 * 1024 * 1024;
+
+/// 注入给模型的 PDF 文本最大字符数，避免测试外的大文档把上下文打爆。
+const MAX_PDF_EXTRACTED_CHARS: usize = 120_000;
 
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 ///
@@ -286,7 +294,8 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     // 5. 处理最后一条消息作为 current_message（经过 prefill 预处理，末尾必为 user）
     let last_message = messages.last().unwrap();
-    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
+    let (text_content, images, documents, tool_results) =
+        process_message_content(&last_message.content)?;
 
     // 6. 转换工具定义（超长名称自动缩短并记录映射）
     let mut tool_name_map = HashMap::new();
@@ -339,6 +348,9 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     if !images.is_empty() {
         user_input = user_input.with_images(images);
     }
+    if !documents.is_empty() {
+        user_input = user_input.with_documents(documents);
+    }
 
     let current_message = CurrentMessage::new(user_input);
 
@@ -368,12 +380,13 @@ fn determine_chat_trigger_type(_req: &MessagesRequest) -> String {
     "MANUAL".to_string()
 }
 
-/// 处理消息内容，提取文本、图片和工具结果
+/// 处理消息内容，提取文本、图片、文档和工具结果
 fn process_message_content(
     content: &serde_json::Value,
-) -> Result<(String, Vec<KiroImage>, Vec<ToolResult>), ConversionError> {
+) -> Result<(String, Vec<KiroImage>, Vec<KiroDocument>, Vec<ToolResult>), ConversionError> {
     let mut text_parts = Vec::new();
     let mut images = Vec::new();
+    let mut documents = Vec::new();
     let mut tool_results = Vec::new();
 
     match content {
@@ -391,8 +404,47 @@ fn process_message_content(
                         }
                         "image" => {
                             if let Some(source) = block.source {
-                                if let Some(format) = get_image_format(&source.media_type) {
+                                if is_pdf_media_type(&source.media_type) {
+                                    if let Some(pdf) = process_pdf_document_source(
+                                        &source.data,
+                                        block
+                                            .title
+                                            .as_deref()
+                                            .or(block.name.as_deref())
+                                            .unwrap_or("document.pdf"),
+                                    ) {
+                                        text_parts.push(pdf.text);
+                                        documents.push(pdf.document);
+                                    }
+                                } else if let Some(format) = get_image_format(&source.media_type) {
                                     images.push(KiroImage::from_base64(format, source.data));
+                                }
+                            }
+                        }
+                        "document" => {
+                            if let Some(source) = block.source {
+                                if is_pdf_media_type(&source.media_type) {
+                                    let name = block
+                                        .title
+                                        .as_deref()
+                                        .or(block.name.as_deref())
+                                        .unwrap_or("document.pdf");
+                                    if let Some(pdf) =
+                                        process_pdf_document_source(&source.data, name)
+                                    {
+                                        text_parts.push(pdf.text);
+                                        documents.push(pdf.document);
+                                    }
+                                } else {
+                                    text_parts.push(format!(
+                                        "[Document \"{}\" — unsupported media type: {}]",
+                                        block
+                                            .title
+                                            .as_deref()
+                                            .or(block.name.as_deref())
+                                            .unwrap_or("document"),
+                                        source.media_type
+                                    ));
                                 }
                             }
                         }
@@ -423,7 +475,257 @@ fn process_message_content(
         _ => {}
     }
 
-    Ok((text_parts.join("\n"), images, tool_results))
+    Ok((text_parts.join("\n"), images, documents, tool_results))
+}
+
+struct ProcessedPdfDocument {
+    text: String,
+    document: KiroDocument,
+}
+
+fn is_pdf_media_type(media_type: &str) -> bool {
+    media_type.eq_ignore_ascii_case("application/pdf")
+}
+
+fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDocument> {
+    let decoded_len = estimate_base64_decoded_len(data);
+    if decoded_len > MAX_PDF_BYTES {
+        tracing::warn!(
+            name = name,
+            decoded_len,
+            max_bytes = MAX_PDF_BYTES,
+            "PDF 文档超过大小限制，跳过文本提取"
+        );
+        return Some(ProcessedPdfDocument {
+            text: format!(
+                "[PDF Document \"{}\" — skipped because decoded size exceeds {} bytes]",
+                name, MAX_PDF_BYTES
+            ),
+            document: KiroDocument::from_base64("pdf", name, data),
+        });
+    }
+
+    let bytes = match STANDARD.decode(data) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(name = name, error = %err, "PDF base64 解码失败");
+            return Some(ProcessedPdfDocument {
+                text: format!("[PDF Document \"{}\" — invalid base64 data]", name),
+                document: KiroDocument::from_base64("pdf", name, data),
+            });
+        }
+    };
+
+    if !bytes.starts_with(b"%PDF-") {
+        tracing::warn!(
+            name = name,
+            "document media_type 是 application/pdf 但内容不是 PDF"
+        );
+        return Some(ProcessedPdfDocument {
+            text: format!("[PDF Document \"{}\" — invalid PDF data]", name),
+            document: KiroDocument::from_base64("pdf", name, data),
+        });
+    }
+
+    let page_count = count_pdf_pages(&bytes);
+    let extracted = match pdf_extract::extract_text_from_mem(&bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            tracing::warn!(name = name, error = %err, "PDF 文本提取失败");
+            String::new()
+        }
+    };
+
+    let fallback_text;
+    let text = if extracted.trim().is_empty() {
+        fallback_text = extract_simple_pdf_text_ops(&bytes);
+        fallback_text.trim()
+    } else {
+        extracted.trim()
+    };
+    let content = if text.is_empty() {
+        format!(
+            "[PDF Document \"{}\" — no extractable text{}]",
+            name,
+            page_count
+                .map(|count| format!(", {} page(s)", count))
+                .unwrap_or_default()
+        )
+    } else {
+        let truncated = truncate_chars(text, MAX_PDF_EXTRACTED_CHARS);
+        let truncation_note = if truncated.len() < text.len() {
+            format!(
+                "\n[PDF text truncated to {} characters]",
+                MAX_PDF_EXTRACTED_CHARS
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "[PDF Document \"{}\" — {} page(s)]\n{}{}",
+            name,
+            page_count.unwrap_or(0),
+            truncated,
+            truncation_note
+        )
+    };
+
+    tracing::info!(
+        name = name,
+        page_count = page_count.unwrap_or(0),
+        extracted_chars = text.chars().count(),
+        "PDF 文档文本已提取并注入到当前消息"
+    );
+
+    Some(ProcessedPdfDocument {
+        text: content,
+        document: KiroDocument::from_base64("pdf", name, data),
+    })
+}
+
+fn estimate_base64_decoded_len(data: &str) -> usize {
+    let trimmed = data.trim();
+    let padding = trimmed
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'=')
+        .count();
+    trimmed
+        .len()
+        .saturating_div(4)
+        .saturating_mul(3)
+        .saturating_sub(padding)
+}
+
+fn count_pdf_pages(bytes: &[u8]) -> Option<usize> {
+    let text = String::from_utf8_lossy(bytes);
+    let count = text.matches("/Type /Page").count() + text.matches("/Type/Page").count();
+    (count > 0).then_some(count)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => text[..idx].to_string(),
+        None => text.to_string(),
+    }
+}
+
+fn extract_simple_pdf_text_ops(bytes: &[u8]) -> String {
+    let pdf = String::from_utf8_lossy(bytes);
+    let mut out = Vec::new();
+    let mut rest = pdf.as_ref();
+
+    while let Some(bt_start) = rest.find("BT") {
+        rest = &rest[bt_start + 2..];
+        let Some(et_end) = rest.find("ET") else {
+            break;
+        };
+        let block = &rest[..et_end];
+        extract_pdf_string_operands(block, &mut out);
+        rest = &rest[et_end + 2..];
+    }
+
+    out.join("\n")
+}
+
+fn extract_pdf_string_operands(block: &str, out: &mut Vec<String>) {
+    let bytes = block.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'(' {
+            i += 1;
+            continue;
+        }
+
+        let (raw, next) = read_pdf_literal_string(bytes, i + 1);
+        i = next;
+        let decoded = decode_pdf_literal_string(&raw);
+        if decoded.trim().is_empty() {
+            continue;
+        }
+
+        let tail = block[i..].trim_start();
+        if tail.starts_with("Tj") || tail.starts_with("TJ") || tail.starts_with(']') {
+            out.push(decoded.trim().to_string());
+        }
+    }
+}
+
+fn read_pdf_literal_string(bytes: &[u8], start: usize) -> (Vec<u8>, usize) {
+    let mut raw = Vec::new();
+    let mut depth = 1usize;
+    let mut i = start;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'\\' {
+            raw.push(byte);
+            if let Some(next) = bytes.get(i + 1) {
+                raw.push(*next);
+                i += 2;
+                continue;
+            }
+        } else if byte == b'(' {
+            depth += 1;
+            raw.push(byte);
+        } else if byte == b')' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return (raw, i + 1);
+            }
+            raw.push(byte);
+        } else {
+            raw.push(byte);
+        }
+        i += 1;
+    }
+
+    (raw, i)
+}
+
+fn decode_pdf_literal_string(raw: &[u8]) -> String {
+    let mut out = Vec::new();
+    let mut i = 0;
+
+    while i < raw.len() {
+        if raw[i] != b'\\' {
+            out.push(raw[i]);
+            i += 1;
+            continue;
+        }
+
+        let Some(&next) = raw.get(i + 1) else {
+            break;
+        };
+        match next {
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'b' => out.push(0x08),
+            b'f' => out.push(0x0c),
+            b'(' | b')' | b'\\' => out.push(next),
+            b'0'..=b'7' => {
+                let mut value = 0u8;
+                let mut consumed = 0usize;
+                for j in i + 1..raw.len().min(i + 4) {
+                    if !(b'0'..=b'7').contains(&raw[j]) {
+                        break;
+                    }
+                    value = value.saturating_mul(8).saturating_add(raw[j] - b'0');
+                    consumed += 1;
+                }
+                out.push(value);
+                i += consumed + 1;
+                continue;
+            }
+            b'\n' | b'\r' => {}
+            other => out.push(other),
+        }
+        i += 2;
+    }
+
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// 从 media_type 获取图片格式
@@ -675,6 +977,50 @@ fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
 }
 
+fn structured_output_hint(req: &MessagesRequest) -> Option<String> {
+    let format = req
+        .output_config
+        .as_ref()
+        .and_then(|config| config.format.as_ref())
+        .or(req.response_format.as_ref())?;
+
+    structured_output_hint_from_format(format)
+}
+
+fn structured_output_hint_from_format(format: &StructuredOutputFormat) -> Option<String> {
+    let format_type = format.format_type.as_str();
+    match format_type {
+        "json_object" => Some(
+            "Respond with valid JSON only. Do not include markdown, code fences, comments, or explanatory prose. The entire assistant response must be parseable as one JSON value."
+                .to_string(),
+        ),
+        "json_schema" => {
+            let schema = format
+                .schema
+                .as_ref()
+                .or_else(|| format.json_schema.as_ref().and_then(|schema| schema.schema.as_ref()))?;
+            let name = format
+                .name
+                .as_deref()
+                .or_else(|| format.json_schema.as_ref().and_then(|schema| schema.name.as_deref()))
+                .unwrap_or("response");
+            let strict = format
+                .strict
+                .or_else(|| format.json_schema.as_ref().and_then(|schema| schema.strict))
+                .unwrap_or(true);
+            let schema_text = serde_json::to_string(schema).ok()?;
+
+            Some(format!(
+                "Respond with valid JSON only. Do not include markdown, code fences, comments, or explanatory prose. The entire assistant response must be parseable as one JSON value. Match the JSON Schema named `{}`{}:\n{}",
+                name,
+                if strict { " strictly" } else { "" },
+                schema_text
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// 构建历史消息
 ///
 /// # Arguments
@@ -693,6 +1039,7 @@ fn build_history(
 
     // 生成thinking前缀（如果需要）
     let thinking_prefix = generate_thinking_prefix(req);
+    let output_hint = structured_output_hint(req);
 
     // 1. 处理系统消息
     if let Some(ref system) = req.system {
@@ -704,7 +1051,11 @@ fn build_history(
 
         if !system_content.is_empty() {
             // 追加分块写入策略到系统消息
-            let system_content = format!("{}\n{}", system_content, SYSTEM_CHUNKED_POLICY);
+            let mut system_content = format!("{}\n{}", system_content, SYSTEM_CHUNKED_POLICY);
+            if let Some(ref hint) = output_hint {
+                system_content.push('\n');
+                system_content.push_str(hint);
+            }
 
             // 注入thinking标签到系统消息最前面（如果需要且不存在）
             let final_content = if let Some(ref prefix) = thinking_prefix {
@@ -724,9 +1075,16 @@ fn build_history(
             let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
             history.push(Message::Assistant(assistant_msg));
         }
-    } else if let Some(ref prefix) = thinking_prefix {
-        // 没有系统消息但有thinking配置，插入新的系统消息
-        let user_msg = HistoryUserMessage::new(prefix.clone(), model_id);
+    } else if thinking_prefix.is_some() || output_hint.is_some() {
+        // 没有系统消息但有 thinking/structured-output 配置，插入新的系统消息
+        let mut parts = Vec::new();
+        if let Some(ref prefix) = thinking_prefix {
+            parts.push(prefix.clone());
+        }
+        if let Some(ref hint) = output_hint {
+            parts.push(hint.clone());
+        }
+        let user_msg = HistoryUserMessage::new(parts.join("\n"), model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
@@ -791,14 +1149,16 @@ fn merge_user_messages(
 ) -> Result<HistoryUserMessage, ConversionError> {
     let mut content_parts = Vec::new();
     let mut all_images = Vec::new();
+    let mut all_documents = Vec::new();
     let mut all_tool_results = Vec::new();
 
     for msg in messages {
-        let (text, images, tool_results) = process_message_content(&msg.content)?;
+        let (text, images, documents, tool_results) = process_message_content(&msg.content)?;
         if !text.is_empty() {
             content_parts.push(text);
         }
         all_images.extend(images);
+        all_documents.extend(documents);
         all_tool_results.extend(tool_results);
     }
 
@@ -808,6 +1168,9 @@ fn merge_user_messages(
 
     if !all_images.is_empty() {
         user_msg = user_msg.with_images(all_images);
+    }
+    if !all_documents.is_empty() {
+        user_msg = user_msg.with_documents(all_documents);
     }
 
     if !all_tool_results.is_empty() {
@@ -827,6 +1190,7 @@ fn convert_assistant_message(
     tool_name_map: &mut HashMap<String, String>,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     let mut thinking_content = String::new();
+    let mut thinking_signature: Option<String> = None;
     let mut text_content = String::new();
     let mut tool_uses = Vec::new();
 
@@ -841,6 +1205,9 @@ fn convert_assistant_message(
                         "thinking" => {
                             if let Some(thinking) = block.thinking {
                                 thinking_content.push_str(&thinking);
+                            }
+                            if thinking_signature.is_none() {
+                                thinking_signature = block.signature;
                             }
                         }
                         "text" => {
@@ -886,9 +1253,39 @@ fn convert_assistant_message(
     if !tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(tool_uses);
     }
+    if !thinking_content.is_empty() || thinking_signature.is_some() {
+        assistant = assistant.with_reasoning_content(build_reasoning_content(
+            (!thinking_content.is_empty()).then_some(thinking_content.as_str()),
+            thinking_signature.as_deref(),
+        ));
+    }
 
     Ok(HistoryAssistantMessage {
         assistant_response_message: assistant,
+    })
+}
+
+fn build_reasoning_content(text: Option<&str>, signature: Option<&str>) -> serde_json::Value {
+    let mut reasoning_text = serde_json::Map::new();
+    if let Some(text) = text {
+        if !text.is_empty() {
+            reasoning_text.insert(
+                "text".to_string(),
+                serde_json::Value::String(text.to_string()),
+            );
+        }
+    }
+    if let Some(signature) = signature {
+        if !signature.is_empty() {
+            reasoning_text.insert(
+                "signature".to_string(),
+                serde_json::Value::String(signature.to_string()),
+            );
+        }
+    }
+
+    serde_json::json!({
+        "reasoningText": serde_json::Value::Object(reasoning_text)
     })
 }
 
@@ -935,6 +1332,27 @@ fn merge_assistant_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn minimal_request(content: serde_json::Value) -> MessagesRequest {
+        use super::super::types::Message as AnthropicMessage;
+
+        MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content,
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            response_format: None,
+            metadata: None,
+        }
+    }
 
     #[test]
     fn test_map_model_sonnet() {
@@ -1049,6 +1467,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            response_format: None,
             metadata: Some(Metadata {
                 user_id: Some(
                     r#"{"session_id":"8bb5523b-ec7c-4540-a9ca-beb6d79f1552"}"#.to_string(),
@@ -1127,9 +1546,139 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            response_format: None,
             metadata: None,
         };
         assert_eq!(determine_chat_trigger_type(&req), "MANUAL");
+    }
+
+    #[test]
+    fn test_pdf_document_block_is_preserved_and_extracted_into_text() {
+        let pdf = "%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n2 0 obj\n<< /Length 44 >>\nstream\nBT\n/F1 12 Tf\n72 720 Td\n(Invoice total 42) Tj\nET\nendstream\nendobj\n%%EOF";
+        let encoded = STANDARD.encode(pdf.as_bytes());
+        let req = minimal_request(serde_json::json!([
+            {"type": "text", "text": "Read the attached PDF."},
+            {
+                "type": "document",
+                "title": "invoice.pdf",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": encoded
+                }
+            }
+        ]));
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let current = &state.current_message.user_input_message;
+
+        assert!(current.content.contains("Read the attached PDF."));
+        assert!(
+            current.content.contains("Invoice total 42"),
+            "extracted PDF text should be visible to upstream model: {}",
+            current.content
+        );
+        assert_eq!(current.documents.len(), 1);
+        assert_eq!(current.documents[0].format, "pdf");
+        assert_eq!(current.documents[0].name, "invoice.pdf");
+    }
+
+    #[test]
+    fn test_structured_output_config_injects_json_schema_hint() {
+        use super::super::types::{JsonSchemaFormat, OutputConfig, StructuredOutputFormat};
+
+        let mut req = minimal_request(serde_json::json!("Return the result."));
+        req.output_config = Some(OutputConfig {
+            effort: "high".to_string(),
+            format: Some(StructuredOutputFormat {
+                format_type: "json_schema".to_string(),
+                name: Some("answer".to_string()),
+                schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    },
+                    "required": ["answer"],
+                    "additionalProperties": false
+                })),
+                json_schema: None::<JsonSchemaFormat>,
+                strict: Some(true),
+            }),
+        });
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let first_history = state.history.first().expect("structured hint history");
+        let Message::User(user_msg) = first_history else {
+            panic!("first history item should be user instructions");
+        };
+
+        let content = &user_msg.user_input_message.content;
+        assert!(content.contains("Respond with valid JSON only"));
+        assert!(content.contains("JSON Schema named `answer` strictly"));
+        assert!(content.contains("\"additionalProperties\":false"));
+    }
+
+    #[test]
+    fn test_openai_response_format_injects_json_hint() {
+        use super::super::types::StructuredOutputFormat;
+
+        let mut req = minimal_request(serde_json::json!("Return JSON."));
+        req.response_format = Some(StructuredOutputFormat {
+            format_type: "json_object".to_string(),
+            name: None,
+            schema: None,
+            json_schema: None,
+            strict: None,
+        });
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let first_history = state.history.first().expect("json hint history");
+        let Message::User(user_msg) = first_history else {
+            panic!("first history item should be user instructions");
+        };
+
+        assert!(
+            user_msg
+                .user_input_message
+                .content
+                .contains("Respond with valid JSON only")
+        );
+    }
+
+    #[test]
+    fn test_assistant_thinking_signature_preserved_as_reasoning_content() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let msg = AnthropicMessage {
+            role: "assistant".to_string(),
+            content: serde_json::json!([
+                {
+                    "type": "thinking",
+                    "thinking": "private chain",
+                    "signature": "sig_real"
+                },
+                {"type": "text", "text": "Final answer"}
+            ]),
+        };
+
+        let converted = convert_assistant_message(&msg, &mut HashMap::new()).unwrap();
+        let reasoning = converted
+            .assistant_response_message
+            .reasoning_content
+            .expect("reasoningContent should be preserved");
+
+        assert_eq!(
+            reasoning
+                .pointer("/reasoningText/text")
+                .and_then(|v| v.as_str()),
+            Some("private chain")
+        );
+        assert_eq!(
+            reasoning
+                .pointer("/reasoningText/signature")
+                .and_then(|v| v.as_str()),
+            Some("sig_real")
+        );
     }
 
     #[test]
@@ -1247,6 +1796,7 @@ mod tests {
             thinking: None,
             tool_choice: None,
             output_config: None,
+            response_format: None,
             metadata: None,
         };
 
@@ -1316,6 +1866,7 @@ mod tests {
             thinking: None,
             tool_choice: None,
             output_config: None,
+            response_format: None,
             metadata: None,
         };
 
@@ -1373,6 +1924,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            response_format: None,
             metadata: None,
         };
 
@@ -1457,6 +2009,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            response_format: None,
             metadata: Some(Metadata {
                 user_id: Some(
                     "user_0dede55c6dcc4a11a30bbb5e7f22e6fdf86cdeba3820019cc27612af4e1243cd_account__session_a0662283-7fd3-4399-a7eb-52b9a717ae88".to_string(),
@@ -1497,6 +2050,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            response_format: None,
             metadata: None,
         };
 
@@ -1937,6 +2491,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            response_format: None,
             metadata: None,
         };
 

@@ -98,10 +98,29 @@ where
 pub struct OutputConfig {
     #[serde(default = "default_effort")]
     pub effort: String,
+    pub format: Option<StructuredOutputFormat>,
 }
 
 fn default_effort() -> String {
     "high".to_string()
+}
+
+/// 结构化输出格式配置，兼容 Anthropic output_config.format 与 OpenAI response_format。
+#[derive(Debug, Deserialize, Clone)]
+pub struct StructuredOutputFormat {
+    #[serde(rename = "type")]
+    pub format_type: String,
+    pub name: Option<String>,
+    pub schema: Option<serde_json::Value>,
+    pub json_schema: Option<JsonSchemaFormat>,
+    pub strict: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct JsonSchemaFormat {
+    pub name: Option<String>,
+    pub schema: Option<serde_json::Value>,
+    pub strict: Option<bool>,
 }
 
 /// Claude Code 请求中的 metadata
@@ -126,6 +145,7 @@ pub struct MessagesRequest {
     pub tool_choice: Option<serde_json::Value>,
     pub thinking: Option<Thinking>,
     pub output_config: Option<OutputConfig>,
+    pub response_format: Option<StructuredOutputFormat>,
     /// Claude Code 请求中的 metadata，包含 session 信息
     pub metadata: Option<Metadata>,
 }
@@ -241,6 +261,8 @@ pub struct ContentBlock {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_use_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<serde_json::Value>,
@@ -254,6 +276,8 @@ pub struct ContentBlock {
     pub is_error: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ImageSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }

@@ -17,6 +17,8 @@ Current investigation: compare local `kiro.rs`, sibling `kiro-account-manager`, 
 
 Current extension: add an opt-in Opus 4.7 ANTML probe compatibility mode for cctest-style tag probes, defaulting off and only clarifying that the tag is ordinary visible user text.
 
+Current extension: close remaining cctest/hvoy gaps by preserving PDF document input, adding structured-output request hints, and carrying real assistant thinking signatures into Kiro history without faking signatures.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -37,6 +39,7 @@ Current extension: add an opt-in Opus 4.7 ANTML probe compatibility mode for cct
 - [completed] Add dynamic proxy/IP binding settings, SQLite bindings, worker, Admin controls, and request-path effective proxy integration
 - [completed] Analyze Opus 4.7 detector failures against sibling gateway, public proxy behavior, and official Anthropic protocol expectations
 - [completed] Add narrow Opus 4.7 ANTML probe compatibility config, request rewrite, Admin UI control, and tests
+- [completed] Add PDF document extraction/preservation, structured-output compatibility hints, and real assistant thinking signature history preservation
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -52,6 +55,9 @@ Current extension: add an opt-in Opus 4.7 ANTML probe compatibility mode for cct
 - Dynamic proxy V1 follows the WindsurfAPI design but is implemented natively in Rust; dynamic active binding wins over manual account proxy, then global proxy.
 - Dynamic proxy V1 targets Novproxy-style username templates and keeps plaintext provider password in SQLite/runtime settings, matching the current config/security model.
 - Opus 4.7 ANTML probe compatibility is opt-in (`off`/`clarify`), scoped to plain Opus 4.7, and does not spoof or retry responses in the first version.
+- PDF documents are preserved in Kiro request shape when possible, but their extracted text is also injected into message content because that is the most reliable path for detector-style PDF questions.
+- Structured output is handled with request-scoped JSON/schema instructions, not response post-processing, so stream protocol remains intact and invalid model JSON is not silently rewritten.
+- Signature handling preserves real client-supplied thinking signatures in assistant history; no placeholder or fake signature is generated.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -64,3 +70,5 @@ Current extension: add an opt-in Opus 4.7 ANTML probe compatibility mode for cct
 | Request-local account exclusion could loop when no replacement account was dispatchable | 1 | Break out of provider retry loop when acquiring the next non-excluded account fails |
 | Tried to pass two exact test names to `cargo test` in one invocation | 1 | Re-ran with a shared filter / full test suite instead |
 | Tried to pass two unrelated test filters to `cargo test` in one invocation | 1 | Re-ran the targeted tests separately |
+| Tried to run several exact cargo test filters in one command | 1 | Re-ran with `cargo test anthropic::converter::tests::` and then full `cargo test` |
+| `pdf-extract` did not extract text from a hand-written minimal PDF fixture | 1 | Added a lightweight fallback parser for PDF literal string text operators (`Tj`/`TJ`) |

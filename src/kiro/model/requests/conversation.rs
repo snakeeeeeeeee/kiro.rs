@@ -102,6 +102,9 @@ pub struct UserInputMessage {
     /// 图片列表
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<KiroImage>,
+    /// 文档列表
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<KiroDocument>,
     /// 消息来源（通常为 "AI_EDITOR"）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
@@ -115,6 +118,7 @@ impl UserInputMessage {
             content: content.into(),
             model_id: model_id.into(),
             images: Vec::new(),
+            documents: Vec::new(),
             origin: Some("AI_EDITOR".to_string()),
         }
     }
@@ -128,6 +132,12 @@ impl UserInputMessage {
     /// 添加图片
     pub fn with_images(mut self, images: Vec<KiroImage>) -> Self {
         self.images = images;
+        self
+    }
+
+    /// 添加文档
+    pub fn with_documents(mut self, documents: Vec<KiroDocument>) -> Self {
+        self.documents = documents;
         self
     }
 
@@ -200,6 +210,43 @@ pub struct KiroImageSource {
     pub bytes: String,
 }
 
+/// Kiro 文档
+///
+/// Kiro 请求中使用的文档格式。当前转换层仍会把 PDF 文本提取到 content，
+/// 该字段用于尽量保留上游支持的原始文档输入。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KiroDocument {
+    /// 文档格式（例如 "pdf"）
+    pub format: String,
+    /// 文档名称
+    pub name: String,
+    /// 文档数据源
+    pub source: KiroDocumentSource,
+}
+
+impl KiroDocument {
+    /// 从 base64 数据创建文档
+    pub fn from_base64(
+        format: impl Into<String>,
+        name: impl Into<String>,
+        data: impl Into<String>,
+    ) -> Self {
+        Self {
+            format: format.into(),
+            name: name.into(),
+            source: KiroDocumentSource { bytes: data.into() },
+        }
+    }
+}
+
+/// Kiro 文档数据源
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KiroDocumentSource {
+    /// base64 编码的文档字节
+    pub bytes: String,
+}
+
 /// 历史消息
 ///
 /// 可以是用户消息或助手消息
@@ -243,6 +290,9 @@ pub struct UserMessage {
     /// 图片列表
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<KiroImage>,
+    /// 文档列表
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<KiroDocument>,
     /// 用户输入消息上下文
     #[serde(default, skip_serializing_if = "is_default_context")]
     pub user_input_message_context: UserInputMessageContext,
@@ -260,6 +310,7 @@ impl UserMessage {
             model_id: model_id.into(),
             origin: Some("AI_EDITOR".to_string()),
             images: Vec::new(),
+            documents: Vec::new(),
             user_input_message_context: UserInputMessageContext::default(),
         }
     }
@@ -267,6 +318,12 @@ impl UserMessage {
     /// 设置图片
     pub fn with_images(mut self, images: Vec<KiroImage>) -> Self {
         self.images = images;
+        self
+    }
+
+    /// 设置文档
+    pub fn with_documents(mut self, documents: Vec<KiroDocument>) -> Self {
+        self.documents = documents;
         self
     }
 
@@ -303,6 +360,9 @@ pub struct AssistantMessage {
     /// 工具使用列表
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_uses: Option<Vec<ToolUseEntry>>,
+    /// 推理内容和签名，按 Kiro 原生 reasoningContent 结构保存
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<serde_json::Value>,
 }
 
 impl AssistantMessage {
@@ -311,12 +371,19 @@ impl AssistantMessage {
         Self {
             content: content.into(),
             tool_uses: None,
+            reasoning_content: None,
         }
     }
 
     /// 设置工具使用
     pub fn with_tool_uses(mut self, tool_uses: Vec<ToolUseEntry>) -> Self {
         self.tool_uses = Some(tool_uses);
+        self
+    }
+
+    /// 设置 reasoningContent
+    pub fn with_reasoning_content(mut self, reasoning_content: serde_json::Value) -> Self {
+        self.reasoning_content = Some(reasoning_content);
         self
     }
 }
