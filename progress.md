@@ -234,3 +234,5 @@
 - Removed Kiro `documents` field and assistant `reasoningContent` history emission after live logs showed upstream `400 Improperly formed request`; PDF remains text-only on the Kiro request.
 - Added converter tests for PDF extraction, JSON schema hinting, and OpenAI `response_format=json_object`.
 - Validation after rollback of unsupported fields: `cargo fmt -- --check` passed; `cargo test` passed with 252 tests; `pnpm --dir admin-ui build` passed.
+- Follow-up after live logs showed `extracted_chars=8`: enhanced PDF fallback to inspect PDF streams, inflate `/FlateDecode` streams, decode literal and hex text strings, and detect UTF-16BE hex strings without BOM.
+- Validation after fallback enhancement: `cargo fmt -- --check` passed; `cargo test` passed with 253 tests; `pnpm --dir admin-ui build` passed.

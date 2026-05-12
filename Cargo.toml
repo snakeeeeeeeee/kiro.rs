@@ -24,6 +24,7 @@ anyhow = "1.0"
 http = "1.0"
 httpdate = "1.0"
 futures = "0.3"
+flate2 = "1.1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.10", features = ["v1", "v4", "fast-rng"] }
 fastrand = "2"

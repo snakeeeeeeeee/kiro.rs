@@ -72,7 +72,8 @@ docker compose -f docker-compose-prod.yml up -d
 Build locally from this source tree and start:
 
 ```bash
-docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
+DOCKER_BUILDKIT=1 docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml build --progress=plain
+docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --no-build
 ```
 
 Or use the helper script:
@@ -105,7 +106,8 @@ Create or upload:
 Start with local build:
 
 ```bash
-docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
+DOCKER_BUILDKIT=1 docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml build --progress=plain
+docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --no-build
 ```
 
 Equivalent helper:
@@ -126,7 +128,7 @@ If you want to restrict Docker to localhost and expose it only through Nginx/Cad
 
 ```bash
 KIRO_RS_BIND=127.0.0.1 \
-docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
+scripts/prod-up.sh
 ```
 
 When using the default public bind, control access with the server firewall/security group. Do not leave Admin UI open to untrusted networks.
@@ -182,7 +184,7 @@ docker compose -f docker-compose-prod.yml up -d
 If deploying a locally built image:
 
 ```bash
-docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
+scripts/prod-up.sh
 ```
 
 3. Run smoke:
@@ -197,7 +199,7 @@ If the new build is bad, use the previous git revision or previous image tag, th
 
 ```bash
 git checkout <previous-good-commit>
-docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml up -d --build
+scripts/prod-up.sh
 ```
 
 Restore credentials only if the file itself was damaged or an operator made a bad credential change:

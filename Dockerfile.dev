@@ -16,14 +16,20 @@ RUN apt-get update \
 
 WORKDIR /app/admin-ui
 COPY admin-ui/package.json admin-ui/pnpm-lock.yaml ./
-RUN npm install -g pnpm@10.18.1 && pnpm install --frozen-lockfile
+RUN --mount=type=cache,target=/root/.npm \
+    --mount=type=cache,target=/root/.local/share/pnpm/store \
+    npm install -g pnpm@10.18.1 && pnpm install --frozen-lockfile
 COPY admin-ui ./
 RUN pnpm build
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
-RUN cargo build --release --no-default-features
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --no-default-features \
+    && cp /app/target/release/kiro-rs /tmp/kiro-rs
 
 FROM node:20-bookworm-slim
 
@@ -32,7 +38,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/kiro-rs /app/kiro-rs
+COPY --from=builder /tmp/kiro-rs /app/kiro-rs
 
 VOLUME ["/app/config"]
 

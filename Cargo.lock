@@ -1050,6 +1050,7 @@ dependencies = [
  "clap",
  "crc",
  "fastrand",
+ "flate2",
  "futures",
  "hex",
  "http",

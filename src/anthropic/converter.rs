@@ -3,8 +3,10 @@
 //! 负责将 Anthropic API 请求格式转换为 Kiro API 请求格式
 
 use std::collections::HashMap;
+use std::io::Read;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use flate2::read::ZlibDecoder;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -98,6 +100,9 @@ const MAX_PDF_BYTES: usize = 25 * 1024 * 1024;
 
 /// 注入给模型的 PDF 文本最大字符数，避免测试外的大文档把上下文打爆。
 const MAX_PDF_EXTRACTED_CHARS: usize = 120_000;
+
+/// pdf_extract 有时会在坏 xref 或简化 PDF 上只吐出页码/少量残片。
+const MIN_PDF_PRIMARY_TEXT_CHARS: usize = 32;
 
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 ///
@@ -524,13 +529,9 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         }
     };
 
-    let fallback_text;
-    let text = if extracted.trim().is_empty() {
-        fallback_text = extract_simple_pdf_text_ops(&bytes);
-        fallback_text.trim()
-    } else {
-        extracted.trim()
-    };
+    let fallback_text = extract_simple_pdf_text_ops(&bytes);
+    let selection = select_pdf_text(&extracted, &fallback_text);
+    let text = selection.text.trim();
     let content = if text.is_empty() {
         format!(
             "[PDF Document \"{}\" — no extractable text{}]",
@@ -561,11 +562,103 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
     tracing::info!(
         name = name,
         page_count = page_count.unwrap_or(0),
+        text_source = selection.source,
+        primary_chars = selection.primary_chars,
+        fallback_chars = selection.fallback_chars,
         extracted_chars = text.chars().count(),
         "PDF 文档文本已提取并注入到当前消息"
     );
+    tracing::debug!(
+        name = name,
+        extracted_preview = %pdf_text_preview(text),
+        "PDF 文档文本提取预览"
+    );
 
     Some(ProcessedPdfDocument { text: content })
+}
+
+struct PdfTextSelection {
+    text: String,
+    source: &'static str,
+    primary_chars: usize,
+    fallback_chars: usize,
+}
+
+fn select_pdf_text(primary: &str, fallback: &str) -> PdfTextSelection {
+    let primary = primary.trim();
+    let fallback = fallback.trim();
+    let primary_chars = primary.chars().count();
+    let fallback_chars = fallback.chars().count();
+
+    if primary_chars == 0 {
+        return PdfTextSelection {
+            text: fallback.to_string(),
+            source: "fallback",
+            primary_chars,
+            fallback_chars,
+        };
+    }
+
+    if fallback_chars == 0 {
+        return PdfTextSelection {
+            text: primary.to_string(),
+            source: "primary",
+            primary_chars,
+            fallback_chars,
+        };
+    }
+
+    let fallback_is_materially_better = (primary_chars < MIN_PDF_PRIMARY_TEXT_CHARS
+        && fallback_chars > primary_chars)
+        || fallback_chars
+            >= primary_chars
+                .saturating_mul(2)
+                .max(MIN_PDF_PRIMARY_TEXT_CHARS);
+
+    if fallback_is_materially_better {
+        if primary_chars < MIN_PDF_PRIMARY_TEXT_CHARS
+            || normalized_pdf_text_contains(fallback, primary)
+        {
+            return PdfTextSelection {
+                text: fallback.to_string(),
+                source: "fallback",
+                primary_chars,
+                fallback_chars,
+            };
+        }
+
+        return PdfTextSelection {
+            text: format!("{}\n{}", primary, fallback),
+            source: "combined",
+            primary_chars,
+            fallback_chars,
+        };
+    }
+
+    PdfTextSelection {
+        text: primary.to_string(),
+        source: "primary",
+        primary_chars,
+        fallback_chars,
+    }
+}
+
+fn normalized_pdf_text_contains(haystack: &str, needle: &str) -> bool {
+    let haystack = normalize_pdf_text_for_compare(haystack);
+    let needle = normalize_pdf_text_for_compare(needle);
+    needle.is_empty() || haystack.contains(&needle)
+}
+
+fn normalize_pdf_text_for_compare(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn pdf_text_preview(text: &str) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&normalized, 240)
 }
 
 fn estimate_base64_decoded_len(data: &str) -> usize {
@@ -597,9 +690,89 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 }
 
 fn extract_simple_pdf_text_ops(bytes: &[u8]) -> String {
-    let pdf = String::from_utf8_lossy(bytes);
     let mut out = Vec::new();
-    let mut rest = pdf.as_ref();
+    extract_text_ops_from_latin1(&String::from_utf8_lossy(bytes), &mut out);
+
+    for stream in extract_pdf_streams(bytes) {
+        let decoded = if stream.is_flate {
+            inflate_pdf_stream(stream.data).unwrap_or_else(|| stream.data.to_vec())
+        } else {
+            stream.data.to_vec()
+        };
+        extract_text_ops_from_latin1(&String::from_utf8_lossy(&decoded), &mut out);
+    }
+
+    dedupe_preserve_order(out).join("\n")
+}
+
+struct PdfStream<'a> {
+    is_flate: bool,
+    data: &'a [u8],
+}
+
+fn extract_pdf_streams(bytes: &[u8]) -> Vec<PdfStream<'_>> {
+    let mut streams = Vec::new();
+    let mut pos = 0usize;
+
+    while let Some(relative_start) = find_subslice(&bytes[pos..], b"stream") {
+        let stream_keyword = pos + relative_start;
+        let after_keyword = stream_keyword + b"stream".len();
+        let data_start = if bytes.get(after_keyword) == Some(&b'\r')
+            && bytes.get(after_keyword + 1) == Some(&b'\n')
+        {
+            after_keyword + 2
+        } else if bytes.get(after_keyword) == Some(&b'\n')
+            || bytes.get(after_keyword) == Some(&b'\r')
+        {
+            after_keyword + 1
+        } else {
+            after_keyword
+        };
+
+        let Some(relative_end) = find_subslice(&bytes[data_start..], b"endstream") else {
+            break;
+        };
+        let mut data_end = data_start + relative_end;
+        while data_end > data_start && matches!(bytes[data_end - 1], b'\n' | b'\r') {
+            data_end -= 1;
+        }
+
+        let dict_start = stream_keyword.saturating_sub(1024);
+        let dict = String::from_utf8_lossy(&bytes[dict_start..stream_keyword]);
+        streams.push(PdfStream {
+            is_flate: dict.contains("FlateDecode"),
+            data: &bytes[data_start..data_end],
+        });
+
+        pos = data_start + relative_end + b"endstream".len();
+    }
+
+    streams
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn inflate_pdf_stream(data: &[u8]) -> Option<Vec<u8>> {
+    const MAX_INFLATED_BYTES: usize = 5 * 1024 * 1024;
+
+    let mut decoder = ZlibDecoder::new(data);
+    let mut output = Vec::new();
+    match decoder
+        .by_ref()
+        .take(MAX_INFLATED_BYTES as u64 + 1)
+        .read_to_end(&mut output)
+    {
+        Ok(_) if output.len() <= MAX_INFLATED_BYTES => Some(output),
+        _ => None,
+    }
+}
+
+fn extract_text_ops_from_latin1(pdf: &str, out: &mut Vec<String>) {
+    let mut rest: &str = pdf;
 
     while let Some(bt_start) = rest.find("BT") {
         rest = &rest[bt_start + 2..];
@@ -607,33 +780,45 @@ fn extract_simple_pdf_text_ops(bytes: &[u8]) -> String {
             break;
         };
         let block = &rest[..et_end];
-        extract_pdf_string_operands(block, &mut out);
+        extract_pdf_string_operands(block, out);
         rest = &rest[et_end + 2..];
     }
-
-    out.join("\n")
 }
 
 fn extract_pdf_string_operands(block: &str, out: &mut Vec<String>) {
     let bytes = block.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != b'(' {
+        if bytes[i] == b'(' {
+            let (raw, next) = read_pdf_literal_string(bytes, i + 1);
+            i = next;
+            let decoded = decode_pdf_literal_string(&raw);
+            if decoded.trim().is_empty() {
+                continue;
+            }
+
+            out.push(decoded.trim().to_string());
+            continue;
+        }
+
+        if bytes[i] == b'<' && bytes.get(i + 1) != Some(&b'<') {
+            let (raw_hex, next) = read_pdf_hex_string(bytes, i + 1);
+            i = next;
+            let decoded = decode_pdf_hex_string(&raw_hex);
+            if decoded.trim().is_empty() {
+                continue;
+            }
+
+            out.push(decoded.trim().to_string());
+            continue;
+        }
+
+        if bytes[i] != b'\'' && bytes[i] != b'"' {
             i += 1;
             continue;
         }
 
-        let (raw, next) = read_pdf_literal_string(bytes, i + 1);
-        i = next;
-        let decoded = decode_pdf_literal_string(&raw);
-        if decoded.trim().is_empty() {
-            continue;
-        }
-
-        let tail = block[i..].trim_start();
-        if tail.starts_with("Tj") || tail.starts_with("TJ") || tail.starts_with(']') {
-            out.push(decoded.trim().to_string());
-        }
+        i += 1;
     }
 }
 
@@ -663,6 +848,21 @@ fn read_pdf_literal_string(bytes: &[u8], start: usize) -> (Vec<u8>, usize) {
         } else {
             raw.push(byte);
         }
+        i += 1;
+    }
+
+    (raw, i)
+}
+
+fn read_pdf_hex_string(bytes: &[u8], start: usize) -> (Vec<u8>, usize) {
+    let mut raw = Vec::new();
+    let mut i = start;
+
+    while i < bytes.len() {
+        if bytes[i] == b'>' {
+            return (raw, i + 1);
+        }
+        raw.push(bytes[i]);
         i += 1;
     }
 
@@ -711,6 +911,67 @@ fn decode_pdf_literal_string(raw: &[u8]) -> String {
     }
 
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn decode_pdf_hex_string(raw: &[u8]) -> String {
+    let mut hex_chars: Vec<u8> = raw
+        .iter()
+        .copied()
+        .filter(|byte| byte.is_ascii_hexdigit())
+        .collect();
+    if hex_chars.len() % 2 == 1 {
+        hex_chars.push(b'0');
+    }
+
+    let bytes: Vec<u8> = hex_chars
+        .chunks(2)
+        .filter_map(|pair| {
+            let text = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(text, 16).ok()
+        })
+        .collect();
+
+    if bytes.starts_with(&[0xfe, 0xff]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else if looks_like_utf16be_ascii(&bytes) {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+fn looks_like_utf16be_ascii(bytes: &[u8]) -> bool {
+    bytes.len() >= 4
+        && bytes.len() % 2 == 0
+        && bytes
+            .chunks_exact(2)
+            .filter(|pair| pair[0] == 0 && pair[1].is_ascii())
+            .count()
+            * 2
+            >= bytes.len() / 2
+}
+
+fn dedupe_preserve_order(items: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+
+    for item in items {
+        let normalized = item.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.is_empty() || !seen.insert(normalized.clone()) {
+            continue;
+        }
+        deduped.push(item);
+    }
+
+    deduped
 }
 
 /// 从 media_type 获取图片格式
@@ -1524,6 +1785,61 @@ mod tests {
             "extracted PDF text should be visible to upstream model: {}",
             current.content
         );
+    }
+
+    #[test]
+    fn test_pdf_fallback_extracts_flate_stream_text_without_xref() {
+        use flate2::{Compression, write::ZlibEncoder};
+        use std::io::Write;
+
+        let stream_text = b"BT\n/F1 12 Tf\n72 720 Td\n(Compressed invoice total 99) Tj\n<0050004400460020006800650078> Tj\nET";
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(stream_text).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let pdf = [
+            b"%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n2 0 obj\n<< /Filter /FlateDecode /Length ".as_slice(),
+            compressed.len().to_string().as_bytes(),
+            b" >>\nstream\n",
+            compressed.as_slice(),
+            b"\nendstream\nendobj\n%%EOF",
+        ]
+        .concat();
+        let encoded = STANDARD.encode(pdf);
+        let req = minimal_request(serde_json::json!([
+            {"type": "text", "text": "Read the attached PDF."},
+            {
+                "type": "document",
+                "title": "compressed.pdf",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": encoded
+                }
+            }
+        ]));
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let current = &state.current_message.user_input_message;
+
+        assert!(
+            current.content.contains("Compressed invoice total 99"),
+            "compressed PDF stream text should be visible: {}",
+            current.content
+        );
+        assert!(
+            current.content.contains("PDF hex"),
+            "hex PDF text should be decoded: {}",
+            current.content
+        );
+    }
+
+    #[test]
+    fn test_pdf_short_primary_text_prefers_substantial_fallback() {
+        let selected = select_pdf_text("Page 1/2", "Invoice total 42\nDue today");
+
+        assert_eq!(selected.source, "fallback");
+        assert_eq!(selected.primary_chars, 8);
+        assert!(selected.text.contains("Invoice total 42"));
     }
 
     #[test]

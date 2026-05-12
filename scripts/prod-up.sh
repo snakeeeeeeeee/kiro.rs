@@ -20,6 +20,8 @@ Environment:
   KIRO_RS_BIND               Host bind address, default 0.0.0.0
   KIRO_RS_PORT               Host port, default 18990
   RUST_LOG                   Container log level, default info
+  DOCKER_BUILDKIT            Enable BuildKit, default 1
+  DOCKER_BUILD_PROGRESS      Build progress output, default plain
   HEALTH_TIMEOUT_SECS        Health wait timeout, default 90
   RUN_SMOKE                  Same as --smoke when set to 1
   REMOVE_ORPHANS             Same as --remove-orphans when set to 1
@@ -35,6 +37,7 @@ HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-90}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${KIRO_RS_PORT}/healthz}"
 RUN_SMOKE="${RUN_SMOKE:-0}"
 REMOVE_ORPHANS="${REMOVE_ORPHANS:-0}"
+DOCKER_BUILD_PROGRESS="${DOCKER_BUILD_PROGRESS:-plain}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -85,13 +88,15 @@ export KIRO_RS_BIND
 export KIRO_RS_PORT
 export RUST_LOG
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
+export DOCKER_BUILD_PROGRESS
 
 compose_args=(
   -f docker-compose-prod.yml
   -f docker-compose-prod.build.yml
 )
 
-up_args=(up -d --build)
+build_args=(build --progress="$DOCKER_BUILD_PROGRESS" "$SERVICE_NAME")
+up_args=(up -d --no-build)
 if [ "$REMOVE_ORPHANS" = "1" ]; then
   up_args+=(--remove-orphans)
 fi
@@ -99,7 +104,9 @@ up_args+=("$SERVICE_NAME")
 
 echo "Building and starting production container"
 echo "image=$KIRO_RS_IMAGE bind=$KIRO_RS_BIND port=$KIRO_RS_PORT"
+echo "docker_buildkit=$DOCKER_BUILDKIT docker_build_progress=$DOCKER_BUILD_PROGRESS"
 
+docker compose "${compose_args[@]}" "${build_args[@]}"
 docker compose "${compose_args[@]}" "${up_args[@]}"
 
 echo "Waiting for health check: $HEALTH_URL"
