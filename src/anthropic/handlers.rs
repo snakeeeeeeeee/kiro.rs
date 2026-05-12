@@ -781,11 +781,13 @@ async fn handle_non_stream_request(
                             text_content.push_str(&resp.content);
                         }
                         Event::ReasoningContent(reasoning) => {
-                            if let Some(text) = reasoning.text {
-                                reasoning_content.push_str(&text);
-                            }
-                            if let Some(signature) = reasoning.signature {
-                                reasoning_signature = Some(signature);
+                            if thinking_enabled {
+                                if let Some(text) = reasoning.text {
+                                    reasoning_content.push_str(&text);
+                                }
+                                if let Some(signature) = reasoning.signature {
+                                    reasoning_signature = Some(signature);
+                                }
                             }
                         }
                         Event::ToolUse(tool_use) => {

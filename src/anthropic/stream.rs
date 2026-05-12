@@ -635,7 +635,13 @@ impl StreamContext {
     pub fn process_kiro_event(&mut self, event: &Event) -> Vec<SseEvent> {
         match event {
             Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
-            Event::ReasoningContent(reasoning) => self.process_reasoning_content(reasoning),
+            Event::ReasoningContent(reasoning) => {
+                if self.thinking_enabled {
+                    self.process_reasoning_content(reasoning)
+                } else {
+                    Vec::new()
+                }
+            }
             Event::ToolUse(tool_use) => self.process_tool_use(tool_use),
             Event::ContextUsage(context_usage) => {
                 // 从上下文使用百分比计算实际的 input_tokens
@@ -2165,7 +2171,7 @@ mod tests {
 
     #[test]
     fn test_reasoning_content_event_streams_thinking_and_signature() {
-        let mut ctx = StreamContext::new_with_thinking("test-model", 1, false, HashMap::new());
+        let mut ctx = StreamContext::new_with_thinking("test-model", 1, true, HashMap::new());
         let _initial_events = ctx.generate_initial_events();
 
         let mut events = Vec::new();
@@ -2224,6 +2230,38 @@ mod tests {
             e.event == "content_block_delta"
                 && e.data["delta"]["type"] == "signature_delta"
                 && e.data["delta"]["signature"] == "sig_123"
+        }));
+    }
+
+    #[test]
+    fn test_reasoning_content_event_is_hidden_without_thinking() {
+        let mut ctx = StreamContext::new_with_thinking("test-model", 1, false, HashMap::new());
+        let _initial_events = ctx.generate_initial_events();
+
+        let mut events = Vec::new();
+        events.extend(ctx.process_kiro_event(
+            &crate::kiro::model::events::Event::ReasoningContent(
+                crate::kiro::model::events::ReasoningContentEvent {
+                    text: Some("hidden thinking".to_string()),
+                    signature: Some("sig_123".to_string()),
+                },
+            ),
+        ));
+        events.extend(ctx.process_assistant_response("answer"));
+        events.extend(ctx.generate_final_events());
+
+        assert!(
+            events.iter().all(|e| {
+                e.data["content_block"]["type"] != "thinking"
+                    && e.data["delta"]["type"] != "thinking_delta"
+                    && e.data["delta"]["type"] != "signature_delta"
+            }),
+            "plain model requests must not expose upstream internal reasoning events"
+        );
+        assert!(events.iter().any(|e| {
+            e.event == "content_block_delta"
+                && e.data["delta"]["type"] == "text_delta"
+                && e.data["delta"]["text"] == "answer"
         }));
     }
 }
