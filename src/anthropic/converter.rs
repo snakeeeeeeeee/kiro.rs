@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use flate2::read::ZlibDecoder;
+use flate2::read::{DeflateDecoder, ZlibDecoder};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -529,7 +529,8 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         }
     };
 
-    let fallback_text = extract_simple_pdf_text_ops(&bytes);
+    let fallback = extract_simple_pdf_text_ops(&bytes);
+    let fallback_text = fallback.text.as_str();
     let selection = select_pdf_text(&extracted, &fallback_text);
     let text = selection.text.trim();
     let content = if text.is_empty() {
@@ -565,6 +566,8 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         text_source = selection.source,
         primary_chars = selection.primary_chars,
         fallback_chars = selection.fallback_chars,
+        fallback_streams = fallback.stream_count,
+        fallback_decoded_streams = fallback.decoded_stream_count,
         extracted_chars = text.chars().count(),
         "PDF 文档文本已提取并注入到当前消息"
     );
@@ -689,24 +692,39 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
 }
 
-fn extract_simple_pdf_text_ops(bytes: &[u8]) -> String {
+struct PdfFallbackText {
+    text: String,
+    stream_count: usize,
+    decoded_stream_count: usize,
+}
+
+fn extract_simple_pdf_text_ops(bytes: &[u8]) -> PdfFallbackText {
     let mut out = Vec::new();
     extract_text_ops_from_latin1(&String::from_utf8_lossy(bytes), &mut out);
 
+    let mut stream_count = 0usize;
+    let mut decoded_stream_count = 0usize;
     for stream in extract_pdf_streams(bytes) {
-        let decoded = if stream.is_flate {
-            inflate_pdf_stream(stream.data).unwrap_or_else(|| stream.data.to_vec())
-        } else {
-            stream.data.to_vec()
-        };
-        extract_text_ops_from_latin1(&String::from_utf8_lossy(&decoded), &mut out);
+        stream_count += 1;
+        for decoded in decode_pdf_stream_candidates(&stream) {
+            if decoded.data.as_slice() != stream.data {
+                decoded_stream_count += 1;
+            }
+            extract_text_ops_from_latin1(&String::from_utf8_lossy(&decoded.data), &mut out);
+        }
     }
 
-    dedupe_preserve_order(out).join("\n")
+    PdfFallbackText {
+        text: dedupe_preserve_order(out).join("\n"),
+        stream_count,
+        decoded_stream_count,
+    }
 }
 
 struct PdfStream<'a> {
     is_flate: bool,
+    is_ascii_hex: bool,
+    is_ascii85: bool,
     data: &'a [u8],
 }
 
@@ -741,6 +759,8 @@ fn extract_pdf_streams(bytes: &[u8]) -> Vec<PdfStream<'_>> {
         let dict = String::from_utf8_lossy(&bytes[dict_start..stream_keyword]);
         streams.push(PdfStream {
             is_flate: dict.contains("FlateDecode"),
+            is_ascii_hex: dict.contains("ASCIIHexDecode"),
+            is_ascii85: dict.contains("ASCII85Decode"),
             data: &bytes[data_start..data_end],
         });
 
@@ -750,13 +770,55 @@ fn extract_pdf_streams(bytes: &[u8]) -> Vec<PdfStream<'_>> {
     streams
 }
 
+struct PdfDecodedStream {
+    data: Vec<u8>,
+}
+
+fn decode_pdf_stream_candidates(stream: &PdfStream<'_>) -> Vec<PdfDecodedStream> {
+    let mut candidates = Vec::new();
+    push_pdf_stream_candidate(&mut candidates, stream.data.to_vec());
+
+    let mut seeds = vec![stream.data.to_vec()];
+    if stream.is_ascii_hex {
+        if let Some(decoded) = decode_ascii_hex_bytes(stream.data) {
+            push_pdf_stream_candidate(&mut candidates, decoded.clone());
+            seeds.push(decoded);
+        }
+    }
+    if stream.is_ascii85 {
+        if let Some(decoded) = decode_ascii85_bytes(stream.data) {
+            push_pdf_stream_candidate(&mut candidates, decoded.clone());
+            seeds.push(decoded);
+        }
+    }
+
+    if stream.is_flate {
+        for seed in seeds {
+            if let Some(decoded) =
+                inflate_pdf_stream_zlib(&seed).or_else(|| inflate_pdf_stream_deflate(&seed))
+            {
+                push_pdf_stream_candidate(&mut candidates, decoded);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn push_pdf_stream_candidate(candidates: &mut Vec<PdfDecodedStream>, data: Vec<u8>) {
+    if candidates.iter().any(|candidate| candidate.data == data) {
+        return;
+    }
+    candidates.push(PdfDecodedStream { data });
+}
+
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
 }
 
-fn inflate_pdf_stream(data: &[u8]) -> Option<Vec<u8>> {
+fn inflate_pdf_stream_zlib(data: &[u8]) -> Option<Vec<u8>> {
     const MAX_INFLATED_BYTES: usize = 5 * 1024 * 1024;
 
     let mut decoder = ZlibDecoder::new(data);
@@ -769,6 +831,118 @@ fn inflate_pdf_stream(data: &[u8]) -> Option<Vec<u8>> {
         Ok(_) if output.len() <= MAX_INFLATED_BYTES => Some(output),
         _ => None,
     }
+}
+
+fn inflate_pdf_stream_deflate(data: &[u8]) -> Option<Vec<u8>> {
+    const MAX_INFLATED_BYTES: usize = 5 * 1024 * 1024;
+
+    let mut decoder = DeflateDecoder::new(data);
+    let mut output = Vec::new();
+    match decoder
+        .by_ref()
+        .take(MAX_INFLATED_BYTES as u64 + 1)
+        .read_to_end(&mut output)
+    {
+        Ok(_) if output.len() <= MAX_INFLATED_BYTES => Some(output),
+        _ => None,
+    }
+}
+
+fn decode_ascii_hex_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    let mut hex_chars = Vec::new();
+    for byte in data.iter().copied() {
+        if byte == b'>' {
+            break;
+        }
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        if !byte.is_ascii_hexdigit() {
+            return None;
+        }
+        hex_chars.push(byte);
+    }
+    if hex_chars.is_empty() {
+        return None;
+    }
+    if hex_chars.len() % 2 == 1 {
+        hex_chars.push(b'0');
+    }
+
+    let decoded: Vec<u8> = hex_chars
+        .chunks(2)
+        .filter_map(|pair| {
+            let text = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(text, 16).ok()
+        })
+        .collect();
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+fn decode_ascii85_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut group = Vec::with_capacity(5);
+    let mut started = false;
+    let mut i = 0usize;
+
+    while i < data.len() {
+        let byte = data[i];
+        if byte.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if byte == b'<' && data.get(i + 1) == Some(&b'~') {
+            started = true;
+            i += 2;
+            continue;
+        }
+        if byte == b'~' && data.get(i + 1) == Some(&b'>') {
+            break;
+        }
+        if byte == b'z' && group.is_empty() {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            started = true;
+            i += 1;
+            continue;
+        }
+        if !(b'!'..=b'u').contains(&byte) {
+            return None;
+        }
+        started = true;
+        group.push(byte);
+        if group.len() == 5 {
+            decode_ascii85_group(&group, 5, &mut out)?;
+            group.clear();
+        }
+        i += 1;
+    }
+
+    if !group.is_empty() {
+        let original_len = group.len();
+        while group.len() < 5 {
+            group.push(b'u');
+        }
+        decode_ascii85_group(&group, original_len, &mut out)?;
+    }
+
+    (started && !out.is_empty()).then_some(out)
+}
+
+fn decode_ascii85_group(group: &[u8], original_len: usize, out: &mut Vec<u8>) -> Option<()> {
+    let mut value = 0u32;
+    for byte in group {
+        value = value
+            .checked_mul(85)?
+            .checked_add(u32::from(byte.checked_sub(b'!')?))?;
+    }
+    let bytes = value.to_be_bytes();
+    let take = if original_len == 5 {
+        4
+    } else {
+        original_len - 1
+    };
+    out.extend_from_slice(&bytes[..take]);
+    Some(())
 }
 
 fn extract_text_ops_from_latin1(pdf: &str, out: &mut Vec<String>) {
@@ -1829,6 +2003,93 @@ mod tests {
         assert!(
             current.content.contains("PDF hex"),
             "hex PDF text should be decoded: {}",
+            current.content
+        );
+    }
+
+    #[test]
+    fn test_pdf_fallback_extracts_raw_deflate_stream_text_without_xref() {
+        use flate2::{Compression, write::DeflateEncoder};
+        use std::io::Write;
+
+        let stream_text = b"BT\n/F1 12 Tf\n72 720 Td\n(Raw deflate invoice 123) Tj\nET";
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(stream_text).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let pdf = [
+            b"%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n2 0 obj\n<< /Filter /FlateDecode /Length ".as_slice(),
+            compressed.len().to_string().as_bytes(),
+            b" >>\nstream\n",
+            compressed.as_slice(),
+            b"\nendstream\nendobj\n%%EOF",
+        ]
+        .concat();
+        let encoded = STANDARD.encode(pdf);
+        let req = minimal_request(serde_json::json!([
+            {"type": "text", "text": "Read the attached PDF."},
+            {
+                "type": "document",
+                "title": "raw-deflate.pdf",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": encoded
+                }
+            }
+        ]));
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let current = &state.current_message.user_input_message;
+
+        assert!(
+            current.content.contains("Raw deflate invoice 123"),
+            "raw deflate stream text should be visible: {}",
+            current.content
+        );
+    }
+
+    #[test]
+    fn test_pdf_fallback_extracts_ascii_hex_flate_stream_text_without_xref() {
+        use flate2::{Compression, write::ZlibEncoder};
+        use std::io::Write;
+
+        let stream_text = b"BT\n/F1 12 Tf\n72 720 Td\n(ASCIIHex flate invoice 456) Tj\nET";
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(stream_text).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let hex = compressed
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>()
+            .into_bytes();
+        let pdf = [
+            b"%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n2 0 obj\n<< /Filter [/ASCIIHexDecode /FlateDecode] /Length ".as_slice(),
+            hex.len().to_string().as_bytes(),
+            b" >>\nstream\n",
+            hex.as_slice(),
+            b">\nendstream\nendobj\n%%EOF",
+        ]
+        .concat();
+        let encoded = STANDARD.encode(pdf);
+        let req = minimal_request(serde_json::json!([
+            {"type": "text", "text": "Read the attached PDF."},
+            {
+                "type": "document",
+                "title": "asciihex-flate.pdf",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": encoded
+                }
+            }
+        ]));
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let current = &state.current_message.user_input_message;
+
+        assert!(
+            current.content.contains("ASCIIHex flate invoice 456"),
+            "ASCIIHex+Flate stream text should be visible: {}",
             current.content
         );
     }

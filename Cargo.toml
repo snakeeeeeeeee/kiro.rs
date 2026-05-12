@@ -8,8 +8,9 @@ default = ["native-tls"]
 native-tls = ["reqwest/native-tls-vendored"]
 
 [profile.release]
-lto = true
+lto = "thin"
 strip = true
+codegen-units = 16
 
 [dependencies]
 axum = "0.8"
