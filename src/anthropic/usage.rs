@@ -565,6 +565,7 @@ mod tests {
             token_auto_refresh_window_secs: 1_800,
             session_affinity_ttl_secs: 3_600,
             opus47_plain_stabilization_mode: "off".to_string(),
+            opus47_antml_probe_compat: "off".to_string(),
             opus47_diagnostics_enabled: true,
             opus47_raw_debug_enabled: false,
             opus47_raw_debug_max_chars: 20_000,

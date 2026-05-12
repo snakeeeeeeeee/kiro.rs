@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'opus47PlainStabilizationMode' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -144,6 +144,20 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="off">关闭</option>
                 <option value="adaptive_low">Adaptive Low</option>
                 <option value="adaptive_high">Adaptive High</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Opus 4.7 ANTML 探针兼容</label>
+              <select
+                value={form.opus47AntmlProbeCompat}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, opus47AntmlProbeCompat: event.target.value as 'off' | 'clarify' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="off">关闭</option>
+                <option value="clarify">Clarify</option>
               </select>
             </div>
 

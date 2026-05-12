@@ -174,6 +174,7 @@ impl AdminService {
             token_auto_refresh_window_secs: snapshot.token_auto_refresh_window_secs,
             session_affinity_ttl_secs: snapshot.session_affinity_ttl_secs,
             opus47_plain_stabilization_mode: snapshot.opus47_plain_stabilization_mode,
+            opus47_antml_probe_compat: snapshot.opus47_antml_probe_compat,
             opus47_diagnostics_enabled: snapshot.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: snapshot.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: snapshot.opus47_raw_debug_max_chars,

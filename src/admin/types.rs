@@ -115,6 +115,7 @@ pub struct RuntimeStatusResponse {
     pub token_auto_refresh_window_secs: u64,
     pub session_affinity_ttl_secs: u64,
     pub opus47_plain_stabilization_mode: String,
+    pub opus47_antml_probe_compat: String,
     pub opus47_diagnostics_enabled: bool,
     pub opus47_raw_debug_enabled: bool,
     pub opus47_raw_debug_max_chars: usize,

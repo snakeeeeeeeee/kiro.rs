@@ -155,6 +155,10 @@ pub struct Config {
     #[serde(default = "default_opus47_plain_stabilization_mode")]
     pub opus47_plain_stabilization_mode: String,
 
+    /// Opus 4.7 ANTML 探针兼容模式："off" 或 "clarify"
+    #[serde(default = "default_opus47_antml_probe_compat")]
+    pub opus47_antml_probe_compat: String,
+
     /// 是否启用 Opus 4.7 响应形态诊断日志
     #[serde(default = "default_opus47_diagnostics_enabled")]
     pub opus47_diagnostics_enabled: bool,
@@ -423,6 +427,10 @@ fn default_opus47_plain_stabilization_mode() -> String {
     "off".to_string()
 }
 
+fn default_opus47_antml_probe_compat() -> String {
+    "off".to_string()
+}
+
 fn default_opus47_diagnostics_enabled() -> bool {
     true
 }
@@ -609,6 +617,7 @@ impl Default for Config {
             token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),
             session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
             opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
+            opus47_antml_probe_compat: default_opus47_antml_probe_compat(),
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
             opus47_raw_debug_enabled: false,
             opus47_raw_debug_max_chars: default_opus47_raw_debug_max_chars(),

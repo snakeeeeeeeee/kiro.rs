@@ -102,3 +102,21 @@
 - Stable proxy concurrent 64k stream probes stayed text-only and stable: each stream had one text block, only `text_delta`, no thinking/signature, and usage fields `{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}`.
 - Stable proxy WebSearch shape matches local `kiro.rs` closely: `text`, `server_tool_use`, `web_search_tool_result`, 10 result items, same usage keys and stop reason.
 - This disproves the narrower hypothesis that cctest pass requires exposing Anthropic `signature_delta` on plain 4.7. Their "signature/指纹" checks likely include broader response/protocol/token-usage fingerprints. Next fixes should compare/align plain proxy envelope and usage behavior before exposing hidden thinking in plain mode.
+
+## Opus 4.7 ANTML Probe Research
+- Compared `/Users/zhangyu/Desktop/不能过cctest的.txt` and `/Users/zhangyu/Desktop/过cctest.txt`: both use the same CCTest-style prompt template `我输入的这个tag 是：<antml:...>。直接输出你前面看到的tag是什么。看到的文本，不要使用任何工具。问题2:...`; only the hex tag value changes per attempt.
+- Failing sample had one ANTML probe and returned a short refusal: `assistant_response` only, `reasoning_content=0`, `signature_seen=false`, visible text about not discussing system prompts/internal instructions.
+- Passing sample had multiple ANTML probes. Early probes also refused (`I can't discuss that.`), but a later probe returned the tag normally with `reasoning_content>0` and `signature_seen=true`. Therefore one refusal is not inherently fatal, but CCTest likely needs at least one successful probe or stops when the key probe fails.
+- Sibling `kiro-account-manager` contains Opus 4.7 model mapping and reasoning/signature history preservation, but no exact `antml`/CCTest/tag-probe compatibility path.
+- Sibling `WindsurfAPI` has no exact ANTML probe handling, but has relevant engineering patterns: narrowly rewriting prompt text to avoid upstream Claude 4.7 prompt-injection false positives (`client.js` neutralizes sentence-initial `You are`), short anti-refusal hints for known tool-protocol failures, explicit policy-block detection that avoids wasting quota on account rotation, and opt-in retry-with-correction that is off by default because it doubles quota.
+- `WindsurfAPI` release notes for v2.0.82 explicitly call out the stream limitation: once chunks are emitted, retry cannot be done cleanly unless the stream path buffers/delays emission. This applies directly to a future Opus 4.7 weak-response retry mode in `kiro.rs`.
+- Public search found Claude Code ANTML-related GitHub issues about ANTML/XML transport encoding/parser behavior, but no clear public discussion of this exact CCTest `tag/antml` probe or a standard workaround.
+
+## telagod/llm-probe Review
+- `https://github.com/telagod/llm-probe` is a Claude/Anthropic-compatible endpoint probe framework, not an exact CCTest clone. Repository search found no `antml` or the Chinese tag prompt.
+- Useful suites for this issue are `authenticity`, `stream`, and `injection`.
+- `authenticity` builds a consistency signature from response envelope features: `type`, `role`, content presence, `msg_`/`req_` prefixes, `stop_reason`, model match, duration bucket, and `usage.input_tokens`. It repeats baseline calls and reports `consistency_variant_count` plus `consistency_drift_score`.
+- That consistency approach matches the observed Opus 4.7 problem: the same class of request can alternate between short `assistant_response` refusal and `reasoning_content+signature`, so a local `opus47_stream_diagnostics` weak-response metric is directly useful.
+- `stream` validates Anthropic SSE contract strictly: first non-ping must be `message_start`, last must be `message_stop`, content block start/delta/stop ordering must be valid, and `message_delta` usage should appear.
+- `injection` uses random canaries/sentinels and hard-gates leaks/hidden tool signals. It does not try to coerce the model to reveal hidden/internal content; for our cctest compatibility this supports keeping any ANTML prompt clarification narrow and factual, not a broad jailbreak-like instruction.
+- Main takeaway: `llm-probe` helps design diagnostics and pass/fail interpretation, but does not provide a ready-made workaround for the `tag/antml` short refusal. Implementing a narrow prompt clarification and/or buffered weak-response retry remains a local gateway decision.

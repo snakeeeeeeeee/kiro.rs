@@ -58,6 +58,7 @@ export interface RuntimeStatusResponse {
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
+  opus47AntmlProbeCompat: 'off' | 'clarify'
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
@@ -236,6 +237,7 @@ export interface RuntimeSettings {
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
+  opus47AntmlProbeCompat: 'off' | 'clarify'
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number

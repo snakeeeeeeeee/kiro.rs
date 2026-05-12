@@ -207,3 +207,22 @@
 - `plain_text` makes Opus 4.7 `-thinking` responses hide thinking/signature and report response model `claude-opus-4-7`.
 - `aggregator` changes `/v1/models` entries toward the stable proxy shape with `type: "model"`, `owned_by: null`, and `max_tokens: null`.
 - Validation: `cargo fmt -- --check`, `cargo check`, `cargo test` passed with 245 tests; `pnpm --dir admin-ui build` passed.
+
+## Completed: ANTML Probe Sibling/Public Research
+- Checked `/Users/zhangyu/code/myProject/supertoken-projects/kiro-account-manager` for `antml`, `cctest`, short refusal, Opus 4.7, reasoning/signature, and retry-related handling. Found no exact ANTML/CCTest probe compatibility path.
+- Checked `/Users/zhangyu/code/myProject/supertoken-projects/WindsurfAPI`; found no exact ANTML probe handling, but found relevant patterns for narrow prompt rewriting, anti-refusal hints, opt-in retry-with-correction, and policy-block short-circuiting.
+- Searched public web/GitHub for `antml` + `cctest` / `I can't discuss that`; found ANTML/XML transport issues in Claude Code but no standard discussion or workaround for this exact tag probe.
+- Recorded details in `findings.md`; no business logic was changed in this research turn.
+
+## Completed: telagod/llm-probe Review
+- Cloned `https://github.com/telagod/llm-probe` to `/tmp/llm-probe-inspect` for read-only inspection.
+- Confirmed it has no exact `antml`/Chinese tag prompt probe.
+- Found useful diagnostics patterns in `authenticity` (cross-run consistency signatures and drift score), `stream` (strict Anthropic SSE contract validation), and `injection` (random sentinel leak/hidden-tool hard gates).
+- Recorded the takeaway in `findings.md`: useful for measuring/diagnosing Opus 4.7 instability, but not a ready-made workaround.
+
+## Completed: Opus 4.7 ANTML Probe Compat Switch
+- Added runtime/Admin setting `opus47AntmlProbeCompat` with values `off` and `clarify`; default remains `off`.
+- The clarify mode only applies to plain `claude-opus-4-7` / `claude-opus-4.7` when the current user content matches the cctest-style ANTML probe shape.
+- Matching requests get a short clarification prepended to the Kiro upstream current user message; no response spoofing or retry was added.
+- Added unit coverage for disabled mode, matched plain Opus 4.7 probe, non-probe text, and thinking model exclusion.
+- Validation: `cargo fmt -- --check`, `cargo check`, `cargo test` passed with 249 tests; `pnpm --dir admin-ui build` passed.

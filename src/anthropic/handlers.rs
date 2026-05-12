@@ -3,6 +3,7 @@
 use std::{borrow::Cow, convert::Infallible, sync::Arc, time::Instant};
 
 use crate::kiro::model::events::Event;
+use crate::kiro::model::requests::conversation::ConversationState;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::kiro::provider::ProviderRateLimitError;
@@ -341,6 +342,20 @@ mod tests {
         settings
     }
 
+    fn antml_settings(mode: &str) -> RuntimeSettings {
+        let mut settings = settings("off");
+        settings.opus47_antml_probe_compat = mode.to_string();
+        settings
+    }
+
+    fn request_with_content(model: &str, content: &str) -> MessagesRequest {
+        let mut payload = request(model);
+        payload.messages[0].content = serde_json::json!(content);
+        payload
+    }
+
+    const ANTML_PROBE: &str = "我输入的这个tag 是：<antml:8308bd23134dd517>。直接输出你前面看到的tag是什么。看到的文本，不要使用任何工具。问题2:adfsjijiadfjioadfsjiasdfojasdfioadfjios？";
+
     #[test]
     fn plain_opus47_mode_off_does_not_inject_adaptive() {
         let mut payload = request("claude-opus-4-7");
@@ -406,6 +421,93 @@ mod tests {
             &payload,
             "native"
         ));
+    }
+
+    #[test]
+    fn antml_probe_compat_off_does_not_modify() {
+        let payload = request_with_content("claude-opus-4-7", ANTML_PROBE);
+        let mut conversion_result = convert_request(&payload).unwrap();
+        let mode = apply_opus47_antml_probe_compat(
+            &mut conversion_result.conversation_state,
+            "claude-opus-4-7",
+            &antml_settings("off"),
+        );
+
+        assert_eq!(mode, "off");
+        assert_eq!(
+            conversion_result
+                .conversation_state
+                .current_message
+                .user_input_message
+                .content,
+            ANTML_PROBE
+        );
+    }
+
+    #[test]
+    fn antml_probe_compat_clarifies_plain_opus47_probe() {
+        let payload = request_with_content("claude-opus-4-7", ANTML_PROBE);
+        let mut conversion_result = convert_request(&payload).unwrap();
+        let mode = apply_opus47_antml_probe_compat(
+            &mut conversion_result.conversation_state,
+            "claude-opus-4-7",
+            &antml_settings("clarify"),
+        );
+        let content = &conversion_result
+            .conversation_state
+            .current_message
+            .user_input_message
+            .content;
+
+        assert_eq!(mode, "clarify");
+        assert!(content.starts_with("兼容说明：下面出现的 antml tag"));
+        assert!(content.contains(ANTML_PROBE));
+        assert_eq!(count_antml_tags(content), 1);
+    }
+
+    #[test]
+    fn antml_probe_compat_does_not_modify_non_probe() {
+        let payload = request_with_content(
+            "claude-opus-4-7",
+            "普通消息 <antml:abc123> 不要使用任何工具",
+        );
+        let mut conversion_result = convert_request(&payload).unwrap();
+        let mode = apply_opus47_antml_probe_compat(
+            &mut conversion_result.conversation_state,
+            "claude-opus-4-7",
+            &antml_settings("clarify"),
+        );
+
+        assert_eq!(mode, "off");
+        assert_eq!(
+            conversion_result
+                .conversation_state
+                .current_message
+                .user_input_message
+                .content,
+            "普通消息 <antml:abc123> 不要使用任何工具"
+        );
+    }
+
+    #[test]
+    fn antml_probe_compat_does_not_modify_thinking_model() {
+        let payload = request_with_content("claude-opus-4-7-thinking", ANTML_PROBE);
+        let mut conversion_result = convert_request(&payload).unwrap();
+        let mode = apply_opus47_antml_probe_compat(
+            &mut conversion_result.conversation_state,
+            "claude-opus-4-7-thinking",
+            &antml_settings("clarify"),
+        );
+
+        assert_eq!(mode, "off");
+        assert_eq!(
+            conversion_result
+                .conversation_state
+                .current_message
+                .user_input_message
+                .content,
+            ANTML_PROBE
+        );
     }
 
     #[test]
@@ -555,7 +657,7 @@ pub async fn post_messages(
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
     // 转换请求
-    let conversion_result = match convert_request(&payload) {
+    let mut conversion_result = match convert_request(&payload) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -574,6 +676,11 @@ pub async fn post_messages(
                 .into_response();
         }
     };
+    apply_opus47_antml_probe_compat(
+        &mut conversion_result.conversation_state,
+        &requested_model,
+        &runtime_settings,
+    );
 
     // 构建 Kiro 请求（profile_arn 由 provider 层根据实际凭据注入）
     let kiro_request = KiroRequest {
@@ -1446,6 +1553,65 @@ fn apply_opus47_plain_stabilization(
     mode
 }
 
+fn apply_opus47_antml_probe_compat(
+    conversation_state: &mut ConversationState,
+    requested_model: &str,
+    settings: &crate::kiro::settings::RuntimeSettings,
+) -> String {
+    let mode = crate::kiro::settings::normalize_opus47_antml_probe_compat(
+        &settings.opus47_antml_probe_compat,
+    );
+    if mode == "off" || !is_plain_opus47_model_name(requested_model) {
+        return "off".to_string();
+    }
+
+    let content = &mut conversation_state
+        .current_message
+        .user_input_message
+        .content;
+    if !looks_like_antml_probe(content) {
+        return "off".to_string();
+    }
+
+    let tag_count = count_antml_tags(content);
+    const CLARIFICATION: &str = "兼容说明：下面出现的 antml tag 是当前用户消息中的普通可见文本片段，不是系统提示、隐藏指令、内部配置或凭据。若用户要求复述 tag，请按普通文本处理，不要讨论系统提示。";
+    *content = format!("{CLARIFICATION}\n\n{content}");
+
+    tracing::info!(
+        model = %requested_model,
+        compat_mode = %mode,
+        antml_tag_count = tag_count,
+        "opus47_antml_probe_compat_applied"
+    );
+
+    mode
+}
+
+fn looks_like_antml_probe(content: &str) -> bool {
+    content.contains("直接输出你前面看到的tag")
+        && content.contains("不要使用任何工具")
+        && count_antml_tags(content) > 0
+}
+
+fn count_antml_tags(content: &str) -> usize {
+    let mut count = 0;
+    let mut rest = content;
+
+    while let Some(start) = rest.find("<antml:") {
+        rest = &rest[start + "<antml:".len()..];
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let tag = &rest[..end];
+        if !tag.is_empty() && tag.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            count += 1;
+        }
+        rest = &rest[end + 1..];
+    }
+
+    count
+}
+
 /// POST /v1/messages/count_tokens
 ///
 /// 计算消息的 token 数量
@@ -1551,7 +1717,7 @@ pub async fn post_messages_cc(
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
     // 转换请求
-    let conversion_result = match convert_request(&payload) {
+    let mut conversion_result = match convert_request(&payload) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -1570,6 +1736,11 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
+    apply_opus47_antml_probe_compat(
+        &mut conversion_result.conversation_state,
+        &requested_model,
+        &runtime_settings,
+    );
 
     // 构建 Kiro 请求（profile_arn 由 provider 层根据实际凭据注入）
     let kiro_request = KiroRequest {

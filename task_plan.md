@@ -15,6 +15,8 @@ Current extension: add dynamic per-account IP proxy binding so each account can 
 
 Current investigation: compare local `kiro.rs`, sibling `kiro-account-manager`, public Kiro proxy implementations, and official Anthropic protocol behavior to explain why `claude-opus-4-7` detection fails or only partially passes, especially around reasoning signatures, PDF/document input, and structured output.
 
+Current extension: add an opt-in Opus 4.7 ANTML probe compatibility mode for cctest-style tag probes, defaulting off and only clarifying that the tag is ordinary visible user text.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -34,6 +36,7 @@ Current investigation: compare local `kiro.rs`, sibling `kiro-account-manager`, 
 - [completed] Add dynamic virtual cache usage input/creation modes and Admin controls
 - [completed] Add dynamic proxy/IP binding settings, SQLite bindings, worker, Admin controls, and request-path effective proxy integration
 - [completed] Analyze Opus 4.7 detector failures against sibling gateway, public proxy behavior, and official Anthropic protocol expectations
+- [completed] Add narrow Opus 4.7 ANTML probe compatibility config, request rewrite, Admin UI control, and tests
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -48,6 +51,7 @@ Current investigation: compare local `kiro.rs`, sibling `kiro-account-manager`, 
 - Dynamic virtual cache usage stays configurable and defaults to fixed mode for compatibility; Admin can enable `estimated_user_delta` input mode and `dynamic` creation mode.
 - Dynamic proxy V1 follows the WindsurfAPI design but is implemented natively in Rust; dynamic active binding wins over manual account proxy, then global proxy.
 - Dynamic proxy V1 targets Novproxy-style username templates and keeps plaintext provider password in SQLite/runtime settings, matching the current config/security model.
+- Opus 4.7 ANTML probe compatibility is opt-in (`off`/`clarify`), scoped to plain Opus 4.7, and does not spoof or retry responses in the first version.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
