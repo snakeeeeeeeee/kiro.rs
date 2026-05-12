@@ -1,6 +1,6 @@
 //! Anthropic API Handler 函数
 
-use std::{convert::Infallible, sync::Arc, time::Instant};
+use std::{borrow::Cow, convert::Infallible, sync::Arc, time::Instant};
 
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
@@ -165,7 +165,7 @@ pub async fn get_models() -> impl IntoResponse {
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.7".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 64000,
+            max_tokens: 32000,
         },
         Model {
             id: "claude-opus-4-7-thinking".to_string(),
@@ -174,7 +174,7 @@ pub async fn get_models() -> impl IntoResponse {
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.7 (Thinking)".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 64000,
+            max_tokens: 32000,
         },
         Model {
             id: "claude-opus-4-6".to_string(),
@@ -183,7 +183,7 @@ pub async fn get_models() -> impl IntoResponse {
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.6".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 64000,
+            max_tokens: 32000,
         },
         Model {
             id: "claude-opus-4-6-thinking".to_string(),
@@ -192,7 +192,7 @@ pub async fn get_models() -> impl IntoResponse {
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.6 (Thinking)".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 64000,
+            max_tokens: 32000,
         },
         Model {
             id: "claude-sonnet-4-6".to_string(),
@@ -219,7 +219,7 @@ pub async fn get_models() -> impl IntoResponse {
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.5".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 64000,
+            max_tokens: 32000,
         },
         Model {
             id: "claude-opus-4-5-20251101-thinking".to_string(),
@@ -228,7 +228,7 @@ pub async fn get_models() -> impl IntoResponse {
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.5 (Thinking)".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 64000,
+            max_tokens: 32000,
         },
         Model {
             id: "claude-sonnet-4-5-20250929".to_string(),
@@ -592,10 +592,11 @@ fn create_sse_stream(
                                                     stream = true,
                                                     credential_id,
                                                     first_event_ms = crate::metrics::duration_ms(stream_started_at.elapsed()),
-                                                    event_type = event_metric_name(&event),
+                                                    event_type = %event_metric_name(&event),
                                                     "upstream_stream_first_event"
                                                 );
                                             }
+                                            log_unknown_kiro_event(&event);
                                             let sse_events = ctx.process_kiro_event(&event);
                                             events.extend(sse_events);
                                         }
@@ -651,16 +652,35 @@ fn create_sse_stream(
     initial_stream.chain(processing_stream)
 }
 
-fn event_metric_name(event: &Event) -> &'static str {
+fn event_metric_name(event: &Event) -> Cow<'static, str> {
     match event {
-        Event::AssistantResponse(_) => "assistant_response",
-        Event::ToolUse(_) => "tool_use",
-        Event::Metering(_) => "metering",
-        Event::ContextUsage(_) => "context_usage",
-        Event::Unknown {} => "unknown",
-        Event::Error { .. } => "error",
-        Event::Exception { .. } => "exception",
+        Event::AssistantResponse(_) => Cow::Borrowed("assistant_response"),
+        Event::ToolUse(_) => Cow::Borrowed("tool_use"),
+        Event::Metering(_) => Cow::Borrowed("metering"),
+        Event::ContextUsage(_) => Cow::Borrowed("context_usage"),
+        Event::Unknown { event_type, .. } => Cow::Owned(event_type.clone()),
+        Event::Error { .. } => Cow::Borrowed("error"),
+        Event::Exception { .. } => Cow::Borrowed("exception"),
     }
+}
+
+fn log_unknown_kiro_event(event: &Event) {
+    let Event::Unknown {
+        event_type,
+        payload,
+    } = event
+    else {
+        return;
+    };
+
+    let payload_preview = String::from_utf8_lossy(payload);
+    let payload_preview: String = payload_preview.chars().take(500).collect();
+    tracing::warn!(
+        event_type = %event_type,
+        payload_len = payload.len(),
+        payload_preview = %payload_preview,
+        "收到未识别 Kiro 上游事件，已跳过"
+    );
 }
 
 use super::converter::get_context_window_size;
@@ -1290,10 +1310,11 @@ fn create_buffered_sse_stream(
                                                         credential_id,
                                                         buffered = true,
                                                         first_event_ms = crate::metrics::duration_ms(stream_started_at.elapsed()),
-                                                        event_type = event_metric_name(&event),
+                                                        event_type = %event_metric_name(&event),
                                                         "upstream_stream_first_event"
                                                     );
                                                 }
+                                                log_unknown_kiro_event(&event);
                                                 // 缓冲事件（复用 StreamContext 的处理逻辑）
                                                 ctx.process_and_buffer(&event);
                                             }

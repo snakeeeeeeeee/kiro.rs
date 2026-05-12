@@ -72,7 +72,12 @@ pub enum Event {
     /// 上下文使用率
     ContextUsage(super::ContextUsageEvent),
     /// 未知事件 (保留原始帧数据)
-    Unknown {},
+    Unknown {
+        /// 上游事件类型
+        event_type: String,
+        /// 原始 payload
+        payload: Vec<u8>,
+    },
     /// 服务端错误
     Error {
         /// 错误代码
@@ -121,7 +126,10 @@ impl Event {
                 let payload = super::ContextUsageEvent::from_frame(&frame)?;
                 Ok(Self::ContextUsage(payload))
             }
-            EventType::Unknown => Ok(Self::Unknown {}),
+            EventType::Unknown => Ok(Self::Unknown {
+                event_type: event_type_str.to_string(),
+                payload: frame.payload.clone(),
+            }),
         }
     }
 
