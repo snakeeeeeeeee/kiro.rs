@@ -154,124 +154,157 @@ fn map_provider_error(err: Error) -> Response {
 /// GET /v1/models
 ///
 /// 返回可用的模型列表
-pub async fn get_models() -> impl IntoResponse {
+pub async fn get_models(State(state): State<AppState>) -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
-    let models = vec![
-        Model {
-            id: "claude-opus-4-7".to_string(),
-            object: "model".to_string(),
-            created: 1776297600, // Apr 16, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.7".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-7-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1776297600, // Apr 16, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.7 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-6".to_string(),
-            object: "model".to_string(),
-            created: 1770163200, // Feb 4, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.6".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-6-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1770163200, // Feb 4, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.6 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-6".to_string(),
-            object: "model".to_string(),
-            created: 1771286400, // Feb 17, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.6".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-        Model {
-            id: "claude-sonnet-4-6-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1771286400, // Feb 17, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.6 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-        Model {
-            id: "claude-opus-4-5-20251101".to_string(),
-            object: "model".to_string(),
-            created: 1763942400, // Nov 24, 2025
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-5-20251101-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1763942400, // Nov 24, 2025
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-5-20250929".to_string(),
-            object: "model".to_string(),
-            created: 1759104000, // Sep 29, 2025
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-        Model {
-            id: "claude-sonnet-4-5-20250929-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1759104000, // Sep 29, 2025
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-        Model {
-            id: "claude-haiku-4-5-20251001".to_string(),
-            object: "model".to_string(),
-            created: 1760486400, // Oct 15, 2025
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Haiku 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-        Model {
-            id: "claude-haiku-4-5-20251001-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1760486400, // Oct 15, 2025
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Haiku 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-    ];
+    let compat_models_shape = state
+        .kiro_provider
+        .as_ref()
+        .map(|provider| {
+            provider
+                .token_manager()
+                .runtime_settings()
+                .compat_models_shape
+        })
+        .unwrap_or_else(|| "anthropic".to_string());
+
+    let models = if compat_models_shape == "aggregator" {
+        aggregator_models()
+    } else {
+        anthropic_models()
+    };
 
     Json(ModelsResponse {
         object: "list".to_string(),
         data: models,
     })
+}
+
+fn anthropic_models() -> Vec<Model> {
+    vec![
+        Model {
+            id: "claude-opus-4-7".to_string(),
+            object: "model".to_string(),
+            created: 1776297600, // Apr 16, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.7".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
+            id: "claude-opus-4-7-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1776297600, // Apr 16, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.7 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
+            id: "claude-opus-4-6".to_string(),
+            object: "model".to_string(),
+            created: 1770163200, // Feb 4, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.6".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
+            id: "claude-opus-4-6-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1770163200, // Feb 4, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.6 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
+            id: "claude-sonnet-4-6".to_string(),
+            object: "model".to_string(),
+            created: 1771286400, // Feb 17, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Sonnet 4.6".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(64000),
+        },
+        Model {
+            id: "claude-sonnet-4-6-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1771286400, // Feb 17, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Sonnet 4.6 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(64000),
+        },
+        Model {
+            id: "claude-opus-4-5-20251101".to_string(),
+            object: "model".to_string(),
+            created: 1763942400, // Nov 24, 2025
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
+            id: "claude-opus-4-5-20251101-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1763942400, // Nov 24, 2025
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
+            id: "claude-sonnet-4-5-20250929".to_string(),
+            object: "model".to_string(),
+            created: 1759104000, // Sep 29, 2025
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Sonnet 4.5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(64000),
+        },
+        Model {
+            id: "claude-sonnet-4-5-20250929-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1759104000, // Sep 29, 2025
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Sonnet 4.5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(64000),
+        },
+        Model {
+            id: "claude-haiku-4-5-20251001".to_string(),
+            object: "model".to_string(),
+            created: 1760486400, // Oct 15, 2025
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Haiku 4.5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(64000),
+        },
+        Model {
+            id: "claude-haiku-4-5-20251001-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1760486400, // Oct 15, 2025
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Haiku 4.5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(64000),
+        },
+    ]
+}
+
+fn aggregator_models() -> Vec<Model> {
+    anthropic_models()
+        .into_iter()
+        .map(|model| Model {
+            object: "model".to_string(),
+            display_name: model.id.clone(),
+            model_type: "model".to_string(),
+            owned_by: None,
+            max_tokens: None,
+            ..model
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -319,7 +352,8 @@ mod tests {
         assert!(payload.output_config.is_none());
         assert!(!client_thinking_enabled_for_request(
             "claude-opus-4-7",
-            &payload
+            &payload,
+            "native"
         ));
     }
 
@@ -343,7 +377,8 @@ mod tests {
         );
         assert!(!client_thinking_enabled_for_request(
             "claude-opus-4-7",
-            &payload
+            &payload,
+            "native"
         ));
     }
 
@@ -368,8 +403,25 @@ mod tests {
         );
         assert!(client_thinking_enabled_for_request(
             "claude-opus-4-7-thinking",
-            &payload
+            &payload,
+            "native"
         ));
+    }
+
+    #[test]
+    fn compat_plain_text_hides_opus47_thinking_and_normalizes_response_model() {
+        let mut payload = request("claude-opus-4-7-thinking");
+        override_thinking_from_model_name(&mut payload);
+
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-7-thinking",
+            &payload,
+            "plain_text"
+        ));
+        assert_eq!(
+            response_model_for_request("claude-opus-4-7-thinking", "plain_text"),
+            "claude-opus-4-7"
+        );
     }
 
     #[test]
@@ -494,7 +546,11 @@ pub async fn post_messages(
 
     let stabilization_mode =
         apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
-    let client_thinking_enabled = client_thinking_enabled_for_request(&requested_model, &payload);
+    let compat_thinking_model = runtime_settings.compat_thinking_model.clone();
+    let compat_usage_shape = runtime_settings.compat_usage_shape.clone();
+    let response_model = response_model_for_request(&payload.model, &compat_thinking_model);
+    let client_thinking_enabled =
+        client_thinking_enabled_for_request(&requested_model, &payload, &compat_thinking_model);
     let opus47_diagnostics_enabled =
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
@@ -571,6 +627,8 @@ pub async fn post_messages(
             input_tokens,
             estimated_uncached_input_tokens,
             client_thinking_enabled,
+            response_model.as_str(),
+            compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
             opus47_diagnostics_enabled,
             tool_name_map,
@@ -592,6 +650,8 @@ pub async fn post_messages(
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
+            response_model.as_str(),
+            compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
             opus47_diagnostics_enabled,
             tool_name_map,
@@ -613,6 +673,8 @@ async fn handle_stream_request(
     input_tokens: i32,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
+    response_model: &str,
+    usage_shape: &str,
     stabilization_mode: &str,
     opus47_diagnostics_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
@@ -650,19 +712,20 @@ async fn handle_stream_request(
     let initial_usage = pending_usage.usage().clone();
 
     let mut ctx = StreamContext::new_with_thinking(
-        model,
+        response_model,
         input_tokens,
         client_thinking_enabled,
         tool_name_map,
     );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
-        model,
+        response_model,
         credential_id,
         attempts,
         stabilization_mode,
         client_thinking_enabled,
     ));
+    ctx.set_usage_shape(usage_shape);
     ctx.set_initial_usage(initial_usage);
     ctx.set_pending_usage_commit(usage_manager, pending_usage);
 
@@ -942,6 +1005,8 @@ async fn handle_non_stream_request(
     estimated_uncached_input_tokens: i32,
     extract_thinking: bool,
     client_thinking_enabled: bool,
+    response_model: &str,
+    usage_shape: &str,
     stabilization_mode: &str,
     opus47_diagnostics_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
@@ -1165,10 +1230,10 @@ async fn handle_non_stream_request(
         "type": "message",
         "role": "assistant",
         "content": content,
-        "model": model,
+        "model": response_model,
         "stop_reason": stop_reason,
         "stop_sequence": null,
-        "usage": usage.to_json()
+        "usage": usage.to_json_with_shape(usage_shape)
     });
 
     log_opus47_nonstream_diagnostics(&opus47_diagnostics, request_started_at);
@@ -1234,7 +1299,15 @@ fn is_plain_opus47_model_name(model: &str) -> bool {
     )
 }
 
-fn client_thinking_enabled_for_request(model: &str, payload: &MessagesRequest) -> bool {
+fn client_thinking_enabled_for_request(
+    model: &str,
+    payload: &MessagesRequest,
+    compat_thinking_model: &str,
+) -> bool {
+    if compat_thinking_model == "plain_text" && is_opus47_model_name(model) {
+        return false;
+    }
+
     if is_plain_opus47_model_name(model) {
         return false;
     }
@@ -1244,6 +1317,13 @@ fn client_thinking_enabled_for_request(model: &str, payload: &MessagesRequest) -
         .as_ref()
         .map(|t| t.is_enabled())
         .unwrap_or(false)
+}
+
+fn response_model_for_request(model: &str, compat_thinking_model: &str) -> String {
+    if compat_thinking_model == "plain_text" && is_opus47_model_name(model) {
+        return "claude-opus-4-7".to_string();
+    }
+    model.to_string()
 }
 
 fn apply_opus47_plain_stabilization(
@@ -1379,7 +1459,11 @@ pub async fn post_messages_cc(
 
     let stabilization_mode =
         apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
-    let client_thinking_enabled = client_thinking_enabled_for_request(&requested_model, &payload);
+    let compat_thinking_model = runtime_settings.compat_thinking_model.clone();
+    let compat_usage_shape = runtime_settings.compat_usage_shape.clone();
+    let response_model = response_model_for_request(&payload.model, &compat_thinking_model);
+    let client_thinking_enabled =
+        client_thinking_enabled_for_request(&requested_model, &payload, &compat_thinking_model);
     let opus47_diagnostics_enabled =
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
@@ -1456,6 +1540,8 @@ pub async fn post_messages_cc(
             input_tokens,
             estimated_uncached_input_tokens,
             client_thinking_enabled,
+            response_model.as_str(),
+            compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
             opus47_diagnostics_enabled,
             tool_name_map,
@@ -1477,6 +1563,8 @@ pub async fn post_messages_cc(
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
+            response_model.as_str(),
+            compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
             opus47_diagnostics_enabled,
             tool_name_map,
@@ -1501,6 +1589,8 @@ async fn handle_stream_request_buffered(
     estimated_input_tokens: i32,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
+    response_model: &str,
+    usage_shape: &str,
     stabilization_mode: &str,
     opus47_diagnostics_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
@@ -1523,22 +1613,24 @@ async fn handle_stream_request_buffered(
     let attempts = response.attempts();
     let settings = provider.token_manager().runtime_settings();
     let model = model.to_string();
+    let response_model = response_model.to_string();
 
     // 创建缓冲流处理上下文
     let mut ctx = BufferedStreamContext::new(
-        model.clone(),
+        response_model.clone(),
         estimated_input_tokens,
         client_thinking_enabled,
         tool_name_map,
     );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
-        model.clone(),
+        response_model,
         credential_id,
         attempts,
         stabilization_mode,
         client_thinking_enabled,
     ));
+    ctx.set_usage_shape(usage_shape);
     ctx.set_usage_builder(Box::new(
         move |final_input_tokens, output_tokens, commit_usage| {
             let pending_usage = usage_manager.preview_usage(

@@ -75,18 +75,32 @@ impl AnthropicUsage {
         }
     }
 
+    #[cfg(test)]
     pub fn to_json(&self) -> Value {
+        self.to_json_with_shape("anthropic")
+    }
+
+    pub fn to_json_with_shape(&self, shape: &str) -> Value {
         if self.include_cache_fields {
-            json!({
-                "input_tokens": self.input_tokens,
-                "cache_read_input_tokens": self.cache_read_input_tokens,
-                "cache_creation_input_tokens": self.cache_creation_input_tokens,
-                "cache_creation": {
-                    "ephemeral_5m_input_tokens": self.ephemeral_5m_input_tokens,
-                    "ephemeral_1h_input_tokens": self.ephemeral_1h_input_tokens
-                },
-                "output_tokens": self.output_tokens
-            })
+            if shape == "flat" {
+                json!({
+                    "input_tokens": self.input_tokens,
+                    "cache_read_input_tokens": self.cache_read_input_tokens,
+                    "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                    "output_tokens": self.output_tokens
+                })
+            } else {
+                json!({
+                    "input_tokens": self.input_tokens,
+                    "cache_read_input_tokens": self.cache_read_input_tokens,
+                    "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": self.ephemeral_5m_input_tokens,
+                        "ephemeral_1h_input_tokens": self.ephemeral_1h_input_tokens
+                    },
+                    "output_tokens": self.output_tokens
+                })
+            }
         } else {
             json!({
                 "input_tokens": self.input_tokens,
@@ -552,6 +566,9 @@ mod tests {
             session_affinity_ttl_secs: 3_600,
             opus47_plain_stabilization_mode: "off".to_string(),
             opus47_diagnostics_enabled: true,
+            compat_usage_shape: "anthropic".to_string(),
+            compat_thinking_model: "native".to_string(),
+            compat_models_shape: "anthropic".to_string(),
             load_balancing_mode: "priority".to_string(),
             virtual_cache_usage_enabled: true,
             virtual_cache_default_ttl: "5m".to_string(),
@@ -693,6 +710,17 @@ mod tests {
         assert_eq!(json["output_tokens"], 7);
         assert!(json.get("cache_read_input_tokens").is_none());
         assert!(json.get("cache_creation_input_tokens").is_none());
+        assert!(json.get("cache_creation").is_none());
+    }
+
+    #[test]
+    fn flat_usage_shape_omits_nested_cache_creation() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let usage = manager.build_usage(&settings, input("session-a", 1000, CacheTtl::FiveMinutes));
+        let json = usage.to_json_with_shape("flat");
+
+        assert_eq!(json["cache_creation_input_tokens"], 18_000);
         assert!(json.get("cache_creation").is_none());
     }
 

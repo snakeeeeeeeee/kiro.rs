@@ -44,11 +44,11 @@ pub struct Model {
     pub id: String,
     pub object: String,
     pub created: i64,
-    pub owned_by: String,
+    pub owned_by: Option<String>,
     pub display_name: String,
     #[serde(rename = "type")]
     pub model_type: String,
-    pub max_tokens: i32,
+    pub max_tokens: Option<i32>,
 }
 
 /// 模型列表响应

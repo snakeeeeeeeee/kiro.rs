@@ -59,6 +59,9 @@ export interface RuntimeStatusResponse {
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47DiagnosticsEnabled: boolean
+  compatUsageShape: 'anthropic' | 'flat'
+  compatThinkingModel: 'native' | 'plain_text'
+  compatModelsShape: 'anthropic' | 'aggregator'
   loadBalancingMode: 'priority' | 'balanced'
   totalCredentials: number
   availableCredentials: number
@@ -232,6 +235,9 @@ export interface RuntimeSettings {
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47DiagnosticsEnabled: boolean
+  compatUsageShape: 'anthropic' | 'flat'
+  compatThinkingModel: 'native' | 'plain_text'
+  compatModelsShape: 'anthropic' | 'aggregator'
   loadBalancingMode: 'priority' | 'balanced'
   virtualCacheUsageEnabled: boolean
   virtualCacheDefaultTtl: '5m' | '1h'

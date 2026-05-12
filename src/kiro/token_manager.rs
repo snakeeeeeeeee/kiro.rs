@@ -616,6 +616,12 @@ pub struct ManagerSnapshot {
     pub opus47_plain_stabilization_mode: String,
     /// Opus 4.7 诊断日志开关
     pub opus47_diagnostics_enabled: bool,
+    /// usage 字段兼容形态
+    pub compat_usage_shape: String,
+    /// thinking 模型响应兼容策略
+    pub compat_thinking_model: String,
+    /// /v1/models 输出兼容形态
+    pub compat_models_shape: String,
     /// 负载均衡模式
     pub load_balancing_mode: String,
     /// 当前活跃会话亲和绑定数
@@ -2214,6 +2220,9 @@ impl MultiTokenManager {
             session_affinity_ttl_secs: settings.session_affinity_ttl_secs,
             opus47_plain_stabilization_mode: settings.opus47_plain_stabilization_mode,
             opus47_diagnostics_enabled: settings.opus47_diagnostics_enabled,
+            compat_usage_shape: settings.compat_usage_shape,
+            compat_thinking_model: settings.compat_thinking_model,
+            compat_models_shape: settings.compat_models_shape,
             load_balancing_mode: settings.load_balancing_mode,
             session_affinity_bindings,
         }

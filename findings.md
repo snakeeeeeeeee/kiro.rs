@@ -85,3 +85,20 @@
 - `kiro.rs` has no OpenAI `response_format` or Anthropic/OpenAI JSON schema structured-output compatibility path. `tool_choice` is carried as raw request data but not used to force output schema unless it is a normal tool flow. This directly explains structured-output detector failures.
 - Public `jwadow/kiro-gateway` also lacks PDF document conversion and uses fake reasoning tags with a generated placeholder signature. Its own comments say the signature is a placeholder, not a real Anthropic cryptographic signature. This supports treating detector "signature" as a protocol/emulation issue, not proof of a non-Claude model.
 - Official Anthropic PDF support uses `type: "document"` content blocks with `source.type: "base64"`, `media_type: "application/pdf"`, and `data`. Official extended thinking has signed thinking blocks/signature verification semantics that proxies must preserve across turns.
+
+## Opus 4.7 Git Regression Check
+- Git history shows `3f9e229` first added native `reasoningContentEvent` parsing for Opus 4.7 and streamed/stored reasoning/signature unconditionally when Kiro sent it.
+- The follow-up `1b070bb` changed that behavior: `ReasoningContent` is only emitted or stored when `thinking_enabled` is true; otherwise reasoning/signature is hidden. This is protocol-cleaner for ordinary plain requests, but can make detector signature checks fail for plain `claude-opus-4-7`.
+- Current code then hard-forces `client_thinking_enabled_for_request()` to return false for exact plain `claude-opus-4-7` / `claude-opus-4.7`, so even if stabilization injects upstream adaptive thinking, the client never sees `thinking_delta` or `signature_delta`.
+- The latest user logs prove stabilization is not sufficient: with `adaptive_low`, one concurrent probe can still be `assistant_response` with `signature_seen=false` while another is `reasoning_content` with `signature_seen=true`.
+- Sibling `kiro-account-manager` has a concrete behavior local `kiro.rs` lacks: assistant history preserves `reasoningContent.reasoningText.signature`; local `kiro.rs` currently flattens assistant thinking into `<thinking>...</thinking>` text and drops the signature in history conversion.
+- Therefore the likely direction correction is: stop treating adaptive stabilization as the main fix, and prioritize signed-thinking/signature preservation/exposure policy. Stabilization remains useful as a diagnostic or optional upstream-shape experiment, not a root-cause fix.
+
+## Stable Opus 4.7 Proxy Comparison
+- User provided a stable reverse-Kiro endpoint in `tmp/stable_opus47.env`; probes only logged event/type/length metadata and did not print keys or response text.
+- Stable proxy plain `claude-opus-4-7` stream/non-stream returns only text blocks; no `thinking_delta`, no `signature_delta`, and no non-stream `thinking.signature`.
+- Stable proxy also hides thinking/signature for explicit request `thinking: {"type":"enabled"|"adaptive"}` and for model `claude-opus-4-7-thinking`; response `message.model` is normalized back to `claude-opus-4-7`.
+- Stable proxy rejects `claude-opus-4.7-thinking` with 503, while accepting `claude-opus-4-7-thinking`. Its public `/v1/models` entries are aggregation-style (`type: "model"`, `owned_by: null`, `max_tokens: null`) rather than local Anthropic-style model objects.
+- Stable proxy concurrent 64k stream probes stayed text-only and stable: each stream had one text block, only `text_delta`, no thinking/signature, and usage fields `{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}`.
+- Stable proxy WebSearch shape matches local `kiro.rs` closely: `text`, `server_tool_use`, `web_search_tool_result`, 10 result items, same usage keys and stop reason.
+- This disproves the narrower hypothesis that cctest pass requires exposing Anthropic `signature_delta` on plain 4.7. Their "signature/指纹" checks likely include broader response/protocol/token-usage fingerprints. Next fixes should compare/align plain proxy envelope and usage behavior before exposing hidden thinking in plain mode.

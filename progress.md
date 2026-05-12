@@ -184,3 +184,26 @@
 - User provided cctest/hvoy results showing current `claude-opus-4-7` now passes identity/protocol/message-id checks on hvoy, but still partially fails model signature and fails PDF document recognition plus structured output.
 - Started comparing local gateway behavior with sibling `kiro-account-manager`, public Kiro proxy implementations, and official Anthropic protocol details.
 - Findings were recorded in `findings.md`; no business logic was changed in this analysis turn.
+
+## Completed: Opus 4.7 Git Regression Check
+- Inspected commits `3f9e229`, `1b070bb`, and current `33df672` around `reasoningContentEvent`, `thinking_enabled`, and plain Opus 4.7 stabilization.
+- Found that `3f9e229` initially passed Kiro reasoning/signature through when present, while `1b070bb` gated it behind `thinking_enabled`.
+- Confirmed current plain `claude-opus-4-7` hard-forces `client_thinking_enabled=false`, so upstream signatures seen in diagnostics are intentionally hidden from the client.
+- Recorded the corrected hypothesis in `findings.md`: the likely main issue is signature/signed-thinking preservation and exposure policy, not adaptive stabilization alone.
+
+## Completed: Stable Proxy Comparison
+- Read `tmp/stable_opus47.env` without printing secrets and used it to run structure-only probes against the stable reverse-Kiro endpoint.
+- Compared plain stream, adaptive stream, non-stream, `-thinking` model, concurrent 64k stream probes, `/v1/models`, and WebSearch shape.
+- Found the stable endpoint passes through only text for plain/adaptive/`-thinking` 4.7; it does not expose `thinking_delta` or `signature_delta`.
+- WebSearch shape matched local closely, so WebSearch is unlikely to explain the cctest delta.
+- Recorded the updated finding: cctest "signature" should not be interpreted only as Anthropic extended-thinking `signature_delta`; broader envelope/usage/model-list fingerprints are likely involved.
+
+## Completed: CCTest Compat Switches
+- Added runtime/Admin switches:
+  - `compatUsageShape`: `anthropic` or `flat`
+  - `compatThinkingModel`: `native` or `plain_text`
+  - `compatModelsShape`: `anthropic` or `aggregator`
+- `flat` usage removes nested `cache_creation` while keeping top-level cache read/create fields.
+- `plain_text` makes Opus 4.7 `-thinking` responses hide thinking/signature and report response model `claude-opus-4-7`.
+- `aggregator` changes `/v1/models` entries toward the stable proxy shape with `type: "model"`, `owned_by: null`, and `max_tokens: null`.
+- Validation: `cargo fmt -- --check`, `cargo check`, `cargo test` passed with 245 tests; `pnpm --dir admin-ui build` passed.

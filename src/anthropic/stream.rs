@@ -633,6 +633,8 @@ pub struct StreamContext {
     pub input_tokens: i32,
     /// message_start 初始 usage 覆盖
     pub initial_usage: Option<AnthropicUsage>,
+    /// usage 字段输出形态
+    usage_shape: String,
     /// 等流正常结束后提交的虚拟缓存 usage 账本
     pending_usage_commit: Option<(Arc<VirtualCacheUsageManager>, PendingVirtualUsage)>,
     /// 从 contextUsageEvent 计算的实际输入 tokens
@@ -680,6 +682,7 @@ impl StreamContext {
             message_id: format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
             input_tokens,
             initial_usage: None,
+            usage_shape: "anthropic".to_string(),
             pending_usage_commit: None,
             context_input_tokens: None,
             output_tokens: 0,
@@ -711,7 +714,7 @@ impl StreamContext {
         let usage = self
             .initial_usage
             .as_ref()
-            .map(AnthropicUsage::to_json)
+            .map(|usage| usage.to_json_with_shape(&self.usage_shape))
             .unwrap_or_else(|| {
                 json!({
                     "input_tokens": self.input_tokens,
@@ -735,6 +738,10 @@ impl StreamContext {
 
     pub fn set_initial_usage(&mut self, usage: AnthropicUsage) {
         self.initial_usage = Some(usage);
+    }
+
+    pub fn set_usage_shape(&mut self, usage_shape: impl Into<String>) {
+        self.usage_shape = usage_shape.into();
     }
 
     pub fn set_pending_usage_commit(
@@ -1392,6 +1399,7 @@ pub struct BufferedStreamContext {
     estimated_input_tokens: i32,
     /// 用于按最终 input 修正 message_start usage 的回调
     usage_builder: Option<Box<dyn FnOnce(i32, i32, bool) -> AnthropicUsage + Send>>,
+    usage_shape: String,
     /// 是否已经生成了初始事件
     initial_events_generated: bool,
 }
@@ -1415,6 +1423,7 @@ impl BufferedStreamContext {
             event_buffer: Vec::new(),
             estimated_input_tokens,
             usage_builder: None,
+            usage_shape: "anthropic".to_string(),
             initial_events_generated: false,
         }
     }
@@ -1424,6 +1433,11 @@ impl BufferedStreamContext {
         usage_builder: Box<dyn FnOnce(i32, i32, bool) -> AnthropicUsage + Send>,
     ) {
         self.usage_builder = Some(usage_builder);
+    }
+
+    pub fn set_usage_shape(&mut self, usage_shape: impl Into<String>) {
+        self.usage_shape = usage_shape.into();
+        self.inner.set_usage_shape(self.usage_shape.clone());
     }
 
     pub fn set_opus47_diagnostics(&mut self, diagnostics: Opus47Diagnostics) {
@@ -1497,7 +1511,7 @@ impl BufferedStreamContext {
                 if let Some(message) = event.data.get_mut("message") {
                     if let Some(usage) = message.get_mut("usage") {
                         if let Some(final_usage) = &final_usage {
-                            *usage = final_usage.to_json();
+                            *usage = final_usage.to_json_with_shape(&self.usage_shape);
                         } else {
                             usage["input_tokens"] = serde_json::json!(final_input_tokens);
                         }

@@ -159,6 +159,18 @@ pub struct Config {
     #[serde(default = "default_opus47_diagnostics_enabled")]
     pub opus47_diagnostics_enabled: bool,
 
+    /// 兼容 usage 字段形态："anthropic" 或 "flat"
+    #[serde(default = "default_compat_usage_shape")]
+    pub compat_usage_shape: String,
+
+    /// 兼容 thinking 模型响应："native" 或 "plain_text"
+    #[serde(default = "default_compat_thinking_model")]
+    pub compat_thinking_model: String,
+
+    /// 兼容 /v1/models 输出形态："anthropic" 或 "aggregator"
+    #[serde(default = "default_compat_models_shape")]
+    pub compat_models_shape: String,
+
     /// 是否启用虚拟缓存 usage 字段（用于下游网关计费展示）
     #[serde(default = "default_virtual_cache_usage_enabled")]
     pub virtual_cache_usage_enabled: bool,
@@ -407,6 +419,18 @@ fn default_opus47_diagnostics_enabled() -> bool {
     true
 }
 
+fn default_compat_usage_shape() -> String {
+    "anthropic".to_string()
+}
+
+fn default_compat_thinking_model() -> String {
+    "native".to_string()
+}
+
+fn default_compat_models_shape() -> String {
+    "anthropic".to_string()
+}
+
 fn default_virtual_cache_usage_enabled() -> bool {
     true
 }
@@ -574,6 +598,9 @@ impl Default for Config {
             session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
             opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
+            compat_usage_shape: default_compat_usage_shape(),
+            compat_thinking_model: default_compat_thinking_model(),
+            compat_models_shape: default_compat_models_shape(),
             virtual_cache_usage_enabled: default_virtual_cache_usage_enabled(),
             virtual_cache_default_ttl: default_virtual_cache_default_ttl(),
             virtual_cache_uncached_input_tokens: default_virtual_cache_uncached_input_tokens(),

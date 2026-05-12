@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'opus47PlainStabilizationMode' | 'opus47DiagnosticsEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'opus47PlainStabilizationMode' | 'opus47DiagnosticsEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -157,6 +157,48 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               >
                 <option value="enabled">启用</option>
                 <option value="disabled">关闭</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Usage 兼容形态</label>
+              <select
+                value={form.compatUsageShape}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, compatUsageShape: event.target.value as 'anthropic' | 'flat' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="anthropic">Anthropic 标准</option>
+                <option value="flat">Flat 四字段</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Thinking 模型兼容</label>
+              <select
+                value={form.compatThinkingModel}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, compatThinkingModel: event.target.value as 'native' | 'plain_text' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="native">原生 thinking</option>
+                <option value="plain_text">归一 plain text</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">模型列表兼容</label>
+              <select
+                value={form.compatModelsShape}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, compatModelsShape: event.target.value as 'anthropic' | 'aggregator' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="anthropic">Anthropic 风格</option>
+                <option value="aggregator">聚合器风格</option>
               </select>
             </div>
 

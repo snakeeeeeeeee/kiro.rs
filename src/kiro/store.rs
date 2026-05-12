@@ -441,6 +441,12 @@ fn runtime_settings_pairs(
             "opus47DiagnosticsEnabled",
             settings.opus47_diagnostics_enabled.to_string(),
         ),
+        ("compatUsageShape", settings.compat_usage_shape.clone()),
+        (
+            "compatThinkingModel",
+            settings.compat_thinking_model.clone(),
+        ),
+        ("compatModelsShape", settings.compat_models_shape.clone()),
         ("loadBalancingMode", settings.load_balancing_mode.clone()),
         (
             "virtualCacheUsageEnabled",
@@ -592,6 +598,17 @@ fn apply_runtime_setting(
                 normalize_opus47_plain_stabilization_mode(value)
         }
         "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
+        "compatUsageShape" => {
+            settings.compat_usage_shape = crate::kiro::settings::normalize_compat_usage_shape(value)
+        }
+        "compatThinkingModel" => {
+            settings.compat_thinking_model =
+                crate::kiro::settings::normalize_compat_thinking_model(value)
+        }
+        "compatModelsShape" => {
+            settings.compat_models_shape =
+                crate::kiro::settings::normalize_compat_models_shape(value)
+        }
         "loadBalancingMode" => settings.load_balancing_mode = value.to_string(),
         "virtualCacheUsageEnabled" => {
             settings.virtual_cache_usage_enabled = parse_bool(key, value)?
