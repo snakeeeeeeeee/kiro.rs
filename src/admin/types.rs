@@ -114,6 +114,8 @@ pub struct RuntimeStatusResponse {
     pub token_auto_refresh_interval_secs: u64,
     pub token_auto_refresh_window_secs: u64,
     pub session_affinity_ttl_secs: u64,
+    pub opus47_plain_stabilization_mode: String,
+    pub opus47_diagnostics_enabled: bool,
     pub load_balancing_mode: String,
     pub total_credentials: usize,
     pub available_credentials: usize,

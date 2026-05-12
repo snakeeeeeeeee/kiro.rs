@@ -13,6 +13,8 @@ Current extension: add optional natural dynamic virtual cache usage accounting s
 
 Current extension: add dynamic per-account IP proxy binding so each account can keep an isolated, renewable proxy session with verification and auto-rotation.
 
+Current investigation: compare local `kiro.rs`, sibling `kiro-account-manager`, public Kiro proxy implementations, and official Anthropic protocol behavior to explain why `claude-opus-4-7` detection fails or only partially passes, especially around reasoning signatures, PDF/document input, and structured output.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -31,6 +33,7 @@ Current extension: add dynamic per-account IP proxy binding so each account can 
 - [completed] Add configurable background Token auto-refresh scheduler
 - [completed] Add dynamic virtual cache usage input/creation modes and Admin controls
 - [completed] Add dynamic proxy/IP binding settings, SQLite bindings, worker, Admin controls, and request-path effective proxy integration
+- [completed] Analyze Opus 4.7 detector failures against sibling gateway, public proxy behavior, and official Anthropic protocol expectations
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.

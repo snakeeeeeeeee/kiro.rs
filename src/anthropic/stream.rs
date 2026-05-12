@@ -11,6 +11,123 @@ use crate::kiro::model::events::Event;
 
 use super::usage::{AnthropicUsage, PendingVirtualUsage, VirtualCacheUsageManager};
 
+#[derive(Debug, Clone)]
+pub struct Opus47Diagnostics {
+    pub enabled: bool,
+    pub model: String,
+    pub credential_id: u64,
+    pub attempts: usize,
+    pub stabilization_mode: String,
+    pub client_thinking_enabled: bool,
+    pub assistant_response_count: usize,
+    pub reasoning_content_count: usize,
+    pub tool_use_count: usize,
+    pub signature_seen: bool,
+    pub visible_text_chars: usize,
+    pub hidden_reasoning_chars: usize,
+    pub first_event_type: Option<String>,
+}
+
+impl Opus47Diagnostics {
+    pub fn disabled(model: impl Into<String>) -> Self {
+        Self {
+            enabled: false,
+            model: model.into(),
+            credential_id: 0,
+            attempts: 0,
+            stabilization_mode: "off".to_string(),
+            client_thinking_enabled: false,
+            assistant_response_count: 0,
+            reasoning_content_count: 0,
+            tool_use_count: 0,
+            signature_seen: false,
+            visible_text_chars: 0,
+            hidden_reasoning_chars: 0,
+            first_event_type: None,
+        }
+    }
+
+    pub fn new(
+        enabled: bool,
+        model: impl Into<String>,
+        credential_id: u64,
+        attempts: usize,
+        stabilization_mode: impl Into<String>,
+        client_thinking_enabled: bool,
+    ) -> Self {
+        Self {
+            enabled,
+            model: model.into(),
+            credential_id,
+            attempts,
+            stabilization_mode: stabilization_mode.into(),
+            client_thinking_enabled,
+            assistant_response_count: 0,
+            reasoning_content_count: 0,
+            tool_use_count: 0,
+            signature_seen: false,
+            visible_text_chars: 0,
+            hidden_reasoning_chars: 0,
+            first_event_type: None,
+        }
+    }
+
+    pub fn observe_event(&mut self, event: &Event) {
+        if !self.enabled {
+            return;
+        }
+
+        if self.first_event_type.is_none() {
+            self.first_event_type = Some(event_metric_name(event).to_string());
+        }
+
+        match event {
+            Event::AssistantResponse(resp) => {
+                self.assistant_response_count += 1;
+                self.visible_text_chars += resp.content.chars().count();
+            }
+            Event::ReasoningContent(reasoning) => {
+                self.reasoning_content_count += 1;
+                if let Some(text) = reasoning.text.as_deref() {
+                    if self.client_thinking_enabled {
+                        self.visible_text_chars += text.chars().count();
+                    } else {
+                        self.hidden_reasoning_chars += text.chars().count();
+                    }
+                }
+                if reasoning
+                    .signature
+                    .as_deref()
+                    .is_some_and(|signature| !signature.is_empty())
+                {
+                    self.signature_seen = true;
+                }
+            }
+            Event::ToolUse(_) => {
+                self.tool_use_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn first_event_type(&self) -> &str {
+        self.first_event_type.as_deref().unwrap_or("none")
+    }
+}
+
+fn event_metric_name(event: &Event) -> &str {
+    match event {
+        Event::AssistantResponse(_) => "assistant_response",
+        Event::ToolUse(_) => "tool_use",
+        Event::Metering(_) => "metering",
+        Event::ContextUsage(_) => "context_usage",
+        Event::ReasoningContent(_) => "reasoning_content",
+        Event::Unknown { event_type, .. } => event_type.as_str(),
+        Event::Error { .. } => "error",
+        Event::Exception { .. } => "exception",
+    }
+}
+
 /// 找到小于等于目标位置的最近有效UTF-8字符边界
 ///
 /// UTF-8字符可能占用1-4个字节，直接按字节位置切片可能会切在多字节字符中间导致panic。
@@ -545,6 +662,8 @@ pub struct StreamContext {
     /// 是否需要剥离 thinking 内容开头的换行符
     /// 模型输出 `<thinking>\n` 时，`\n` 可能与标签在同一 chunk 或下一 chunk
     strip_thinking_leading_newline: bool,
+    /// Opus 4.7 响应形态诊断计数器
+    opus47_diagnostics: Opus47Diagnostics,
 }
 
 impl StreamContext {
@@ -575,7 +694,16 @@ impl StreamContext {
             thinking_block_index: None,
             text_block_index: None,
             strip_thinking_leading_newline: false,
+            opus47_diagnostics: Opus47Diagnostics::disabled(""),
         }
+    }
+
+    pub fn set_opus47_diagnostics(&mut self, diagnostics: Opus47Diagnostics) {
+        self.opus47_diagnostics = diagnostics;
+    }
+
+    pub fn opus47_diagnostics(&self) -> &Opus47Diagnostics {
+        &self.opus47_diagnostics
     }
 
     /// 生成 message_start 事件
@@ -633,6 +761,8 @@ impl StreamContext {
 
     /// 处理 Kiro 事件并转换为 Anthropic SSE 事件
     pub fn process_kiro_event(&mut self, event: &Event) -> Vec<SseEvent> {
+        self.opus47_diagnostics.observe_event(event);
+
         match event {
             Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
             Event::ReasoningContent(reasoning) => {
@@ -1294,6 +1424,14 @@ impl BufferedStreamContext {
         usage_builder: Box<dyn FnOnce(i32, i32, bool) -> AnthropicUsage + Send>,
     ) {
         self.usage_builder = Some(usage_builder);
+    }
+
+    pub fn set_opus47_diagnostics(&mut self, diagnostics: Opus47Diagnostics) {
+        self.inner.set_opus47_diagnostics(diagnostics);
+    }
+
+    pub fn opus47_diagnostics(&self) -> &Opus47Diagnostics {
+        self.inner.opus47_diagnostics()
     }
 
     pub fn model(&self) -> &str {

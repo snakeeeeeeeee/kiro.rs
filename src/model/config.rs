@@ -151,6 +151,14 @@ pub struct Config {
     #[serde(default = "default_session_affinity_ttl_secs")]
     pub session_affinity_ttl_secs: u64,
 
+    /// Opus 4.7 plain 稳定模式："off"、"adaptive_low" 或 "adaptive_high"
+    #[serde(default = "default_opus47_plain_stabilization_mode")]
+    pub opus47_plain_stabilization_mode: String,
+
+    /// 是否启用 Opus 4.7 响应形态诊断日志
+    #[serde(default = "default_opus47_diagnostics_enabled")]
+    pub opus47_diagnostics_enabled: bool,
+
     /// 是否启用虚拟缓存 usage 字段（用于下游网关计费展示）
     #[serde(default = "default_virtual_cache_usage_enabled")]
     pub virtual_cache_usage_enabled: bool,
@@ -391,6 +399,14 @@ fn default_session_affinity_ttl_secs() -> u64 {
     3_600
 }
 
+fn default_opus47_plain_stabilization_mode() -> String {
+    "off".to_string()
+}
+
+fn default_opus47_diagnostics_enabled() -> bool {
+    true
+}
+
 fn default_virtual_cache_usage_enabled() -> bool {
     true
 }
@@ -556,6 +572,8 @@ impl Default for Config {
             token_auto_refresh_interval_secs: default_token_auto_refresh_interval_secs(),
             token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),
             session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
+            opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
+            opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
             virtual_cache_usage_enabled: default_virtual_cache_usage_enabled(),
             virtual_cache_default_ttl: default_virtual_cache_default_ttl(),
             virtual_cache_uncached_input_tokens: default_virtual_cache_uncached_input_tokens(),

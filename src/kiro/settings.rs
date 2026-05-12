@@ -19,6 +19,8 @@ pub struct RuntimeSettings {
     pub token_auto_refresh_interval_secs: u64,
     pub token_auto_refresh_window_secs: u64,
     pub session_affinity_ttl_secs: u64,
+    pub opus47_plain_stabilization_mode: String,
+    pub opus47_diagnostics_enabled: bool,
     pub load_balancing_mode: String,
     pub virtual_cache_usage_enabled: bool,
     pub virtual_cache_default_ttl: String,
@@ -78,6 +80,10 @@ impl RuntimeSettings {
             token_auto_refresh_interval_secs: config.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: config.token_auto_refresh_window_secs,
             session_affinity_ttl_secs: config.session_affinity_ttl_secs,
+            opus47_plain_stabilization_mode: normalize_opus47_plain_stabilization_mode(
+                &config.opus47_plain_stabilization_mode,
+            ),
+            opus47_diagnostics_enabled: config.opus47_diagnostics_enabled,
             load_balancing_mode: normalize_load_balancing_mode(&config.load_balancing_mode),
             virtual_cache_usage_enabled: config.virtual_cache_usage_enabled,
             virtual_cache_default_ttl: normalize_virtual_cache_ttl(
@@ -153,6 +159,14 @@ impl RuntimeSettings {
         }
         if !(300..=43_200).contains(&self.session_affinity_ttl_secs) {
             anyhow::bail!("sessionAffinityTtlSecs 必须在 300..43200 范围内");
+        }
+        if !matches!(
+            self.opus47_plain_stabilization_mode.as_str(),
+            "off" | "adaptive_low" | "adaptive_high"
+        ) {
+            anyhow::bail!(
+                "opus47PlainStabilizationMode 必须是 'off'、'adaptive_low' 或 'adaptive_high'"
+            );
         }
         if self.load_balancing_mode != "priority" && self.load_balancing_mode != "balanced" {
             anyhow::bail!("loadBalancingMode 必须是 'priority' 或 'balanced'");
@@ -303,6 +317,14 @@ pub fn normalize_load_balancing_mode(mode: &str) -> String {
         "balanced".to_string()
     } else {
         "priority".to_string()
+    }
+}
+
+pub fn normalize_opus47_plain_stabilization_mode(mode: &str) -> String {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "adaptive_low" => "adaptive_low".to_string(),
+        "adaptive_high" => "adaptive_high".to_string(),
+        _ => "off".to_string(),
     }
 }
 

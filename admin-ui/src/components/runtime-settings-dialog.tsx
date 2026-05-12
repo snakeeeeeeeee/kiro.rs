@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'opus47PlainStabilizationMode' | 'opus47DiagnosticsEnabled' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -123,6 +123,35 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 value={form.tokenAutoRefreshEnabled ? 'enabled' : 'disabled'}
                 onChange={event =>
                   setForm(prev => prev ? { ...prev, tokenAutoRefreshEnabled: event.target.value === 'enabled' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="enabled">启用</option>
+                <option value="disabled">关闭</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Opus 4.7 Plain 稳定模式</label>
+              <select
+                value={form.opus47PlainStabilizationMode}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, opus47PlainStabilizationMode: event.target.value as 'off' | 'adaptive_low' | 'adaptive_high' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="off">关闭</option>
+                <option value="adaptive_low">Adaptive Low</option>
+                <option value="adaptive_high">Adaptive High</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Opus 4.7 诊断日志</label>
+              <select
+                value={form.opus47DiagnosticsEnabled ? 'enabled' : 'disabled'}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, opus47DiagnosticsEnabled: event.target.value === 'enabled' } : prev)
                 }
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
               >

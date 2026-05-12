@@ -550,6 +550,8 @@ mod tests {
             token_auto_refresh_interval_secs: 300,
             token_auto_refresh_window_secs: 1_800,
             session_affinity_ttl_secs: 3_600,
+            opus47_plain_stabilization_mode: "off".to_string(),
+            opus47_diagnostics_enabled: true,
             load_balancing_mode: "priority".to_string(),
             virtual_cache_usage_enabled: true,
             virtual_cache_default_ttl: "5m".to_string(),

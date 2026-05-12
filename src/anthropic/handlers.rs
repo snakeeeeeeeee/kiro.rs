@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
-use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
+use super::stream::{BufferedStreamContext, Opus47Diagnostics, SseEvent, StreamContext};
 use super::types::{
     CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
     OutputConfig, Thinking,
@@ -274,6 +274,157 @@ pub async fn get_models() -> impl IntoResponse {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::anthropic::types::Message;
+    use crate::kiro::model::events::{
+        AssistantResponseEvent, Event, ReasoningContentEvent, ToolUseEvent,
+    };
+    use crate::kiro::settings::RuntimeSettings;
+    use crate::model::config::Config;
+
+    fn request(model: &str) -> MessagesRequest {
+        MessagesRequest {
+            model: model.to_string(),
+            max_tokens: 1024,
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: serde_json::json!("test"),
+            }],
+            stream: true,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        }
+    }
+
+    fn settings(mode: &str) -> RuntimeSettings {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_plain_stabilization_mode = mode.to_string();
+        settings
+    }
+
+    #[test]
+    fn plain_opus47_mode_off_does_not_inject_adaptive() {
+        let mut payload = request("claude-opus-4-7");
+        let mode =
+            apply_opus47_plain_stabilization(&mut payload, "claude-opus-4-7", &settings("off"));
+
+        assert_eq!(mode, "off");
+        assert!(payload.thinking.is_none());
+        assert!(payload.output_config.is_none());
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload
+        ));
+    }
+
+    #[test]
+    fn plain_opus47_adaptive_low_injects_upstream_but_hides_client_thinking() {
+        let mut payload = request("claude-opus-4-7");
+        let mode = apply_opus47_plain_stabilization(
+            &mut payload,
+            "claude-opus-4-7",
+            &settings("adaptive_low"),
+        );
+
+        assert_eq!(mode, "adaptive_low");
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
+            payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("low")
+        );
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload
+        ));
+    }
+
+    #[test]
+    fn opus47_thinking_keeps_adaptive_high_and_exposes_client_thinking() {
+        let mut payload = request("claude-opus-4-7-thinking");
+        override_thinking_from_model_name(&mut payload);
+        let mode = apply_opus47_plain_stabilization(
+            &mut payload,
+            "claude-opus-4-7-thinking",
+            &settings("adaptive_low"),
+        );
+
+        assert_eq!(mode, "off");
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
+            payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("high")
+        );
+        assert!(client_thinking_enabled_for_request(
+            "claude-opus-4-7-thinking",
+            &payload
+        ));
+    }
+
+    #[test]
+    fn plain_opus47_reasoning_is_hidden_but_counted_in_diagnostics() {
+        let mut ctx = StreamContext::new_with_thinking(
+            "claude-opus-4-7",
+            1,
+            false,
+            std::collections::HashMap::new(),
+        );
+        ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
+            true,
+            "claude-opus-4-7",
+            7,
+            1,
+            "adaptive_low",
+            false,
+        ));
+
+        let events = ctx.process_kiro_event(&Event::ReasoningContent(ReasoningContentEvent {
+            text: Some("hidden text".to_string()),
+            signature: Some("sig".to_string()),
+        }));
+
+        assert!(events.is_empty());
+        let diagnostics = ctx.opus47_diagnostics();
+        assert_eq!(diagnostics.reasoning_content_count, 1);
+        assert_eq!(
+            diagnostics.hidden_reasoning_chars,
+            "hidden text".chars().count()
+        );
+        assert!(diagnostics.signature_seen);
+        assert_eq!(diagnostics.first_event_type(), "reasoning_content");
+    }
+
+    #[test]
+    fn opus47_diagnostics_counts_visible_and_tool_events() {
+        let mut diagnostics = Opus47Diagnostics::new(true, "claude-opus-4-7", 7, 2, "off", false);
+        let mut assistant = AssistantResponseEvent::default();
+        assistant.content = "hello".to_string();
+        diagnostics.observe_event(&Event::AssistantResponse(assistant));
+        diagnostics.observe_event(&Event::ToolUse(ToolUseEvent {
+            name: "Read".to_string(),
+            tool_use_id: "toolu_1".to_string(),
+            input: "{}".to_string(),
+            stop: true,
+        }));
+
+        assert_eq!(diagnostics.assistant_response_count, 1);
+        assert_eq!(diagnostics.tool_use_count, 1);
+        assert_eq!(diagnostics.visible_text_chars, 5);
+        assert_eq!(diagnostics.first_event_type(), "assistant_response");
+    }
+}
+
 /// POST /v1/messages
 ///
 /// 创建消息（对话）
@@ -304,15 +455,17 @@ pub async fn post_messages(
         }
     };
 
+    let requested_model = payload.model.clone();
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
-    let usage_settings = provider.token_manager().runtime_settings();
+    let runtime_settings = provider.token_manager().runtime_settings();
     let usage_session_key = session_key_for_request(
         &payload,
         &payload.model,
-        &usage_settings.virtual_cache_fallback_scope,
+        &runtime_settings.virtual_cache_fallback_scope,
     );
-    let request_ttl = request_cache_ttl(&payload, CacheTtl::from_runtime_default(&usage_settings));
+    let request_ttl =
+        request_cache_ttl(&payload, CacheTtl::from_runtime_default(&runtime_settings));
     let estimated_uncached_input_tokens = estimate_latest_user_input_tokens(&payload);
 
     // 检查是否为 WebSearch 请求
@@ -338,6 +491,12 @@ pub async fn post_messages(
 
         return websearch::handle_websearch_request(provider, &payload, input_tokens, permit).await;
     }
+
+    let stabilization_mode =
+        apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
+    let client_thinking_enabled = client_thinking_enabled_for_request(&requested_model, &payload);
+    let opus47_diagnostics_enabled =
+        runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
     // 转换请求
     let conversion_result = match convert_request(&payload) {
@@ -391,13 +550,6 @@ pub async fn post_messages(
         payload.tools.clone(),
     ) as i32;
 
-    // 检查是否启用了thinking
-    let thinking_enabled = payload
-        .thinking
-        .as_ref()
-        .map(|t| t.is_enabled())
-        .unwrap_or(false);
-
     let session_affinity_key = conversion_result.session_affinity_key;
     let tool_name_map = conversion_result.tool_name_map;
 
@@ -418,7 +570,9 @@ pub async fn post_messages(
             &payload.model,
             input_tokens,
             estimated_uncached_input_tokens,
-            thinking_enabled,
+            client_thinking_enabled,
+            stabilization_mode.as_str(),
+            opus47_diagnostics_enabled,
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -429,7 +583,7 @@ pub async fn post_messages(
         .await
     } else {
         // 非流式响应：仅在配置开启时提取 thinking 块
-        let extract_thinking = state.extract_thinking && thinking_enabled;
+        let extract_thinking = state.extract_thinking && client_thinking_enabled;
         handle_non_stream_request(
             provider,
             &request_body,
@@ -437,6 +591,9 @@ pub async fn post_messages(
             input_tokens,
             estimated_uncached_input_tokens,
             extract_thinking,
+            client_thinking_enabled,
+            stabilization_mode.as_str(),
+            opus47_diagnostics_enabled,
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -455,7 +612,9 @@ async fn handle_stream_request(
     model: &str,
     input_tokens: i32,
     estimated_uncached_input_tokens: i32,
-    thinking_enabled: bool,
+    client_thinking_enabled: bool,
+    stabilization_mode: &str,
+    opus47_diagnostics_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
     usage_session_key: String,
@@ -474,6 +633,7 @@ async fn handle_stream_request(
 
     // 创建流处理上下文
     let credential_id = response.credential_id();
+    let attempts = response.attempts();
     let settings = provider.token_manager().runtime_settings();
     let pending_usage = usage_manager.preview_usage(
         &settings,
@@ -489,8 +649,20 @@ async fn handle_stream_request(
     );
     let initial_usage = pending_usage.usage().clone();
 
-    let mut ctx =
-        StreamContext::new_with_thinking(model, input_tokens, thinking_enabled, tool_name_map);
+    let mut ctx = StreamContext::new_with_thinking(
+        model,
+        input_tokens,
+        client_thinking_enabled,
+        tool_name_map,
+    );
+    ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
+        opus47_diagnostics_enabled,
+        model,
+        credential_id,
+        attempts,
+        stabilization_mode,
+        client_thinking_enabled,
+    ));
     ctx.set_initial_usage(initial_usage);
     ctx.set_pending_usage_commit(usage_manager, pending_usage);
 
@@ -620,6 +792,7 @@ fn create_sse_stream(
                             drop(permit);
                             // 发送最终事件并结束
                             let final_events = ctx.generate_final_events();
+                            log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
@@ -630,6 +803,7 @@ fn create_sse_stream(
                             // 流结束，发送最终事件
                             drop(permit);
                             let final_events = ctx.generate_final_events_with_usage_commit();
+                            log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
@@ -650,6 +824,54 @@ fn create_sse_stream(
     .flatten();
 
     initial_stream.chain(processing_stream)
+}
+
+fn log_opus47_stream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: Instant) {
+    if !diagnostics.enabled {
+        return;
+    }
+
+    tracing::info!(
+        target: "kiro_rs::metrics",
+        model = %diagnostics.model,
+        credential_id = diagnostics.credential_id,
+        attempts = diagnostics.attempts,
+        stabilization_mode = %diagnostics.stabilization_mode,
+        client_thinking_enabled = diagnostics.client_thinking_enabled,
+        assistant_response_count = diagnostics.assistant_response_count,
+        reasoning_content_count = diagnostics.reasoning_content_count,
+        tool_use_count = diagnostics.tool_use_count,
+        signature_seen = diagnostics.signature_seen,
+        visible_text_chars = diagnostics.visible_text_chars,
+        hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
+        first_event_type = diagnostics.first_event_type(),
+        duration_ms = crate::metrics::duration_ms(started_at.elapsed()),
+        "opus47_stream_diagnostics"
+    );
+}
+
+fn log_opus47_nonstream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: Instant) {
+    if !diagnostics.enabled {
+        return;
+    }
+
+    tracing::info!(
+        target: "kiro_rs::metrics",
+        model = %diagnostics.model,
+        credential_id = diagnostics.credential_id,
+        attempts = diagnostics.attempts,
+        stabilization_mode = %diagnostics.stabilization_mode,
+        client_thinking_enabled = diagnostics.client_thinking_enabled,
+        assistant_response_count = diagnostics.assistant_response_count,
+        reasoning_content_count = diagnostics.reasoning_content_count,
+        tool_use_count = diagnostics.tool_use_count,
+        signature_seen = diagnostics.signature_seen,
+        visible_text_chars = diagnostics.visible_text_chars,
+        hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
+        first_event_type = diagnostics.first_event_type(),
+        duration_ms = crate::metrics::duration_ms(started_at.elapsed()),
+        "opus47_nonstream_diagnostics"
+    );
 }
 
 fn event_metric_name(event: &Event) -> Cow<'static, str> {
@@ -718,7 +940,10 @@ async fn handle_non_stream_request(
     model: &str,
     input_tokens: i32,
     estimated_uncached_input_tokens: i32,
-    thinking_enabled: bool,
+    extract_thinking: bool,
+    client_thinking_enabled: bool,
+    stabilization_mode: &str,
+    opus47_diagnostics_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
     usage_session_key: String,
@@ -726,6 +951,7 @@ async fn handle_non_stream_request(
     request_ttl: CacheTtl,
     _permit: GlobalRequestPermit,
 ) -> Response {
+    let request_started_at = Instant::now();
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider
         .call_api_with_session(request_body, session_id, _permit.queue_ms())
@@ -736,6 +962,15 @@ async fn handle_non_stream_request(
     };
 
     let credential_id = response.credential_id();
+    let attempts = response.attempts();
+    let mut opus47_diagnostics = Opus47Diagnostics::new(
+        opus47_diagnostics_enabled,
+        model,
+        credential_id,
+        attempts,
+        stabilization_mode,
+        client_thinking_enabled,
+    );
 
     // 读取响应体
     let body_bytes = match response.bytes().await {
@@ -776,12 +1011,13 @@ async fn handle_non_stream_request(
         match result {
             Ok(frame) => {
                 if let Ok(event) = Event::from_frame(frame) {
+                    opus47_diagnostics.observe_event(&event);
                     match event {
                         Event::AssistantResponse(resp) => {
                             text_content.push_str(&resp.content);
                         }
                         Event::ReasoningContent(reasoning) => {
-                            if thinking_enabled {
+                            if client_thinking_enabled {
                                 if let Some(text) = reasoning.text {
                                     reasoning_content.push_str(&text);
                                 }
@@ -878,7 +1114,7 @@ async fn handle_non_stream_request(
         content.push(thinking);
     }
 
-    if thinking_enabled && reasoning_content.is_empty() {
+    if extract_thinking && reasoning_content.is_empty() {
         // 从完整文本中提取 thinking 块
         let (thinking, remaining_text) =
             super::stream::extract_thinking_from_complete_text(&text_content);
@@ -935,6 +1171,8 @@ async fn handle_non_stream_request(
         "usage": usage.to_json()
     });
 
+    log_opus47_nonstream_diagnostics(&opus47_diagnostics, request_started_at);
+
     (StatusCode::OK, Json(response_body)).into_response()
 }
 
@@ -977,6 +1215,72 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
             effort: "high".to_string(),
         });
     }
+}
+
+fn is_opus47_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-7"
+            | "claude-opus-4.7"
+            | "claude-opus-4-7-thinking"
+            | "claude-opus-4.7-thinking"
+    )
+}
+
+fn is_plain_opus47_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-7" | "claude-opus-4.7"
+    )
+}
+
+fn client_thinking_enabled_for_request(model: &str, payload: &MessagesRequest) -> bool {
+    if is_plain_opus47_model_name(model) {
+        return false;
+    }
+
+    payload
+        .thinking
+        .as_ref()
+        .map(|t| t.is_enabled())
+        .unwrap_or(false)
+}
+
+fn apply_opus47_plain_stabilization(
+    payload: &mut MessagesRequest,
+    requested_model: &str,
+    settings: &crate::kiro::settings::RuntimeSettings,
+) -> String {
+    let mode = crate::kiro::settings::normalize_opus47_plain_stabilization_mode(
+        &settings.opus47_plain_stabilization_mode,
+    );
+
+    if !is_plain_opus47_model_name(requested_model) || mode == "off" {
+        return "off".to_string();
+    }
+
+    let effort = match mode.as_str() {
+        "adaptive_low" => "low",
+        "adaptive_high" => "high",
+        _ => return "off".to_string(),
+    };
+
+    payload.thinking = Some(Thinking {
+        thinking_type: "adaptive".to_string(),
+        budget_tokens: 20000,
+    });
+    payload.output_config = Some(OutputConfig {
+        effort: effort.to_string(),
+    });
+
+    tracing::info!(
+        model = %requested_model,
+        stabilization_mode = %mode,
+        effort = effort,
+        "Opus 4.7 plain 稳定模式已注入 adaptive thinking，上游启用但客户端隐藏"
+    );
+
+    mode
 }
 
 /// POST /v1/messages/count_tokens
@@ -1036,15 +1340,17 @@ pub async fn post_messages_cc(
         }
     };
 
+    let requested_model = payload.model.clone();
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
-    let usage_settings = provider.token_manager().runtime_settings();
+    let runtime_settings = provider.token_manager().runtime_settings();
     let usage_session_key = session_key_for_request(
         &payload,
         &payload.model,
-        &usage_settings.virtual_cache_fallback_scope,
+        &runtime_settings.virtual_cache_fallback_scope,
     );
-    let request_ttl = request_cache_ttl(&payload, CacheTtl::from_runtime_default(&usage_settings));
+    let request_ttl =
+        request_cache_ttl(&payload, CacheTtl::from_runtime_default(&runtime_settings));
     let estimated_uncached_input_tokens = estimate_latest_user_input_tokens(&payload);
 
     // 检查是否为 WebSearch 请求
@@ -1070,6 +1376,12 @@ pub async fn post_messages_cc(
 
         return websearch::handle_websearch_request(provider, &payload, input_tokens, permit).await;
     }
+
+    let stabilization_mode =
+        apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
+    let client_thinking_enabled = client_thinking_enabled_for_request(&requested_model, &payload);
+    let opus47_diagnostics_enabled =
+        runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
     // 转换请求
     let conversion_result = match convert_request(&payload) {
@@ -1123,13 +1435,6 @@ pub async fn post_messages_cc(
         payload.tools.clone(),
     ) as i32;
 
-    // 检查是否启用了thinking
-    let thinking_enabled = payload
-        .thinking
-        .as_ref()
-        .map(|t| t.is_enabled())
-        .unwrap_or(false);
-
     let session_affinity_key = conversion_result.session_affinity_key;
     let tool_name_map = conversion_result.tool_name_map;
 
@@ -1150,7 +1455,9 @@ pub async fn post_messages_cc(
             &payload.model,
             input_tokens,
             estimated_uncached_input_tokens,
-            thinking_enabled,
+            client_thinking_enabled,
+            stabilization_mode.as_str(),
+            opus47_diagnostics_enabled,
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -1161,7 +1468,7 @@ pub async fn post_messages_cc(
         .await
     } else {
         // 非流式响应：仅在配置开启时提取 thinking 块
-        let extract_thinking = state.extract_thinking && thinking_enabled;
+        let extract_thinking = state.extract_thinking && client_thinking_enabled;
         handle_non_stream_request(
             provider,
             &request_body,
@@ -1169,6 +1476,9 @@ pub async fn post_messages_cc(
             input_tokens,
             estimated_uncached_input_tokens,
             extract_thinking,
+            client_thinking_enabled,
+            stabilization_mode.as_str(),
+            opus47_diagnostics_enabled,
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -1190,7 +1500,9 @@ async fn handle_stream_request_buffered(
     model: &str,
     estimated_input_tokens: i32,
     estimated_uncached_input_tokens: i32,
-    thinking_enabled: bool,
+    client_thinking_enabled: bool,
+    stabilization_mode: &str,
+    opus47_diagnostics_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
     usage_session_key: String,
@@ -1208,6 +1520,7 @@ async fn handle_stream_request_buffered(
     };
 
     let credential_id = response.credential_id();
+    let attempts = response.attempts();
     let settings = provider.token_manager().runtime_settings();
     let model = model.to_string();
 
@@ -1215,9 +1528,17 @@ async fn handle_stream_request_buffered(
     let mut ctx = BufferedStreamContext::new(
         model.clone(),
         estimated_input_tokens,
-        thinking_enabled,
+        client_thinking_enabled,
         tool_name_map,
     );
+    ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
+        opus47_diagnostics_enabled,
+        model.clone(),
+        credential_id,
+        attempts,
+        stabilization_mode,
+        client_thinking_enabled,
+    ));
     ctx.set_usage_builder(Box::new(
         move |final_input_tokens, output_tokens, commit_usage| {
             let pending_usage = usage_manager.preview_usage(
@@ -1355,6 +1676,7 @@ fn create_buffered_sse_stream(
                                 drop(permit);
                                 // 发生错误，完成处理并返回所有事件
                                 let all_events = ctx.finish_and_get_all_events();
+                                log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                                 let bytes: Vec<Result<Bytes, Infallible>> = all_events
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
@@ -1365,6 +1687,7 @@ fn create_buffered_sse_stream(
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
                                 drop(permit);
                                 let all_events = ctx.finish_and_get_all_events_with_usage_commit();
+                                log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                                 let bytes: Vec<Result<Bytes, Infallible>> = all_events
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))

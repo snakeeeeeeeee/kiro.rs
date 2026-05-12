@@ -56,6 +56,7 @@ pub struct KiroProvider {
 pub struct LeasedResponse {
     response: Option<reqwest::Response>,
     credential_id: u64,
+    attempts: usize,
     lease: Option<CredentialLease>,
     timing: Option<ResponseTimingGuard>,
 }
@@ -200,12 +201,14 @@ impl LeasedResponse {
     fn new(
         response: reqwest::Response,
         credential_id: u64,
+        attempts: usize,
         lease: CredentialLease,
         timing: Option<ResponseTimingGuard>,
     ) -> Self {
         Self {
             response: Some(response),
             credential_id,
+            attempts,
             lease: Some(lease),
             timing,
         }
@@ -213,6 +216,10 @@ impl LeasedResponse {
 
     pub fn credential_id(&self) -> u64 {
         self.credential_id
+    }
+
+    pub fn attempts(&self) -> usize {
+        self.attempts
     }
 
     pub async fn bytes(mut self) -> Result<bytes::Bytes, reqwest::Error> {
@@ -559,7 +566,13 @@ impl KiroProvider {
             // 成功响应
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
-                return Ok(LeasedResponse::new(response, ctx.id, ctx.lease, None));
+                return Ok(LeasedResponse::new(
+                    response,
+                    ctx.id,
+                    attempt + 1,
+                    ctx.lease,
+                    None,
+                ));
             }
 
             // 失败响应
@@ -858,6 +871,7 @@ impl KiroProvider {
                 return Ok(LeasedResponse::new(
                     response,
                     ctx.id,
+                    http_attempts,
                     ctx.lease,
                     Some(timing),
                 ));

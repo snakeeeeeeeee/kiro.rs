@@ -57,6 +57,8 @@ export interface RuntimeStatusResponse {
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
+  opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
+  opus47DiagnosticsEnabled: boolean
   loadBalancingMode: 'priority' | 'balanced'
   totalCredentials: number
   availableCredentials: number
@@ -228,6 +230,8 @@ export interface RuntimeSettings {
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
+  opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
+  opus47DiagnosticsEnabled: boolean
   loadBalancingMode: 'priority' | 'balanced'
   virtualCacheUsageEnabled: boolean
   virtualCacheDefaultTtl: '5m' | '1h'

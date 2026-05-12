@@ -612,6 +612,10 @@ pub struct ManagerSnapshot {
     pub token_auto_refresh_window_secs: u64,
     /// 会话亲和绑定 TTL
     pub session_affinity_ttl_secs: u64,
+    /// Opus 4.7 plain 稳定模式
+    pub opus47_plain_stabilization_mode: String,
+    /// Opus 4.7 诊断日志开关
+    pub opus47_diagnostics_enabled: bool,
     /// 负载均衡模式
     pub load_balancing_mode: String,
     /// 当前活跃会话亲和绑定数
@@ -2208,6 +2212,8 @@ impl MultiTokenManager {
             token_auto_refresh_interval_secs: settings.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: settings.token_auto_refresh_window_secs,
             session_affinity_ttl_secs: settings.session_affinity_ttl_secs,
+            opus47_plain_stabilization_mode: settings.opus47_plain_stabilization_mode,
+            opus47_diagnostics_enabled: settings.opus47_diagnostics_enabled,
             load_balancing_mode: settings.load_balancing_mode,
             session_affinity_bindings,
         }

@@ -179,3 +179,8 @@
 - `GET /healthz`: 200.
 - `GET /api/admin/settings/runtime`: returned `sessionAffinityTtlSecs: 3600`.
 - `PUT /api/admin/settings/runtime`: hot update to `900` succeeded, then local setting was restored to `3600`.
+
+## Completed: Opus 4.7 Detector Failure Analysis
+- User provided cctest/hvoy results showing current `claude-opus-4-7` now passes identity/protocol/message-id checks on hvoy, but still partially fails model signature and fails PDF document recognition plus structured output.
+- Started comparing local gateway behavior with sibling `kiro-account-manager`, public Kiro proxy implementations, and official Anthropic protocol details.
+- Findings were recorded in `findings.md`; no business logic was changed in this analysis turn.

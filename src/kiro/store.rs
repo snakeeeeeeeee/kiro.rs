@@ -10,7 +10,7 @@ use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::{
     CredentialPolicy, RuntimeSettings, normalize_dynamic_proxy_protocol,
-    normalize_dynamic_proxy_provider,
+    normalize_dynamic_proxy_provider, normalize_opus47_plain_stabilization_mode,
 };
 use crate::model::config::Config;
 
@@ -433,6 +433,14 @@ fn runtime_settings_pairs(
             "sessionAffinityTtlSecs",
             settings.session_affinity_ttl_secs.to_string(),
         ),
+        (
+            "opus47PlainStabilizationMode",
+            settings.opus47_plain_stabilization_mode.clone(),
+        ),
+        (
+            "opus47DiagnosticsEnabled",
+            settings.opus47_diagnostics_enabled.to_string(),
+        ),
         ("loadBalancingMode", settings.load_balancing_mode.clone()),
         (
             "virtualCacheUsageEnabled",
@@ -579,6 +587,11 @@ fn apply_runtime_setting(
             settings.token_auto_refresh_window_secs = parse_u64(key, value)?
         }
         "sessionAffinityTtlSecs" => settings.session_affinity_ttl_secs = parse_u64(key, value)?,
+        "opus47PlainStabilizationMode" => {
+            settings.opus47_plain_stabilization_mode =
+                normalize_opus47_plain_stabilization_mode(value)
+        }
+        "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
         "loadBalancingMode" => settings.load_balancing_mode = value.to_string(),
         "virtualCacheUsageEnabled" => {
             settings.virtual_cache_usage_enabled = parse_bool(key, value)?
@@ -835,6 +848,8 @@ mod tests {
         updated.global_max_concurrent = 11;
         updated.per_account_default_max_concurrent = 4;
         updated.session_affinity_ttl_secs = 900;
+        updated.opus47_plain_stabilization_mode = "adaptive_low".to_string();
+        updated.opus47_diagnostics_enabled = false;
         updated.load_balancing_mode = "balanced".to_string();
         updated.dynamic_proxy_enabled = true;
         updated.dynamic_proxy_host = "proxy.example.com".to_string();
@@ -846,6 +861,8 @@ mod tests {
         assert_eq!(loaded.global_max_concurrent, 11);
         assert_eq!(loaded.per_account_default_max_concurrent, 4);
         assert_eq!(loaded.session_affinity_ttl_secs, 900);
+        assert_eq!(loaded.opus47_plain_stabilization_mode, "adaptive_low");
+        assert!(!loaded.opus47_diagnostics_enabled);
         assert_eq!(loaded.load_balancing_mode, "balanced");
         assert!(loaded.dynamic_proxy_enabled);
         assert_eq!(loaded.dynamic_proxy_host, "proxy.example.com");
