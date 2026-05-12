@@ -36,6 +36,7 @@ const numberFields: Array<{
   { key: 'modelCapacityCooldownMs', label: '模型容量冷却 ms', hint: '建议 10000' },
   { key: 'tokenAutoRefreshIntervalSecs', label: 'Token 刷新扫描秒数', hint: '默认 300' },
   { key: 'tokenAutoRefreshWindowSecs', label: 'Token 提前刷新窗口秒数', hint: '默认 1800' },
+  { key: 'sessionAffinityTtlSecs', label: '会话亲和 TTL 秒数', hint: '300-43200，默认 3600' },
   { key: 'virtualCacheUncachedInputTokens', label: '虚拟普通输入 Tokens', hint: '默认 1' },
   { key: 'virtualCacheMinInputTokens', label: '动态普通输入下限', hint: '建议 8' },
   { key: 'virtualCacheMaxInputTokens', label: '动态普通输入上限', hint: '建议 96' },

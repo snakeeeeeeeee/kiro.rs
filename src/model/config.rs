@@ -147,6 +147,10 @@ pub struct Config {
     #[serde(default = "default_token_auto_refresh_window_secs")]
     pub token_auto_refresh_window_secs: u64,
 
+    /// 会话亲和绑定 TTL（秒）
+    #[serde(default = "default_session_affinity_ttl_secs")]
+    pub session_affinity_ttl_secs: u64,
+
     /// 是否启用虚拟缓存 usage 字段（用于下游网关计费展示）
     #[serde(default = "default_virtual_cache_usage_enabled")]
     pub virtual_cache_usage_enabled: bool,
@@ -383,6 +387,10 @@ fn default_token_auto_refresh_window_secs() -> u64 {
     1_800
 }
 
+fn default_session_affinity_ttl_secs() -> u64 {
+    3_600
+}
+
 fn default_virtual_cache_usage_enabled() -> bool {
     true
 }
@@ -547,6 +555,7 @@ impl Default for Config {
             token_auto_refresh_enabled: default_token_auto_refresh_enabled(),
             token_auto_refresh_interval_secs: default_token_auto_refresh_interval_secs(),
             token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),
+            session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
             virtual_cache_usage_enabled: default_virtual_cache_usage_enabled(),
             virtual_cache_default_ttl: default_virtual_cache_default_ttl(),
             virtual_cache_uncached_input_tokens: default_virtual_cache_uncached_input_tokens(),

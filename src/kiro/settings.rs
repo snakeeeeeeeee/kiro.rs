@@ -18,6 +18,7 @@ pub struct RuntimeSettings {
     pub token_auto_refresh_enabled: bool,
     pub token_auto_refresh_interval_secs: u64,
     pub token_auto_refresh_window_secs: u64,
+    pub session_affinity_ttl_secs: u64,
     pub load_balancing_mode: String,
     pub virtual_cache_usage_enabled: bool,
     pub virtual_cache_default_ttl: String,
@@ -76,6 +77,7 @@ impl RuntimeSettings {
             token_auto_refresh_enabled: config.token_auto_refresh_enabled,
             token_auto_refresh_interval_secs: config.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: config.token_auto_refresh_window_secs,
+            session_affinity_ttl_secs: config.session_affinity_ttl_secs,
             load_balancing_mode: normalize_load_balancing_mode(&config.load_balancing_mode),
             virtual_cache_usage_enabled: config.virtual_cache_usage_enabled,
             virtual_cache_default_ttl: normalize_virtual_cache_ttl(
@@ -148,6 +150,9 @@ impl RuntimeSettings {
         }
         if !(60..=86_400).contains(&self.token_auto_refresh_window_secs) {
             anyhow::bail!("tokenAutoRefreshWindowSecs 必须在 60..86400 范围内");
+        }
+        if !(300..=43_200).contains(&self.session_affinity_ttl_secs) {
+            anyhow::bail!("sessionAffinityTtlSecs 必须在 300..43200 范围内");
         }
         if self.load_balancing_mode != "priority" && self.load_balancing_mode != "balanced" {
             anyhow::bail!("loadBalancingMode 必须是 'priority' 或 'balanced'");

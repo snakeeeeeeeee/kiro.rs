@@ -429,6 +429,10 @@ fn runtime_settings_pairs(
             "tokenAutoRefreshWindowSecs",
             settings.token_auto_refresh_window_secs.to_string(),
         ),
+        (
+            "sessionAffinityTtlSecs",
+            settings.session_affinity_ttl_secs.to_string(),
+        ),
         ("loadBalancingMode", settings.load_balancing_mode.clone()),
         (
             "virtualCacheUsageEnabled",
@@ -574,6 +578,7 @@ fn apply_runtime_setting(
         "tokenAutoRefreshWindowSecs" => {
             settings.token_auto_refresh_window_secs = parse_u64(key, value)?
         }
+        "sessionAffinityTtlSecs" => settings.session_affinity_ttl_secs = parse_u64(key, value)?,
         "loadBalancingMode" => settings.load_balancing_mode = value.to_string(),
         "virtualCacheUsageEnabled" => {
             settings.virtual_cache_usage_enabled = parse_bool(key, value)?
@@ -829,6 +834,7 @@ mod tests {
         let mut updated = defaults.clone();
         updated.global_max_concurrent = 11;
         updated.per_account_default_max_concurrent = 4;
+        updated.session_affinity_ttl_secs = 900;
         updated.load_balancing_mode = "balanced".to_string();
         updated.dynamic_proxy_enabled = true;
         updated.dynamic_proxy_host = "proxy.example.com".to_string();
@@ -839,6 +845,7 @@ mod tests {
         let loaded = store.load_runtime_settings(&defaults).unwrap();
         assert_eq!(loaded.global_max_concurrent, 11);
         assert_eq!(loaded.per_account_default_max_concurrent, 4);
+        assert_eq!(loaded.session_affinity_ttl_secs, 900);
         assert_eq!(loaded.load_balancing_mode, "balanced");
         assert!(loaded.dynamic_proxy_enabled);
         assert_eq!(loaded.dynamic_proxy_host, "proxy.example.com");

@@ -161,3 +161,21 @@
 - `docker compose -f docker-compose-dev.yml up -d --build`: passed.
 - `docker compose -f docker-compose-dev.yml ps`: `kiro-rs-dev` healthy.
 - `GET /healthz`: 200.
+
+## Completed: Configurable Session Affinity TTL
+- Replaced the hardcoded 12-hour session affinity TTL with runtime setting `sessionAffinityTtlSecs`.
+- Default TTL is now 3600 seconds, with validation range `300..43200`.
+- Persisted the setting in SQLite runtime settings and exposed it through Admin settings/status APIs.
+- Admin runtime settings dialog now includes `会话亲和 TTL 秒数`.
+- New affinity binding and renewal both use the latest runtime TTL; existing bindings naturally expire or renew under the new setting.
+
+## Latest Validation: Configurable Session Affinity TTL
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- `cargo test`: passed, 236 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `docker compose -f docker-compose-dev.yml up -d --build`: passed.
+- `docker compose -f docker-compose-dev.yml ps`: `kiro-rs-dev` healthy.
+- `GET /healthz`: 200.
+- `GET /api/admin/settings/runtime`: returned `sessionAffinityTtlSecs: 3600`.
+- `PUT /api/admin/settings/runtime`: hot update to `900` succeeded, then local setting was restored to `3600`.

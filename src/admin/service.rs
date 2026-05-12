@@ -172,6 +172,7 @@ impl AdminService {
             token_auto_refresh_enabled: snapshot.token_auto_refresh_enabled,
             token_auto_refresh_interval_secs: snapshot.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: snapshot.token_auto_refresh_window_secs,
+            session_affinity_ttl_secs: snapshot.session_affinity_ttl_secs,
             load_balancing_mode: snapshot.load_balancing_mode,
             total_credentials: snapshot.total,
             available_credentials: snapshot.available,

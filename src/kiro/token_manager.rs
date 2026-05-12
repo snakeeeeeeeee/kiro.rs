@@ -4,7 +4,7 @@
 //! 支持多凭据 (MultiTokenManager) 管理
 
 use anyhow::bail;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, TimeDelta, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -610,6 +610,8 @@ pub struct ManagerSnapshot {
     pub token_auto_refresh_interval_secs: u64,
     /// Token 距离过期多少秒内触发后台刷新
     pub token_auto_refresh_window_secs: u64,
+    /// 会话亲和绑定 TTL
+    pub session_affinity_ttl_secs: u64,
     /// 负载均衡模式
     pub load_balancing_mode: String,
     /// 当前活跃会话亲和绑定数
@@ -653,8 +655,10 @@ pub struct MultiTokenManager {
 const MAX_FAILURES_PER_CREDENTIAL: u32 = 3;
 /// 统计数据持久化防抖间隔
 const STATS_SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
-/// 会话亲和绑定 TTL
-const SESSION_AFFINITY_TTL: Duration = Duration::hours(12);
+
+fn session_affinity_ttl(settings: &RuntimeSettings) -> TimeDelta {
+    TimeDelta::seconds(settings.session_affinity_ttl_secs.min(43_200).max(300) as i64)
+}
 
 /// API 调用上下文
 ///
@@ -1073,22 +1077,33 @@ impl MultiTokenManager {
         affinity.retain(|_, entry| entry.expires_at > now);
     }
 
-    fn bind_session_affinity(&self, session_key: &str, credential_id: u64, now: DateTime<Utc>) {
+    fn bind_session_affinity(
+        &self,
+        session_key: &str,
+        credential_id: u64,
+        now: DateTime<Utc>,
+        settings: &RuntimeSettings,
+    ) {
         let mut affinity = self.session_affinity.lock();
         affinity.insert(
             session_key.to_string(),
             SessionAffinityEntry {
                 credential_id,
-                expires_at: now + SESSION_AFFINITY_TTL,
+                expires_at: now + session_affinity_ttl(settings),
             },
         );
     }
 
-    fn session_affinity_target(&self, session_key: &str, now: DateTime<Utc>) -> Option<u64> {
+    fn session_affinity_target(
+        &self,
+        session_key: &str,
+        now: DateTime<Utc>,
+        settings: &RuntimeSettings,
+    ) -> Option<u64> {
         let mut affinity = self.session_affinity.lock();
         match affinity.get_mut(session_key) {
             Some(entry) if entry.expires_at > now => {
-                entry.expires_at = now + SESSION_AFFINITY_TTL;
+                entry.expires_at = now + session_affinity_ttl(settings);
                 Some(entry.credential_id)
             }
             Some(_) => {
@@ -1118,7 +1133,7 @@ impl MultiTokenManager {
             .map(|m| m.to_lowercase().contains("opus"))
             .unwrap_or(false);
 
-        if let Some(bound_id) = self.session_affinity_target(&session_key, now) {
+        if let Some(bound_id) = self.session_affinity_target(&session_key, now, &settings) {
             if excluded_ids.contains(&bound_id) {
                 self.remove_session_affinity(&session_key);
                 return None;
@@ -1280,7 +1295,8 @@ impl MultiTokenManager {
             };
 
             if let Some(session_key) = Self::normalize_session_key(session_id) {
-                self.bind_session_affinity(&session_key, id, Utc::now());
+                let settings = self.runtime_settings.lock().clone();
+                self.bind_session_affinity(&session_key, id, Utc::now(), &settings);
             }
 
             // 尝试获取/刷新 Token
@@ -2191,6 +2207,7 @@ impl MultiTokenManager {
             token_auto_refresh_enabled: settings.token_auto_refresh_enabled,
             token_auto_refresh_interval_secs: settings.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: settings.token_auto_refresh_window_secs,
+            session_affinity_ttl_secs: settings.session_affinity_ttl_secs,
             load_balancing_mode: settings.load_balancing_mode,
             session_affinity_bindings,
         }
@@ -3280,6 +3297,53 @@ mod tests {
             .find(|entry| entry.id == first_id)
             .unwrap();
         assert_eq!(bound.session_affinity_bindings, 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_affinity_ttl_runtime_update_expires_binding() {
+        let mut config = Config::default();
+        config.load_balancing_mode = "balanced".to_string();
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("token-1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("token-2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = Arc::new(
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap(),
+        );
+
+        let first = manager
+            .acquire_context_with_session(None, Some("session-ttl"))
+            .await
+            .unwrap();
+        let first_id = first.id;
+        drop(first);
+
+        let mut settings = manager.runtime_settings();
+        settings.session_affinity_ttl_secs = 300;
+        manager.update_runtime_settings(settings).unwrap();
+
+        {
+            let mut affinity = manager.session_affinity.lock();
+            let entry = affinity.get_mut("session-ttl").unwrap();
+            entry.expires_at = Utc::now() - Duration::seconds(1);
+        }
+
+        let before_rebind = Utc::now();
+        let second = manager
+            .acquire_context_with_session(None, Some("session-ttl"))
+            .await
+            .unwrap();
+        drop(second);
+
+        let affinity = manager.session_affinity.lock();
+        let rebound = affinity.get("session-ttl").unwrap();
+        assert_eq!(rebound.credential_id, first_id);
+        assert!(rebound.expires_at >= before_rebind + Duration::seconds(299));
+        assert!(rebound.expires_at <= before_rebind + Duration::seconds(301));
     }
 
     #[tokio::test]

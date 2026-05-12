@@ -56,6 +56,7 @@ export interface RuntimeStatusResponse {
   tokenAutoRefreshEnabled: boolean
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
+  sessionAffinityTtlSecs: number
   loadBalancingMode: 'priority' | 'balanced'
   totalCredentials: number
   availableCredentials: number
@@ -226,6 +227,7 @@ export interface RuntimeSettings {
   tokenAutoRefreshEnabled: boolean
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
+  sessionAffinityTtlSecs: number
   loadBalancingMode: 'priority' | 'balanced'
   virtualCacheUsageEnabled: boolean
   virtualCacheDefaultTtl: '5m' | '1h'
