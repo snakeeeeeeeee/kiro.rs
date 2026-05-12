@@ -658,6 +658,7 @@ fn event_metric_name(event: &Event) -> Cow<'static, str> {
         Event::ToolUse(_) => Cow::Borrowed("tool_use"),
         Event::Metering(_) => Cow::Borrowed("metering"),
         Event::ContextUsage(_) => Cow::Borrowed("context_usage"),
+        Event::ReasoningContent(_) => Cow::Borrowed("reasoning_content"),
         Event::Unknown { event_type, .. } => Cow::Owned(event_type.clone()),
         Event::Error { .. } => Cow::Borrowed("error"),
         Event::Exception { .. } => Cow::Borrowed("exception"),
@@ -759,6 +760,8 @@ async fn handle_non_stream_request(
     }
 
     let mut text_content = String::new();
+    let mut reasoning_content = String::new();
+    let mut reasoning_signature: Option<String> = None;
     let mut tool_uses: Vec<serde_json::Value> = Vec::new();
     let mut has_tool_use = false;
     let mut stop_reason = "end_turn".to_string();
@@ -776,6 +779,14 @@ async fn handle_non_stream_request(
                     match event {
                         Event::AssistantResponse(resp) => {
                             text_content.push_str(&resp.content);
+                        }
+                        Event::ReasoningContent(reasoning) => {
+                            if let Some(text) = reasoning.text {
+                                reasoning_content.push_str(&text);
+                            }
+                            if let Some(signature) = reasoning.signature {
+                                reasoning_signature = Some(signature);
+                            }
                         }
                         Event::ToolUse(tool_use) => {
                             has_tool_use = true;
@@ -854,7 +865,18 @@ async fn handle_non_stream_request(
     // 构建响应内容
     let mut content: Vec<serde_json::Value> = Vec::new();
 
-    if thinking_enabled {
+    if !reasoning_content.is_empty() || reasoning_signature.is_some() {
+        let mut thinking = json!({
+            "type": "thinking",
+            "thinking": reasoning_content
+        });
+        if let Some(signature) = reasoning_signature {
+            thinking["signature"] = json!(signature);
+        }
+        content.push(thinking);
+    }
+
+    if thinking_enabled && reasoning_content.is_empty() {
         // 从完整文本中提取 thinking 块
         let (thinking, remaining_text) =
             super::stream::extract_thinking_from_complete_text(&text_content);

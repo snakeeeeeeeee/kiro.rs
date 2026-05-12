@@ -522,6 +522,10 @@ pub struct StreamContext {
     pub context_input_tokens: Option<i32>,
     /// 输出 tokens 累计
     pub output_tokens: i32,
+    /// Kiro 原生 reasoningContentEvent 的 thinking 块索引
+    pub reasoning_block_index: Option<i32>,
+    /// 是否已经收到 reasoning signature
+    pub reasoning_signature_sent: bool,
     /// 工具块索引映射 (tool_id -> block_index)
     pub tool_block_indices: HashMap<String, i32>,
     /// 工具名称反向映射（短名称 → 原始名称），用于响应时还原
@@ -560,6 +564,8 @@ impl StreamContext {
             pending_usage_commit: None,
             context_input_tokens: None,
             output_tokens: 0,
+            reasoning_block_index: None,
+            reasoning_signature_sent: false,
             tool_block_indices: HashMap::new(),
             tool_name_map,
             thinking_enabled,
@@ -611,42 +617,17 @@ impl StreamContext {
         self.pending_usage_commit = Some((manager, pending_usage));
     }
 
-    /// 生成初始事件序列 (message_start + 文本块 start)
+    /// 生成初始事件序列。
     ///
-    /// 当 thinking 启用时，不在初始化时创建文本块，而是等到实际收到内容时再创建。
-    /// 这样可以确保 thinking 块（索引 0）在文本块（索引 1）之前。
+    /// 这里只发送 message_start，内容块等实际收到上游事件后再创建。
+    /// Kiro 可能先返回 reasoningContentEvent，延迟创建可保持 thinking/text 顺序。
     pub fn generate_initial_events(&mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
 
-        // message_start
         let msg_start = self.create_message_start_event();
         if let Some(event) = self.state_manager.handle_message_start(msg_start) {
             events.push(event);
         }
-
-        // 如果启用了 thinking，不在这里创建文本块
-        // thinking 块和文本块会在 process_content_with_thinking 中按正确顺序创建
-        if self.thinking_enabled {
-            return events;
-        }
-
-        // 创建初始文本块（仅在未启用 thinking 时）
-        let text_block_index = self.state_manager.next_block_index();
-        self.text_block_index = Some(text_block_index);
-        let text_block_events = self.state_manager.handle_content_block_start(
-            text_block_index,
-            "text",
-            json!({
-                "type": "content_block_start",
-                "index": text_block_index,
-                "content_block": {
-                    "type": "text",
-                    "text": ""
-                }
-            }),
-        );
-        events.extend(text_block_events);
-
         events
     }
 
@@ -654,6 +635,7 @@ impl StreamContext {
     pub fn process_kiro_event(&mut self, event: &Event) -> Vec<SseEvent> {
         match event {
             Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
+            Event::ReasoningContent(reasoning) => self.process_reasoning_content(reasoning),
             Event::ToolUse(tool_use) => self.process_tool_use(tool_use),
             Event::ContextUsage(context_usage) => {
                 // 从上下文使用百分比计算实际的 input_tokens
@@ -869,6 +851,8 @@ impl StreamContext {
     fn create_text_delta_events(&mut self, text: &str) -> Vec<SseEvent> {
         let mut events = Vec::new();
 
+        self.close_reasoning_block_if_open(&mut events);
+
         // 如果当前 text_block_index 指向的块已经被关闭（例如 tool_use 开始时自动 stop），
         // 则丢弃该索引并创建新的文本块继续输出，避免 delta 被状态机拒绝导致“吞字”。
         if let Some(idx) = self.text_block_index {
@@ -935,6 +919,87 @@ impl StreamContext {
         )
     }
 
+    fn create_signature_delta_event(&self, index: i32, signature: &str) -> SseEvent {
+        SseEvent::new(
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": index,
+                "delta": {
+                    "type": "signature_delta",
+                    "signature": signature
+                }
+            }),
+        )
+    }
+
+    fn ensure_reasoning_block(&mut self, events: &mut Vec<SseEvent>) -> i32 {
+        if let Some(index) = self.reasoning_block_index {
+            return index;
+        }
+
+        let index = self.state_manager.next_block_index();
+        self.reasoning_block_index = Some(index);
+        let start_events = self.state_manager.handle_content_block_start(
+            index,
+            "thinking",
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": {
+                    "type": "thinking",
+                    "thinking": ""
+                }
+            }),
+        );
+        events.extend(start_events);
+        index
+    }
+
+    fn process_reasoning_content(
+        &mut self,
+        reasoning: &crate::kiro::model::events::ReasoningContentEvent,
+    ) -> Vec<SseEvent> {
+        let mut events = Vec::new();
+        let index = self.ensure_reasoning_block(&mut events);
+
+        if let Some(text) = reasoning.text.as_deref() {
+            if !text.is_empty() {
+                self.output_tokens += estimate_tokens(text);
+                if let Some(delta_event) = self.state_manager.handle_content_block_delta(
+                    index,
+                    json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "thinking_delta",
+                            "thinking": text
+                        }
+                    }),
+                ) {
+                    events.push(delta_event);
+                }
+            }
+        }
+
+        if let Some(signature) = reasoning.signature.as_deref() {
+            if !signature.is_empty() && !self.reasoning_signature_sent {
+                events.push(self.create_signature_delta_event(index, signature));
+                self.reasoning_signature_sent = true;
+            }
+        }
+
+        events
+    }
+
+    fn close_reasoning_block_if_open(&mut self, events: &mut Vec<SseEvent>) {
+        if let Some(index) = self.reasoning_block_index.take() {
+            if let Some(stop_event) = self.state_manager.handle_content_block_stop(index) {
+                events.push(stop_event);
+            }
+        }
+    }
+
     /// 处理工具使用事件
     fn process_tool_use(
         &mut self,
@@ -943,6 +1008,7 @@ impl StreamContext {
         let mut events = Vec::new();
 
         self.state_manager.set_has_tool_use(true);
+        self.close_reasoning_block_if_open(&mut events);
 
         // tool_use 必须发生在 thinking 结束之后。
         // 但当 `</thinking>` 后面没有 `\n\n`（例如紧跟 tool_use 或流结束）时，
@@ -1142,6 +1208,15 @@ impl StreamContext {
         {
             self.state_manager.set_stop_reason("max_tokens");
             events.extend(self.create_text_delta_events(" "));
+        }
+
+        if let Some(reasoning_index) = self.reasoning_block_index {
+            if let Some(stop_event) = self
+                .state_manager
+                .handle_content_block_stop(reasoning_index)
+            {
+                events.push(stop_event);
+            }
         }
 
         // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
@@ -1399,16 +1474,26 @@ mod tests {
         let mut ctx = StreamContext::new_with_thinking("test-model", 1, false, HashMap::new());
 
         let initial_events = ctx.generate_initial_events();
+        assert!(initial_events.iter().any(|e| e.event == "message_start"));
         assert!(
             initial_events
                 .iter()
-                .any(|e| e.event == "content_block_start"
-                    && e.data["content_block"]["type"] == "text")
+                .all(|e| e.event != "content_block_start"),
+            "content blocks should be created lazily when upstream content arrives"
         );
 
-        let initial_text_index = ctx
-            .text_block_index
-            .expect("initial text block index should exist");
+        let first_text_events = ctx.process_assistant_response("before");
+        let initial_text_index = first_text_events
+            .iter()
+            .find_map(|e| {
+                if e.event == "content_block_start" && e.data["content_block"]["type"] == "text" {
+                    e.data["index"].as_i64()
+                } else {
+                    None
+                }
+            })
+            .expect("first text delta should create text block")
+            as i32;
 
         // tool_use 开始会自动关闭现有 text block
         let tool_events = ctx.process_tool_use(&crate::kiro::model::events::ToolUseEvent {
@@ -2076,5 +2161,69 @@ mod tests {
             message_delta.data["delta"]["stop_reason"], "tool_use",
             "stop_reason should be tool_use when tool_use is present"
         );
+    }
+
+    #[test]
+    fn test_reasoning_content_event_streams_thinking_and_signature() {
+        let mut ctx = StreamContext::new_with_thinking("test-model", 1, false, HashMap::new());
+        let _initial_events = ctx.generate_initial_events();
+
+        let mut events = Vec::new();
+        events.extend(ctx.process_kiro_event(
+            &crate::kiro::model::events::Event::ReasoningContent(
+                crate::kiro::model::events::ReasoningContentEvent {
+                    text: Some("thinking".to_string()),
+                    signature: None,
+                },
+            ),
+        ));
+        events.extend(ctx.process_kiro_event(
+            &crate::kiro::model::events::Event::ReasoningContent(
+                crate::kiro::model::events::ReasoningContentEvent {
+                    text: None,
+                    signature: Some("sig_123".to_string()),
+                },
+            ),
+        ));
+        events.extend(ctx.process_assistant_response("answer"));
+        events.extend(ctx.generate_final_events());
+
+        let thinking_start_index = events
+            .iter()
+            .position(|e| {
+                e.event == "content_block_start" && e.data["content_block"]["type"] == "thinking"
+            })
+            .expect("thinking block should start");
+        let text_start_index = events
+            .iter()
+            .position(|e| {
+                e.event == "content_block_start" && e.data["content_block"]["type"] == "text"
+            })
+            .expect("text block should start");
+        assert!(thinking_start_index < text_start_index);
+
+        let signature_index = events
+            .iter()
+            .position(|e| {
+                e.event == "content_block_delta" && e.data["delta"]["type"] == "signature_delta"
+            })
+            .expect("signature_delta should be emitted");
+        let thinking_stop_index = events
+            .iter()
+            .position(|e| e.event == "content_block_stop" && e.data["index"].as_i64() == Some(0))
+            .expect("thinking block should stop");
+        assert!(signature_index < thinking_stop_index);
+        assert!(thinking_stop_index < text_start_index);
+
+        assert!(events.iter().any(|e| {
+            e.event == "content_block_delta"
+                && e.data["delta"]["type"] == "thinking_delta"
+                && e.data["delta"]["thinking"] == "thinking"
+        }));
+        assert!(events.iter().any(|e| {
+            e.event == "content_block_delta"
+                && e.data["delta"]["type"] == "signature_delta"
+                && e.data["delta"]["signature"] == "sig_123"
+        }));
     }
 }
