@@ -17,7 +17,7 @@ Current investigation: compare local `kiro.rs`, sibling `kiro-account-manager`, 
 
 Current extension: add an opt-in Opus 4.7 ANTML probe compatibility mode for cctest-style tag probes, defaulting off and only clarifying that the tag is ordinary visible user text.
 
-Current extension: close remaining cctest/hvoy gaps by preserving PDF document input, adding structured-output request hints, and carrying real assistant thinking signatures into Kiro history without faking signatures.
+Current extension: close remaining cctest/hvoy gaps by extracting PDF document text and adding structured-output request hints without adding Kiro fields that trigger upstream 400s.
 
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
@@ -39,7 +39,7 @@ Current extension: close remaining cctest/hvoy gaps by preserving PDF document i
 - [completed] Add dynamic proxy/IP binding settings, SQLite bindings, worker, Admin controls, and request-path effective proxy integration
 - [completed] Analyze Opus 4.7 detector failures against sibling gateway, public proxy behavior, and official Anthropic protocol expectations
 - [completed] Add narrow Opus 4.7 ANTML probe compatibility config, request rewrite, Admin UI control, and tests
-- [completed] Add PDF document extraction/preservation, structured-output compatibility hints, and real assistant thinking signature history preservation
+- [completed] Add PDF document text extraction and structured-output compatibility hints; avoid unsupported Kiro document/reasoning history fields
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -55,9 +55,9 @@ Current extension: close remaining cctest/hvoy gaps by preserving PDF document i
 - Dynamic proxy V1 follows the WindsurfAPI design but is implemented natively in Rust; dynamic active binding wins over manual account proxy, then global proxy.
 - Dynamic proxy V1 targets Novproxy-style username templates and keeps plaintext provider password in SQLite/runtime settings, matching the current config/security model.
 - Opus 4.7 ANTML probe compatibility is opt-in (`off`/`clarify`), scoped to plain Opus 4.7, and does not spoof or retry responses in the first version.
-- PDF documents are preserved in Kiro request shape when possible, but their extracted text is also injected into message content because that is the most reliable path for detector-style PDF questions.
+- PDF documents are converted to extracted text in message content. Do not send a Kiro `documents` field on this endpoint because live logs showed upstream `400 Improperly formed request`.
 - Structured output is handled with request-scoped JSON/schema instructions, not response post-processing, so stream protocol remains intact and invalid model JSON is not silently rewritten.
-- Signature handling preserves real client-supplied thinking signatures in assistant history; no placeholder or fake signature is generated.
+- Do not send assistant `reasoningContent` history fields yet: live logs with `message_count=3` showed repeated upstream `400 Improperly formed request`, and the detector still failed model signature. No placeholder or fake signature is generated.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

@@ -121,9 +121,9 @@
 - `injection` uses random canaries/sentinels and hard-gates leaks/hidden tool signals. It does not try to coerce the model to reveal hidden/internal content; for our cctest compatibility this supports keeping any ANTML prompt clarification narrow and factual, not a broad jailbreak-like instruction.
 - Main takeaway: `llm-probe` helps design diagnostics and pass/fail interpretation, but does not provide a ready-made workaround for the `tag/antml` short refusal. Implementing a narrow prompt clarification and/or buffered weak-response retry remains a local gateway decision.
 
-## PDF / Structured Output / Signature History Follow-up
+## PDF / Structured Output Follow-up
 - The direct cause of PDF detector failure was confirmed in code: `process_message_content` ignored `type: "document"` blocks, so PDF content never reached Kiro.
-- The fix keeps original base64 PDF bytes in a Kiro-style `documents` field and injects extracted text into the current message. The text injection is important because it works even if upstream Kiro ignores `documents`.
+- Live logs after the first fix showed PDF text was extracted, then Kiro returned `400 Improperly formed request`. The likely cause was sending an unsupported Kiro-style `documents` field, so the safe fix is text injection only.
 - `pdf-extract` handles normal text-layer PDFs; a small fallback parser handles simple literal PDF text operators so minimal detector PDFs do not silently become empty.
 - Structured-output detector failure was also a conversion gap: `MessagesRequest` accepted no `response_format`, and `output_config.format` only carried reasoning effort before. The new path supports both and injects a per-request JSON/schema instruction.
-- Signature history preservation is now aligned with sibling `kiro-account-manager`: assistant `thinking.signature` is stored as Kiro `reasoningContent.reasoningText.signature`. This does not expose or forge signatures for plain Opus 4.7 responses; it only preserves real signatures supplied in conversation history.
+- A trial alignment with sibling `kiro-account-manager` for assistant `reasoningContent.reasoningText.signature` is not safe on the current Kiro endpoint: live `message_count=3` requests returned repeated upstream `400 Improperly formed request`, and model-signature detection still failed. Keep signature non-spoofing and do not emit unsupported history fields until the exact upstream shape is known.

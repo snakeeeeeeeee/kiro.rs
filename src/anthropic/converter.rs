@@ -10,8 +10,7 @@ use uuid::Uuid;
 
 use crate::kiro::model::requests::conversation::{
     AssistantMessage, ConversationState, CurrentMessage, HistoryAssistantMessage,
-    HistoryUserMessage, KiroDocument, KiroImage, Message, UserInputMessage,
-    UserInputMessageContext, UserMessage,
+    HistoryUserMessage, KiroImage, Message, UserInputMessage, UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::tool::{
     InputSchema, Tool, ToolResult, ToolSpecification, ToolUseEntry,
@@ -294,8 +293,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     // 5. 处理最后一条消息作为 current_message（经过 prefill 预处理，末尾必为 user）
     let last_message = messages.last().unwrap();
-    let (text_content, images, documents, tool_results) =
-        process_message_content(&last_message.content)?;
+    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
 
     // 6. 转换工具定义（超长名称自动缩短并记录映射）
     let mut tool_name_map = HashMap::new();
@@ -348,9 +346,6 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     if !images.is_empty() {
         user_input = user_input.with_images(images);
     }
-    if !documents.is_empty() {
-        user_input = user_input.with_documents(documents);
-    }
 
     let current_message = CurrentMessage::new(user_input);
 
@@ -383,10 +378,9 @@ fn determine_chat_trigger_type(_req: &MessagesRequest) -> String {
 /// 处理消息内容，提取文本、图片、文档和工具结果
 fn process_message_content(
     content: &serde_json::Value,
-) -> Result<(String, Vec<KiroImage>, Vec<KiroDocument>, Vec<ToolResult>), ConversionError> {
+) -> Result<(String, Vec<KiroImage>, Vec<ToolResult>), ConversionError> {
     let mut text_parts = Vec::new();
     let mut images = Vec::new();
-    let mut documents = Vec::new();
     let mut tool_results = Vec::new();
 
     match content {
@@ -414,7 +408,6 @@ fn process_message_content(
                                             .unwrap_or("document.pdf"),
                                     ) {
                                         text_parts.push(pdf.text);
-                                        documents.push(pdf.document);
                                     }
                                 } else if let Some(format) = get_image_format(&source.media_type) {
                                     images.push(KiroImage::from_base64(format, source.data));
@@ -433,7 +426,6 @@ fn process_message_content(
                                         process_pdf_document_source(&source.data, name)
                                     {
                                         text_parts.push(pdf.text);
-                                        documents.push(pdf.document);
                                     }
                                 } else {
                                     text_parts.push(format!(
@@ -475,12 +467,11 @@ fn process_message_content(
         _ => {}
     }
 
-    Ok((text_parts.join("\n"), images, documents, tool_results))
+    Ok((text_parts.join("\n"), images, tool_results))
 }
 
 struct ProcessedPdfDocument {
     text: String,
-    document: KiroDocument,
 }
 
 fn is_pdf_media_type(media_type: &str) -> bool {
@@ -501,7 +492,6 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
                 "[PDF Document \"{}\" — skipped because decoded size exceeds {} bytes]",
                 name, MAX_PDF_BYTES
             ),
-            document: KiroDocument::from_base64("pdf", name, data),
         });
     }
 
@@ -511,7 +501,6 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
             tracing::warn!(name = name, error = %err, "PDF base64 解码失败");
             return Some(ProcessedPdfDocument {
                 text: format!("[PDF Document \"{}\" — invalid base64 data]", name),
-                document: KiroDocument::from_base64("pdf", name, data),
             });
         }
     };
@@ -523,7 +512,6 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         );
         return Some(ProcessedPdfDocument {
             text: format!("[PDF Document \"{}\" — invalid PDF data]", name),
-            document: KiroDocument::from_base64("pdf", name, data),
         });
     }
 
@@ -577,10 +565,7 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         "PDF 文档文本已提取并注入到当前消息"
     );
 
-    Some(ProcessedPdfDocument {
-        text: content,
-        document: KiroDocument::from_base64("pdf", name, data),
-    })
+    Some(ProcessedPdfDocument { text: content })
 }
 
 fn estimate_base64_decoded_len(data: &str) -> usize {
@@ -1149,16 +1134,14 @@ fn merge_user_messages(
 ) -> Result<HistoryUserMessage, ConversionError> {
     let mut content_parts = Vec::new();
     let mut all_images = Vec::new();
-    let mut all_documents = Vec::new();
     let mut all_tool_results = Vec::new();
 
     for msg in messages {
-        let (text, images, documents, tool_results) = process_message_content(&msg.content)?;
+        let (text, images, tool_results) = process_message_content(&msg.content)?;
         if !text.is_empty() {
             content_parts.push(text);
         }
         all_images.extend(images);
-        all_documents.extend(documents);
         all_tool_results.extend(tool_results);
     }
 
@@ -1168,9 +1151,6 @@ fn merge_user_messages(
 
     if !all_images.is_empty() {
         user_msg = user_msg.with_images(all_images);
-    }
-    if !all_documents.is_empty() {
-        user_msg = user_msg.with_documents(all_documents);
     }
 
     if !all_tool_results.is_empty() {
@@ -1190,7 +1170,6 @@ fn convert_assistant_message(
     tool_name_map: &mut HashMap<String, String>,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     let mut thinking_content = String::new();
-    let mut thinking_signature: Option<String> = None;
     let mut text_content = String::new();
     let mut tool_uses = Vec::new();
 
@@ -1205,9 +1184,6 @@ fn convert_assistant_message(
                         "thinking" => {
                             if let Some(thinking) = block.thinking {
                                 thinking_content.push_str(&thinking);
-                            }
-                            if thinking_signature.is_none() {
-                                thinking_signature = block.signature;
                             }
                         }
                         "text" => {
@@ -1253,39 +1229,9 @@ fn convert_assistant_message(
     if !tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(tool_uses);
     }
-    if !thinking_content.is_empty() || thinking_signature.is_some() {
-        assistant = assistant.with_reasoning_content(build_reasoning_content(
-            (!thinking_content.is_empty()).then_some(thinking_content.as_str()),
-            thinking_signature.as_deref(),
-        ));
-    }
 
     Ok(HistoryAssistantMessage {
         assistant_response_message: assistant,
-    })
-}
-
-fn build_reasoning_content(text: Option<&str>, signature: Option<&str>) -> serde_json::Value {
-    let mut reasoning_text = serde_json::Map::new();
-    if let Some(text) = text {
-        if !text.is_empty() {
-            reasoning_text.insert(
-                "text".to_string(),
-                serde_json::Value::String(text.to_string()),
-            );
-        }
-    }
-    if let Some(signature) = signature {
-        if !signature.is_empty() {
-            reasoning_text.insert(
-                "signature".to_string(),
-                serde_json::Value::String(signature.to_string()),
-            );
-        }
-    }
-
-    serde_json::json!({
-        "reasoningText": serde_json::Value::Object(reasoning_text)
     })
 }
 
@@ -1578,9 +1524,6 @@ mod tests {
             "extracted PDF text should be visible to upstream model: {}",
             current.content
         );
-        assert_eq!(current.documents.len(), 1);
-        assert_eq!(current.documents[0].format, "pdf");
-        assert_eq!(current.documents[0].name, "invoice.pdf");
     }
 
     #[test]
@@ -1642,42 +1585,6 @@ mod tests {
                 .user_input_message
                 .content
                 .contains("Respond with valid JSON only")
-        );
-    }
-
-    #[test]
-    fn test_assistant_thinking_signature_preserved_as_reasoning_content() {
-        use super::super::types::Message as AnthropicMessage;
-
-        let msg = AnthropicMessage {
-            role: "assistant".to_string(),
-            content: serde_json::json!([
-                {
-                    "type": "thinking",
-                    "thinking": "private chain",
-                    "signature": "sig_real"
-                },
-                {"type": "text", "text": "Final answer"}
-            ]),
-        };
-
-        let converted = convert_assistant_message(&msg, &mut HashMap::new()).unwrap();
-        let reasoning = converted
-            .assistant_response_message
-            .reasoning_content
-            .expect("reasoningContent should be preserved");
-
-        assert_eq!(
-            reasoning
-                .pointer("/reasoningText/text")
-                .and_then(|v| v.as_str()),
-            Some("private chain")
-        );
-        assert_eq!(
-            reasoning
-                .pointer("/reasoningText/signature")
-                .and_then(|v| v.as_str()),
-            Some("sig_real")
         );
     }
 

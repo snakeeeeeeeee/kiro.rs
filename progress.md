@@ -227,10 +227,10 @@
 - Added unit coverage for disabled mode, matched plain Opus 4.7 probe, non-probe text, and thinking model exclusion.
 - Validation: `cargo fmt -- --check`, `cargo check`, `cargo test` passed with 249 tests; `pnpm --dir admin-ui build` passed.
 
-## Completed: PDF / Structured Output / Signature History Follow-up
-- Added Anthropic `document` block handling for `application/pdf`: base64 PDF input is preserved as Kiro `documents` and extracted text is appended to the current user content.
+## Completed: PDF / Structured Output Follow-up
+- Added Anthropic `document` block handling for `application/pdf`: base64 PDF text is extracted and appended to the current user content.
 - Added `pdf-extract` plus a lightweight `Tj`/`TJ` fallback for simple text-layer PDFs.
 - Added structured-output compatibility for `output_config.format` and OpenAI-style `response_format`, injecting request-scoped JSON-only/schema instructions.
-- Added real assistant thinking signature preservation into Kiro history as `reasoningContent.reasoningText.signature`; no fake signature is generated.
-- Added converter tests for PDF extraction, JSON schema hinting, OpenAI `response_format=json_object`, and thinking signature preservation.
-- Validation: `cargo fmt -- --check` passed; `cargo test` passed with 253 tests; `pnpm --dir admin-ui build` passed.
+- Removed Kiro `documents` field and assistant `reasoningContent` history emission after live logs showed upstream `400 Improperly formed request`; PDF remains text-only on the Kiro request.
+- Added converter tests for PDF extraction, JSON schema hinting, and OpenAI `response_format=json_object`.
+- Validation after rollback of unsupported fields: `cargo fmt -- --check` passed; `cargo test` passed with 252 tests; `pnpm --dir admin-ui build` passed.
