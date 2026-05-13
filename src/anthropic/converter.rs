@@ -167,6 +167,18 @@ pub struct ConversionResult {
     pub session_affinity_key: String,
     /// 工具名称映射（短名称 → 原始名称），仅当存在超长工具名时非空
     pub tool_name_map: HashMap<String, String>,
+    /// PDF 调试摘要。仅当当前请求包含 PDF 文档时存在。
+    pub pdf_debug: Option<PdfDebugInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdfDebugInfo {
+    pub name: String,
+    pub page_count: Option<usize>,
+    pub text_source: &'static str,
+    pub extracted_chars: usize,
+    pub extracted_text: String,
+    pub text_preview: String,
 }
 
 /// 转换错误
@@ -301,7 +313,21 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     // 5. 处理最后一条消息作为 current_message（经过 prefill 预处理，末尾必为 user）
     let last_message = messages.last().unwrap();
-    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
+    let processed_content = process_message_content(&last_message.content)?;
+    let text_content = processed_content.text;
+    let images = processed_content.images;
+    let tool_results = processed_content.tool_results;
+    let pdf_debug = processed_content.pdf_debug;
+    if let Some(pdf_debug) = pdf_debug.as_ref() {
+        tracing::warn!(
+            name = %pdf_debug.name,
+            page_count = pdf_debug.page_count.unwrap_or(0),
+            text_source = pdf_debug.text_source,
+            extracted_chars = pdf_debug.extracted_chars,
+            pdf_text_preview = %pdf_debug.text_preview,
+            "PDF 请求诊断"
+        );
+    }
 
     // 6. 转换工具定义（超长名称自动缩短并记录映射）
     let mut tool_name_map = HashMap::new();
@@ -374,7 +400,15 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
         conversation_state,
         session_affinity_key,
         tool_name_map,
+        pdf_debug,
     })
+}
+
+struct ProcessedMessageContent {
+    text: String,
+    images: Vec<KiroImage>,
+    tool_results: Vec<ToolResult>,
+    pdf_debug: Option<PdfDebugInfo>,
 }
 
 /// 确定聊天触发类型
@@ -386,10 +420,11 @@ fn determine_chat_trigger_type(_req: &MessagesRequest) -> String {
 /// 处理消息内容，提取文本、图片、文档和工具结果
 fn process_message_content(
     content: &serde_json::Value,
-) -> Result<(String, Vec<KiroImage>, Vec<ToolResult>), ConversionError> {
+) -> Result<ProcessedMessageContent, ConversionError> {
     let mut text_parts = Vec::new();
     let mut images = Vec::new();
     let mut tool_results = Vec::new();
+    let mut pdf_debug = None;
 
     match content {
         serde_json::Value::String(s) => {
@@ -415,6 +450,7 @@ fn process_message_content(
                                             .or(block.name.as_deref())
                                             .unwrap_or("document.pdf"),
                                     ) {
+                                        pdf_debug = Some(pdf.debug);
                                         text_parts.push(pdf.text);
                                     }
                                 } else if let Some(format) = get_image_format(&source.media_type) {
@@ -433,6 +469,7 @@ fn process_message_content(
                                     if let Some(pdf) =
                                         process_pdf_document_source(&source.data, name)
                                     {
+                                        pdf_debug = Some(pdf.debug);
                                         text_parts.push(pdf.text);
                                     }
                                 } else {
@@ -475,11 +512,17 @@ fn process_message_content(
         _ => {}
     }
 
-    Ok((text_parts.join("\n"), images, tool_results))
+    Ok(ProcessedMessageContent {
+        text: text_parts.join("\n"),
+        images,
+        tool_results,
+        pdf_debug,
+    })
 }
 
 struct ProcessedPdfDocument {
     text: String,
+    debug: PdfDebugInfo,
 }
 
 fn is_pdf_media_type(media_type: &str) -> bool {
@@ -500,6 +543,14 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
                 "[PDF Document \"{}\" — skipped because decoded size exceeds {} bytes]",
                 name, MAX_PDF_BYTES
             ),
+            debug: PdfDebugInfo {
+                name: name.to_string(),
+                page_count: None,
+                text_source: "skipped",
+                extracted_chars: 0,
+                extracted_text: String::new(),
+                text_preview: String::new(),
+            },
         });
     }
 
@@ -509,6 +560,14 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
             tracing::warn!(name = name, error = %err, "PDF base64 解码失败");
             return Some(ProcessedPdfDocument {
                 text: format!("[PDF Document \"{}\" — invalid base64 data]", name),
+                debug: PdfDebugInfo {
+                    name: name.to_string(),
+                    page_count: None,
+                    text_source: "invalid_base64",
+                    extracted_chars: 0,
+                    extracted_text: String::new(),
+                    text_preview: String::new(),
+                },
             });
         }
     };
@@ -520,14 +579,23 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         );
         return Some(ProcessedPdfDocument {
             text: format!("[PDF Document \"{}\" — invalid PDF data]", name),
+            debug: PdfDebugInfo {
+                name: name.to_string(),
+                page_count: None,
+                text_source: "invalid_pdf",
+                extracted_chars: 0,
+                extracted_text: String::new(),
+                text_preview: String::new(),
+            },
         });
     }
 
     let page_count = count_pdf_pages(&bytes);
+    let mut primary_error = None;
     let extracted = match pdf_extract::extract_text_from_mem(&bytes) {
         Ok(text) => text,
         Err(err) => {
-            tracing::warn!(name = name, error = %err, "PDF 文本提取失败");
+            primary_error = Some(err.to_string());
             String::new()
         }
     };
@@ -536,6 +604,25 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
     let fallback_text = fallback.text.as_str();
     let selection = select_pdf_text(&extracted, &fallback_text);
     let text = selection.text.trim();
+    if let Some(err) = primary_error.as_deref() {
+        if text.is_empty() {
+            tracing::warn!(
+                name = name,
+                error = %err,
+                fallback_chars = selection.fallback_chars,
+                "PDF 主解析器失败，fallback 也未提取到文本"
+            );
+        } else {
+            tracing::info!(
+                name = name,
+                error = %err,
+                text_source = selection.source,
+                fallback_chars = selection.fallback_chars,
+                extracted_chars = text.chars().count(),
+                "PDF 主解析器失败，已使用 fallback 文本"
+            );
+        }
+    }
     let content = if text.is_empty() {
         format!(
             "[PDF Document \"{}\" — no extractable text{}]",
@@ -584,7 +671,19 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         maybe_dump_pdf_debug_file(name, &bytes);
     }
 
-    Some(ProcessedPdfDocument { text: content })
+    let debug = PdfDebugInfo {
+        name: name.to_string(),
+        page_count,
+        text_source: selection.source,
+        extracted_chars: text.chars().count(),
+        extracted_text: text.to_string(),
+        text_preview: pdf_text_preview(text),
+    };
+
+    Some(ProcessedPdfDocument {
+        text: content,
+        debug,
+    })
 }
 
 struct PdfTextSelection {
@@ -1807,12 +1906,12 @@ fn merge_user_messages(
     let mut all_tool_results = Vec::new();
 
     for msg in messages {
-        let (text, images, tool_results) = process_message_content(&msg.content)?;
-        if !text.is_empty() {
-            content_parts.push(text);
+        let processed = process_message_content(&msg.content)?;
+        if !processed.text.is_empty() {
+            content_parts.push(processed.text);
         }
-        all_images.extend(images);
-        all_tool_results.extend(tool_results);
+        all_images.extend(processed.images);
+        all_tool_results.extend(processed.tool_results);
     }
 
     let content = content_parts.join("\n");

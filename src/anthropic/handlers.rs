@@ -24,7 +24,7 @@ use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
 
-use super::converter::{ConversionError, convert_request};
+use super::converter::{ConversionError, PdfDebugInfo, convert_request};
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, Opus47Diagnostics, SseEvent, StreamContext};
 use super::types::{
@@ -716,6 +716,7 @@ pub async fn post_messages(
 
     let session_affinity_key = conversion_result.session_affinity_key;
     let tool_name_map = conversion_result.tool_name_map;
+    let pdf_debug = conversion_result.pdf_debug;
 
     let _permit = match state
         .runtime_limiter
@@ -744,6 +745,7 @@ pub async fn post_messages(
             usage_session_key,
             state.virtual_cache_usage.clone(),
             request_ttl,
+            pdf_debug,
             _permit,
         )
         .await
@@ -767,6 +769,7 @@ pub async fn post_messages(
             usage_session_key,
             state.virtual_cache_usage.clone(),
             request_ttl,
+            pdf_debug,
             _permit,
         )
         .await
@@ -790,6 +793,7 @@ async fn handle_stream_request(
     usage_session_key: String,
     usage_manager: Arc<VirtualCacheUsageManager>,
     request_ttl: CacheTtl,
+    pdf_debug: Option<PdfDebugInfo>,
     permit: GlobalRequestPermit,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
@@ -841,7 +845,7 @@ async fn handle_stream_request(
     let initial_events = ctx.generate_initial_events();
 
     // 创建 SSE 流
-    let stream = create_sse_stream(response, ctx, initial_events, permit);
+    let stream = create_sse_stream(response, ctx, initial_events, pdf_debug, permit);
 
     // 返回 SSE 响应
     Response::builder()
@@ -866,6 +870,7 @@ fn create_sse_stream(
     response: crate::kiro::provider::LeasedResponse,
     ctx: StreamContext,
     initial_events: Vec<SseEvent>,
+    pdf_debug: Option<PdfDebugInfo>,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
@@ -903,6 +908,8 @@ fn create_sse_stream(
             0usize,
             0usize,
             stream_started_at,
+            pdf_debug,
+            String::new(),
         ),
         |(
             mut body_stream,
@@ -921,6 +928,8 @@ fn create_sse_stream(
             mut raw_frame_index,
             mut raw_event_index,
             stream_started_at,
+            pdf_debug,
+            mut assistant_text,
         )| async move {
             if finished {
                 return None;
@@ -990,6 +999,9 @@ fn create_sse_stream(
                                                 );
                                             }
                                             log_unknown_kiro_event(&event);
+                                            if let (Some(_), Event::AssistantResponse(resp)) = (pdf_debug.as_ref(), &event) {
+                                                assistant_text.push_str(&resp.content);
+                                            }
                                             let sse_events = ctx.process_kiro_event(&event);
                                             events.extend(sse_events);
                                         }
@@ -1006,7 +1018,7 @@ fn create_sse_stream(
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, assistant_text)))
                         }
                         Some(Err(e)) => {
                             tracing::error!("读取响应流失败: {}", e);
@@ -1014,22 +1026,28 @@ fn create_sse_stream(
                             // 发送最终事件并结束
                             let final_events = ctx.generate_final_events();
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
+                            if let Some(pdf_debug) = pdf_debug.as_ref() {
+                                log_pdf_response_diagnostics(pdf_debug, &assistant_text);
+                            }
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, assistant_text)))
                         }
                         None => {
                             // 流结束，发送最终事件
                             drop(permit);
                             let final_events = ctx.generate_final_events_with_usage_commit();
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
+                            if let Some(pdf_debug) = pdf_debug.as_ref() {
+                                log_pdf_response_diagnostics(pdf_debug, &assistant_text);
+                            }
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, assistant_text)))
                         }
                     }
                 }
@@ -1037,7 +1055,7 @@ fn create_sse_stream(
                 _ = ping_interval.tick() => {
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)))
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, assistant_text)))
                 }
             }
         },
@@ -1093,6 +1111,33 @@ fn log_opus47_nonstream_diagnostics(diagnostics: &Opus47Diagnostics, started_at:
         duration_ms = crate::metrics::duration_ms(started_at.elapsed()),
         "opus47_nonstream_diagnostics"
     );
+}
+
+fn log_pdf_response_diagnostics(pdf_debug: &PdfDebugInfo, assistant_text: &str) {
+    let assistant_preview = preview_log_text(assistant_text, 512);
+    let answer_contains_pdf_text = !pdf_debug.extracted_text.is_empty()
+        && assistant_text.contains(pdf_debug.extracted_text.as_str());
+
+    tracing::warn!(
+        name = %pdf_debug.name,
+        page_count = pdf_debug.page_count.unwrap_or(0),
+        text_source = pdf_debug.text_source,
+        extracted_chars = pdf_debug.extracted_chars,
+        pdf_text_preview = %pdf_debug.text_preview,
+        assistant_chars = assistant_text.chars().count(),
+        answer_contains_pdf_text,
+        assistant_text_preview = %assistant_preview,
+        "PDF 响应诊断"
+    );
+}
+
+fn preview_log_text(text: &str, max_chars: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 fn event_metric_name(event: &Event) -> Cow<'static, str> {
@@ -1172,6 +1217,7 @@ async fn handle_non_stream_request(
     usage_session_key: String,
     usage_manager: Arc<VirtualCacheUsageManager>,
     request_ttl: CacheTtl,
+    pdf_debug: Option<PdfDebugInfo>,
     _permit: GlobalRequestPermit,
 ) -> Response {
     let request_started_at = Instant::now();
@@ -1428,6 +1474,9 @@ async fn handle_non_stream_request(
     });
 
     log_opus47_nonstream_diagnostics(&opus47_diagnostics, request_started_at);
+    if let Some(pdf_debug) = pdf_debug.as_ref() {
+        log_pdf_response_diagnostics(pdf_debug, &text_content);
+    }
 
     (StatusCode::OK, Json(response_body)).into_response()
 }
@@ -1778,6 +1827,7 @@ pub async fn post_messages_cc(
 
     let session_affinity_key = conversion_result.session_affinity_key;
     let tool_name_map = conversion_result.tool_name_map;
+    let pdf_debug = conversion_result.pdf_debug;
 
     let _permit = match state
         .runtime_limiter
@@ -1806,6 +1856,7 @@ pub async fn post_messages_cc(
             usage_session_key,
             state.virtual_cache_usage.clone(),
             request_ttl,
+            pdf_debug,
             _permit,
         )
         .await
@@ -1829,6 +1880,7 @@ pub async fn post_messages_cc(
             usage_session_key,
             state.virtual_cache_usage.clone(),
             request_ttl,
+            pdf_debug,
             _permit,
         )
         .await
@@ -1855,6 +1907,7 @@ async fn handle_stream_request_buffered(
     usage_session_key: String,
     usage_manager: Arc<VirtualCacheUsageManager>,
     request_ttl: CacheTtl,
+    pdf_debug: Option<PdfDebugInfo>,
     permit: GlobalRequestPermit,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
@@ -1911,7 +1964,7 @@ async fn handle_stream_request_buffered(
     ));
 
     // 创建缓冲 SSE 流
-    let stream = create_buffered_sse_stream(response, ctx, permit);
+    let stream = create_buffered_sse_stream(response, ctx, pdf_debug, permit);
 
     // 返回 SSE 响应
     Response::builder()
@@ -1933,6 +1986,7 @@ async fn handle_stream_request_buffered(
 fn create_buffered_sse_stream(
     response: crate::kiro::provider::LeasedResponse,
     ctx: BufferedStreamContext,
+    pdf_debug: Option<PdfDebugInfo>,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
@@ -1961,6 +2015,8 @@ fn create_buffered_sse_stream(
             0usize,
             0usize,
             stream_started_at,
+            pdf_debug,
+            String::new(),
         ),
         |(
             mut body_stream,
@@ -1979,6 +2035,8 @@ fn create_buffered_sse_stream(
             mut raw_frame_index,
             mut raw_event_index,
             stream_started_at,
+            pdf_debug,
+            mut assistant_text,
         )| async move {
             if finished {
                 return None;
@@ -1994,7 +2052,7 @@ fn create_buffered_sse_stream(
                     _ = ping_interval.tick() => {
                         tracing::trace!("发送 ping 保活事件（缓冲模式）");
                         let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)));
+                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, assistant_text)));
                     }
 
                     // 然后处理数据流
@@ -2059,6 +2117,9 @@ fn create_buffered_sse_stream(
                                                     );
                                                 }
                                                 log_unknown_kiro_event(&event);
+                                                if let (Some(_), Event::AssistantResponse(resp)) = (pdf_debug.as_ref(), &event) {
+                                                    assistant_text.push_str(&resp.content);
+                                                }
                                                 // 缓冲事件（复用 StreamContext 的处理逻辑）
                                                 ctx.process_and_buffer(&event);
                                             }
@@ -2076,22 +2137,28 @@ fn create_buffered_sse_stream(
                                 // 发生错误，完成处理并返回所有事件
                                 let all_events = ctx.finish_and_get_all_events();
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
+                                if let Some(pdf_debug) = pdf_debug.as_ref() {
+                                    log_pdf_response_diagnostics(pdf_debug, &assistant_text);
+                                }
                                 let bytes: Vec<Result<Bytes, Infallible>> = all_events
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, assistant_text)));
                             }
                             None => {
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
                                 drop(permit);
                                 let all_events = ctx.finish_and_get_all_events_with_usage_commit();
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
+                                if let Some(pdf_debug) = pdf_debug.as_ref() {
+                                    log_pdf_response_diagnostics(pdf_debug, &assistant_text);
+                                }
                                 let bytes: Vec<Result<Bytes, Infallible>> = all_events
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, assistant_text)));
                             }
                         }
                     }
