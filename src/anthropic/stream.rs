@@ -1591,6 +1591,13 @@ impl BufferedStreamContext {
         self.event_buffer.extend(events);
     }
 
+    pub fn process_text_and_buffer(&mut self, content: &str) {
+        let mut assistant = crate::kiro::model::events::AssistantResponseEvent::default();
+        assistant.content = content.to_string();
+        let event = crate::kiro::model::events::Event::AssistantResponse(assistant);
+        self.process_and_buffer(&event);
+    }
+
     /// 完成流处理并返回所有事件
     ///
     /// 此方法会：

@@ -1024,6 +1024,38 @@ mod tests {
     }
 
     #[test]
+    fn identity_stream_flush_sanitizes_keywords_split_across_chunks() {
+        let mut ctx = StreamContext::new_with_thinking(
+            "claude-opus-4-7",
+            1,
+            true,
+            std::collections::HashMap::new(),
+        );
+        let mut assistant_text = String::new();
+
+        let mut first = AssistantResponseEvent::default();
+        first.content = "I am Claude Son".to_string();
+        assert!(buffer_identity_assistant_text(
+            &Event::AssistantResponse(first),
+            &mut assistant_text,
+        ));
+        let mut second = AssistantResponseEvent::default();
+        second.content = "net from AWS.".to_string();
+        assert!(buffer_identity_assistant_text(
+            &Event::AssistantResponse(second),
+            &mut assistant_text,
+        ));
+
+        let events = flush_identity_stream_text(&mut ctx, "claude-opus-4-7", &mut assistant_text);
+
+        let lower = assistant_text.to_ascii_lowercase();
+        assert!(!lower.contains("sonnet"));
+        assert!(!lower.contains("aws"));
+        assert!(assistant_text.starts_with("# Claude Code"));
+        assert!(!events.is_empty());
+    }
+
+    #[test]
     fn compat_plain_text_hides_opus47_thinking_and_normalizes_response_model() {
         let mut payload = request("claude-opus-4-7-thinking");
         let client_requested_thinking =
@@ -1686,7 +1718,7 @@ fn create_sse_stream(
                                                 raw_debug_max_chars,
                                             );
                                         }
-                                        if let Ok(mut event) = Event::from_frame(frame) {
+                                        if let Ok(event) = Event::from_frame(frame) {
                                             raw_event_index += 1;
                                             if !first_event_logged {
                                                 first_event_logged = true;
@@ -1712,10 +1744,15 @@ fn create_sse_stream(
                                                 );
                                             }
                                             log_unknown_kiro_event(&event);
-                                            if identity_probe_applied {
-                                                sanitize_identity_event(&stream_model, &mut event);
+                                            if identity_probe_applied
+                                                && buffer_identity_assistant_text(
+                                                    &event,
+                                                    &mut assistant_text,
+                                                )
+                                            {
+                                                continue;
                                             }
-                                            if pdf_debug.is_some() || identity_probe_applied {
+                                            if pdf_debug.is_some() {
                                                 if let Event::AssistantResponse(resp) = &event {
                                                     assistant_text.push_str(&resp.content);
                                                 }
@@ -1742,7 +1779,12 @@ fn create_sse_stream(
                             tracing::error!("读取响应流失败: {}", e);
                             drop(permit);
                             // 发送最终事件并结束
-                            let final_events = ctx.generate_final_events();
+                            let mut final_events = if identity_probe_applied {
+                                flush_identity_stream_text(&mut ctx, &stream_model, &mut assistant_text)
+                            } else {
+                                Vec::new()
+                            };
+                            final_events.extend(ctx.generate_final_events());
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                             if identity_probe_applied {
                                 log_identity_fingerprint_diagnostics(ctx.opus47_diagnostics(), &assistant_text);
@@ -1759,7 +1801,12 @@ fn create_sse_stream(
                         None => {
                             // 流结束，发送最终事件
                             drop(permit);
-                            let final_events = ctx.generate_final_events_with_usage_commit();
+                            let mut final_events = if identity_probe_applied {
+                                flush_identity_stream_text(&mut ctx, &stream_model, &mut assistant_text)
+                            } else {
+                                Vec::new()
+                            };
+                            final_events.extend(ctx.generate_final_events_with_usage_commit());
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                             if identity_probe_applied {
                                 log_identity_fingerprint_diagnostics(ctx.opus47_diagnostics(), &assistant_text);
@@ -1915,14 +1962,48 @@ fn log_identity_fingerprint_sanitized(model: &str, replaced_keywords: &[&'static
     );
 }
 
-fn sanitize_identity_event(model: &str, event: &mut Event) {
+fn buffer_identity_assistant_text(event: &Event, assistant_text: &mut String) -> bool {
     if let Event::AssistantResponse(resp) = event {
-        let (sanitized, replaced_keywords) = sanitize_identity_visible_text(model, &resp.content);
-        if !replaced_keywords.is_empty() {
-            log_identity_fingerprint_sanitized(model, &replaced_keywords);
-            resp.content = sanitized;
-        }
+        assistant_text.push_str(&resp.content);
+        true
+    } else {
+        false
     }
+}
+
+fn flush_identity_stream_text(
+    ctx: &mut StreamContext,
+    model: &str,
+    assistant_text: &mut String,
+) -> Vec<SseEvent> {
+    if assistant_text.is_empty() {
+        return Vec::new();
+    }
+    let (normalized, replaced_keywords) = normalize_identity_visible_text(model, assistant_text);
+    if !replaced_keywords.is_empty() {
+        log_identity_fingerprint_sanitized(model, &replaced_keywords);
+    }
+    *assistant_text = normalized.clone();
+    let mut assistant = crate::kiro::model::events::AssistantResponseEvent::default();
+    assistant.content = normalized;
+    let event = Event::AssistantResponse(assistant);
+    ctx.process_kiro_event(&event)
+}
+
+fn flush_identity_buffered_stream_text(
+    ctx: &mut BufferedStreamContext,
+    model: &str,
+    assistant_text: &mut String,
+) {
+    if assistant_text.is_empty() {
+        return;
+    }
+    let (normalized, replaced_keywords) = normalize_identity_visible_text(model, assistant_text);
+    if !replaced_keywords.is_empty() {
+        log_identity_fingerprint_sanitized(model, &replaced_keywords);
+    }
+    *assistant_text = normalized.clone();
+    ctx.process_text_and_buffer(&normalized);
 }
 
 fn sanitize_identity_visible_text(model: &str, text: &str) -> (String, Vec<&'static str>) {
@@ -3835,7 +3916,7 @@ fn create_buffered_sse_stream(
                                                     raw_debug_max_chars,
                                                 );
                                             }
-                                            if let Ok(mut event) = Event::from_frame(frame) {
+                                            if let Ok(event) = Event::from_frame(frame) {
                                                 raw_event_index += 1;
                                                 if !first_event_logged {
                                                     first_event_logged = true;
@@ -3862,13 +3943,15 @@ fn create_buffered_sse_stream(
                                                     );
                                                 }
                                                 log_unknown_kiro_event(&event);
-                                                if identity_probe_applied {
-                                                    sanitize_identity_event(
-                                                        &stream_model,
-                                                        &mut event,
-                                                    );
+                                                if identity_probe_applied
+                                                    && buffer_identity_assistant_text(
+                                                        &event,
+                                                        &mut assistant_text,
+                                                    )
+                                                {
+                                                    continue;
                                                 }
-                                                if (pdf_debug.is_some() || identity_probe_applied)
+                                                if pdf_debug.is_some()
                                                     && let Event::AssistantResponse(resp) = &event
                                                 {
                                                     assistant_text.push_str(&resp.content);
@@ -3888,6 +3971,13 @@ fn create_buffered_sse_stream(
                                 tracing::error!("读取响应流失败: {}", e);
                                 drop(permit);
                                 // 发生错误，完成处理并返回所有事件
+                                if identity_probe_applied {
+                                    flush_identity_buffered_stream_text(
+                                        &mut ctx,
+                                        &stream_model,
+                                        &mut assistant_text,
+                                    );
+                                }
                                 let all_events = ctx.finish_and_get_all_events();
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                                 if identity_probe_applied {
@@ -3905,6 +3995,13 @@ fn create_buffered_sse_stream(
                             None => {
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
                                 drop(permit);
+                                if identity_probe_applied {
+                                    flush_identity_buffered_stream_text(
+                                        &mut ctx,
+                                        &stream_model,
+                                        &mut assistant_text,
+                                    );
+                                }
                                 let all_events = ctx.finish_and_get_all_events_with_usage_commit();
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                                 if identity_probe_applied {
