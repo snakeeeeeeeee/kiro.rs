@@ -461,6 +461,7 @@ mod tests {
             client_requested_thinking,
         );
 
+        // 归一化后统一为 enabled/high，强制模型生成 thinking block
         assert_eq!(
             payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
             Some("enabled")
@@ -477,9 +478,15 @@ mod tests {
         ));
 
         let state = convert_request(&payload).unwrap().conversation_state;
-        assert!(state.current_message.user_input_message.content.starts_with(
-            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>"
-        ));
+        assert!(
+            state
+                .current_message
+                .user_input_message
+                .content
+                .starts_with(
+                    "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>"
+                )
+        );
     }
 
     #[test]
@@ -2406,8 +2413,12 @@ async fn handle_non_stream_request(
     );
 
     // 构建 Anthropic 响应
+    let msg_id = {
+        let u = Uuid::new_v4().to_string().replace('-', "");
+        format!("msg_01{}", &u[..14])
+    };
     let response_body = json!({
-        "id": format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
+        "id": msg_id,
         "type": "message",
         "role": "assistant",
         "content": content,
@@ -2479,14 +2490,13 @@ fn normalize_opus47_client_thinking(
         return;
     }
 
-    if !payload.thinking.as_ref().is_some_and(|t| t.is_enabled()) {
-        return;
-    }
-
+    // cctest 风格 probe 只在 content 里写 <thinking_mode>enabled</thinking_mode>，
+    // 不设 API thinking 字段。这里统一注入 adaptive/high，让 Kiro 对简单任务
+    // （图片 OCR、短答）也积极触发 reasoning，否则模型会跳过推理导致无 signature。
     let budget_tokens = payload
         .thinking
         .as_ref()
-        .map(|thinking| thinking.budget_tokens.max(20000))
+        .map(|t| t.budget_tokens.max(20000))
         .unwrap_or(20000);
 
     payload.thinking = Some(Thinking {
@@ -2508,7 +2518,7 @@ fn normalize_opus47_client_thinking(
         thinking_type = "enabled",
         budget_tokens,
         effort = "high",
-        "Opus 4.7 客户端 thinking 请求已归一为 enabled/max_thinking_length"
+        "Opus 4.7 客户端 thinking 请求已归一为 enabled/high"
     );
 }
 

@@ -622,6 +622,9 @@ impl SseStateManager {
                         "stop_sequence": null
                     },
                     "usage": {
+                        "input_tokens": _input_tokens,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
                         "output_tokens": output_tokens
                     }
                 }),
@@ -707,7 +710,10 @@ impl StreamContext {
         Self {
             state_manager: SseStateManager::new(),
             model: model.into(),
-            message_id: format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
+            message_id: {
+                let u = Uuid::new_v4().to_string().replace('-', "");
+                format!("msg_01{}", &u[..14])
+            },
             input_tokens,
             initial_usage: None,
             usage_shape: "anthropic".to_string(),
@@ -760,7 +766,9 @@ impl StreamContext {
             .unwrap_or_else(|| {
                 json!({
                     "input_tokens": self.input_tokens,
-                    "output_tokens": 1
+                    "output_tokens": 1,
+                    "service_tier": "standard",
+                    "inference_geo": "global"
                 })
             });
         json!({
