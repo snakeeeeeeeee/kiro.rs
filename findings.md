@@ -213,3 +213,11 @@
 - Against local Docker with current `cc_max_like` settings, the five scripted turns all returned `UNAVAILABLE`, so the script reported no leak signal.
 - Additional direct probes that asked for the gateway-added identity compatibility text did not reveal the internal `身份兼容说明` prefix or proxy/Kiro/AWS/Amazon details.
 - Caveat: the script treats `Claude Code` as a leak pattern in general. Our identity normalization intentionally exposes Claude Code as public identity wording for identity probes, so future leak analysis should distinguish public identity口径 from private instruction leakage.
+
+## Signed-Thinking History Replay Direction
+- The cctest/hvoy signature failure is not solved by current-response pass-through alone. Logs can show `signature_seen=true` and `signature_exposed_to_client=true`, while a detector can still fail if its next request replays the previous assistant thinking block and the proxy drops or flattens the signature in history.
+- The useful live Kiro history shape is `assistantResponseMessage.reasoningContent.reasoningText.{text,signature}`. Local Docker proved this shape is validated by the upstream service: replaying a real upstream signature returned HTTP 200, while changing only the signature tail returned upstream `400 Invalid signature in thinking block`.
+- This makes `history_experiment` the right next direction for signature validation, still with strict no-fake-signature rules. If the detector sends unsigned thinking history, the proxy should not invent a signature.
+- Claude 4.7 can use an empty thinking string with a non-empty signature for continuity. The history experiment therefore preserves signed thinking when the signature is non-empty even if `thinking` text is empty.
+- Consecutive assistant-history merging must not concatenate multiple signed-thinking blocks under one signature. The current implementation only carries one reasoning block through a merge and logs/drop-merges if more than one would need combining.
+- Simple one-shot requests can legitimately return text-only despite `thinking.enabled`; those runs will show `signature_seen=false` and cannot prove or disprove signature history behavior. Multi-turn replay tests are more diagnostic.

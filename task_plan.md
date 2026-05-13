@@ -27,6 +27,8 @@ Current extension: implement an Opus 4.7 detection profile based on public/local
 
 Current extension: tighten Opus 4.7 identity-probe compatibility by logging skip reasons and stripping tool schema from identity-only probes to reduce model-family contamination.
 
+Current extension: implement gated Opus 4.7 signed-thinking history replay so real upstream `thinking+signature` blocks can be returned to Kiro as assistant `reasoningContent` during explicit `history_experiment` testing.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -54,6 +56,7 @@ Current extension: tighten Opus 4.7 identity-probe compatibility by logging skip
 - [completed] Implement Opus 4.7 detection profile preset, identity probe compatibility, signed-thinking cache diagnostics, Admin controls, and local fingerprint tests
 - [completed] Add identity-probe skip diagnostics and clear tool definitions for matched identity probes
 - [completed] Run local Docker Opus 4.7 probes and add identity visible-text sanitization for matched identity probes
+- [completed] Add gated signed-thinking history replay and validate true/false signature round trips locally
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -76,7 +79,7 @@ Current extension: tighten Opus 4.7 identity-probe compatibility by logging skip
 - Same-account retries are rule-driven and happen before account cooldown/failover classification. The default rule covers `429` + `INSUFFICIENT_MODEL_CAPACITY`; after configured attempts are exhausted, the existing cooldown/failover logic runs unchanged.
 - The Opus 4.7 `cc_max_like` detection profile applies effective presets without mutating the stored individual toggles: Clean Probe off, plain stabilization off, models shape `aggregator`, usage shape `flat`, thinking model `native`, ANTML clarify effective, PDF/structured fixes retained.
 - Identity probe compatibility is scoped to `cc_max_like`, plain Opus 4.7, and single-message detector-like prompts. It rewrites only the current user message and does not apply to PDF probes, structured-output requests, forced tool-use requests, tool-result turns, or long conversations.
-- Signed-thinking support must not fabricate Anthropic signatures. Current implementation only observes/caches real upstream signatures in `diagnose`/`cache_only`; `history_experiment` remains an explicit gated entry for future shape tests.
+- Signed-thinking support must not fabricate Anthropic signatures. `diagnose`/`cache_only` only observe or cache real upstream signatures; explicit `history_experiment` preserves client-returned assistant `thinking+signature` blocks as Kiro `reasoningContent.reasoningText` history for live round-trip testing.
 - For `cc_max_like` identity probes, tool definitions are removed from the current Kiro user context after matching. Forced tool-use and tool-result turns are still excluded, so tool-call regression probes keep their normal behavior.
 - For matched `cc_max_like` identity probes, visible assistant text is sanitized as a final narrow fallback for `kiro/aws/amazon` leakage and wrong model-family words. This does not alter signed-thinking `thinking` or `signature` blocks and does not run for PDF, structured-output, tool, or ordinary requests.
 - For matched non-stream `cc_max_like` identity probes, visible assistant text is now normalized to the official Claude Code identity口径 after upstream response. This is intentionally narrower than global response rewriting and is based on stable endpoint behavior plus Anthropic's public Claude Code positioning.

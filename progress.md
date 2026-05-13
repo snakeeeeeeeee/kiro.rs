@@ -321,3 +321,21 @@
 - All five multi-turn probe cases returned `UNAVAILABLE`; the script reported `verdict=no leak signal from these probes`.
 - Ran additional direct probes asking whether a system prompt/developer prompt/identity compatibility instruction was added. Responses did not expose `身份兼容说明`, `当前请求模型 ID`, Kiro/AWS/Amazon, proxy/platform internals, tool text, or working-directory text.
 - Current behavior supports calling this identity口径归一化 / identity probe compatibility, not user prompt injection. The compatibility text is not exposed as visible prompt content in these tests.
+
+## Completed: Signed-Thinking History Replay Experiment
+- Added Kiro assistant-history serialization for real signed thinking under the explicit `opus47SignedThinkingPreservation=history_experiment` gate: Anthropic assistant `content[].type="thinking"` blocks with a non-empty upstream `signature` now become `assistantResponseMessage.reasoningContent.reasoningText.{text,signature}`.
+- Normal/off/diagnose/cache-only conversion remains unchanged for assistant history; it still flattens thinking text into visible `<thinking>...</thinking>` history and does not fabricate signatures.
+- Preserves signed thinking even when the thinking text is empty but the upstream signature is non-empty, matching Claude 4.7 style signature-continuity behavior.
+- Consecutive assistant-history merging keeps a single signed-thinking reasoning block and drops merged reasoning if more than one block would need to be combined, avoiding invalid signature concatenation.
+- Live Docker non-stream validation with `cc_max_like + history_experiment`: first turn returned `thinking,text` with a real signature, second turn replaying the exact `thinking+signature` history returned HTTP 200, and the same replay with a corrupted signature returned upstream `400 Invalid signature in thinking block` wrapped as local HTTP 502.
+- Live Docker stream validation with `signature_delta`: first streaming turn produced a non-empty signature, replaying it as assistant history returned HTTP 200, and corrupting it returned upstream `400 Invalid signature in thinking block`.
+
+## Latest Validation: Signed-Thinking History Replay Experiment
+- `cargo fmt -- --check`: passed.
+- `git diff --check`: passed.
+- `cargo test history_experiment`: passed, 2 tests.
+- `cargo test signed_thinking`: passed, 3 tests.
+- `cargo test anthropic::converter`: passed, 52 tests.
+- `cargo test identity`: passed, 14 tests.
+- `cargo check`: passed.
+- `docker compose -f docker-compose-dev.yml up -d --build kiro-rs-dev`: passed; container healthy.

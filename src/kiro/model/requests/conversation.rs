@@ -303,6 +303,23 @@ pub struct AssistantMessage {
     /// 工具使用列表
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_uses: Option<Vec<ToolUseEntry>>,
+    /// Claude 4 signed-thinking history. Experimental: only populated by
+    /// explicitly gated Anthropic compatibility paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<ReasoningContent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningContent {
+    pub reasoning_text: ReasoningText,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningText {
+    pub text: String,
+    pub signature: String,
 }
 
 impl AssistantMessage {
@@ -311,12 +328,27 @@ impl AssistantMessage {
         Self {
             content: content.into(),
             tool_uses: None,
+            reasoning_content: None,
         }
     }
 
     /// 设置工具使用
     pub fn with_tool_uses(mut self, tool_uses: Vec<ToolUseEntry>) -> Self {
         self.tool_uses = Some(tool_uses);
+        self
+    }
+
+    pub fn with_reasoning_content(
+        mut self,
+        thinking: impl Into<String>,
+        signature: impl Into<String>,
+    ) -> Self {
+        self.reasoning_content = Some(ReasoningContent {
+            reasoning_text: ReasoningText {
+                text: thinking.into(),
+                signature: signature.into(),
+            },
+        });
         self
     }
 }

@@ -2574,9 +2574,13 @@ fn conversion_options_for_request(
     requested_model: &str,
     settings: &crate::kiro::settings::RuntimeSettings,
 ) -> ConversionOptions {
+    let signed_thinking_mode =
+        SignedThinkingMode::from_setting(settings.opus47_signed_thinking_preservation.as_str());
     ConversionOptions {
         clean_probe_mode: is_plain_opus47_model_name(requested_model)
             && crate::kiro::settings::effective_opus47_clean_probe_mode(settings) == "clean",
+        signed_thinking_history_experiment: is_opus47_model_name(requested_model)
+            && signed_thinking_mode == SignedThinkingMode::HistoryExperiment,
     }
 }
 

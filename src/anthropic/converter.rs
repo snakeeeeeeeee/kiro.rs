@@ -171,6 +171,7 @@ pub struct ConversionResult {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConversionOptions {
     pub clean_probe_mode: bool,
+    pub signed_thinking_history_experiment: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1875,7 +1876,7 @@ fn build_history(
         if msg.role == "user" {
             // 先处理累积的 assistant 消息
             if !assistant_buffer.is_empty() {
-                let merged = merge_assistant_messages(&assistant_buffer, tool_name_map)?;
+                let merged = merge_assistant_messages(&assistant_buffer, tool_name_map, options)?;
                 history.push(Message::Assistant(merged));
                 assistant_buffer.clear();
             }
@@ -1894,7 +1895,7 @@ fn build_history(
 
     // 处理末尾累积的 assistant 消息
     if !assistant_buffer.is_empty() {
-        let merged = merge_assistant_messages(&assistant_buffer, tool_name_map)?;
+        let merged = merge_assistant_messages(&assistant_buffer, tool_name_map, options)?;
         history.push(Message::Assistant(merged));
     }
 
@@ -1952,8 +1953,10 @@ fn merge_user_messages(
 fn convert_assistant_message(
     msg: &super::types::Message,
     tool_name_map: &mut HashMap<String, String>,
+    options: ConversionOptions,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     let mut thinking_content = String::new();
+    let mut thinking_signature: Option<String> = None;
     let mut text_content = String::new();
     let mut tool_uses = Vec::new();
 
@@ -1968,6 +1971,11 @@ fn convert_assistant_message(
                         "thinking" => {
                             if let Some(thinking) = block.thinking {
                                 thinking_content.push_str(&thinking);
+                            }
+                            if let Some(signature) = block.signature {
+                                if !signature.trim().is_empty() {
+                                    thinking_signature = Some(signature);
+                                }
                             }
                         }
                         "text" => {
@@ -1994,22 +2002,42 @@ fn convert_assistant_message(
     // 组合 thinking 和 text 内容
     // 格式: <thinking>思考内容</thinking>\n\ntext内容
     // 注意: Kiro API 要求 content 字段不能为空，当只有 tool_use 时需要占位符
-    let final_content = if !thinking_content.is_empty() {
-        if !text_content.is_empty() {
-            format!(
-                "<thinking>{}</thinking>\n\n{}",
-                thinking_content, text_content
-            )
+    let preserve_signed_thinking = options.signed_thinking_history_experiment
+        && thinking_signature
+            .as_deref()
+            .is_some_and(|signature| !signature.trim().is_empty());
+
+    let final_content =
+        if preserve_signed_thinking && text_content.is_empty() && !tool_uses.is_empty() {
+            " ".to_string()
+        } else if preserve_signed_thinking {
+            text_content
+        } else if !thinking_content.is_empty() {
+            if !text_content.is_empty() {
+                format!(
+                    "<thinking>{}</thinking>\n\n{}",
+                    thinking_content, text_content
+                )
+            } else {
+                format!("<thinking>{}</thinking>", thinking_content)
+            }
+        } else if text_content.is_empty() && !tool_uses.is_empty() {
+            " ".to_string()
         } else {
-            format!("<thinking>{}</thinking>", thinking_content)
-        }
-    } else if text_content.is_empty() && !tool_uses.is_empty() {
-        " ".to_string()
-    } else {
-        text_content
-    };
+            text_content
+        };
 
     let mut assistant = AssistantMessage::new(final_content);
+    if preserve_signed_thinking {
+        let signature = thinking_signature.expect("checked above");
+        tracing::info!(
+            target: "kiro_rs::metrics",
+            thinking_chars = thinking_content.chars().count(),
+            signature_chars = signature.chars().count(),
+            "signed_thinking_history_experiment_preserved"
+        );
+        assistant = assistant.with_reasoning_content(thinking_content, signature);
+    }
     if !tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(tool_uses);
     }
@@ -2024,20 +2052,31 @@ fn convert_assistant_message(
 fn merge_assistant_messages(
     messages: &[&super::types::Message],
     tool_name_map: &mut HashMap<String, String>,
+    options: ConversionOptions,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     assert!(!messages.is_empty());
     if messages.len() == 1 {
-        return convert_assistant_message(messages[0], tool_name_map);
+        return convert_assistant_message(messages[0], tool_name_map, options);
     }
 
     let mut all_tool_uses: Vec<ToolUseEntry> = Vec::new();
     let mut content_parts: Vec<String> = Vec::new();
+    let mut preserved_reasoning = None;
+    let mut reasoning_block_count = 0usize;
 
     for msg in messages {
-        let converted = convert_assistant_message(msg, tool_name_map)?;
+        let converted = convert_assistant_message(msg, tool_name_map, options)?;
         let am = converted.assistant_response_message;
         if !am.content.trim().is_empty() {
             content_parts.push(am.content);
+        }
+        if let Some(reasoning) = am.reasoning_content {
+            reasoning_block_count += 1;
+            if reasoning_block_count == 1 {
+                preserved_reasoning = Some(reasoning);
+            } else {
+                preserved_reasoning = None;
+            }
         }
         if let Some(tus) = am.tool_uses {
             all_tool_uses.extend(tus);
@@ -2051,6 +2090,15 @@ fn merge_assistant_messages(
     };
 
     let mut assistant = AssistantMessage::new(content);
+    if reasoning_block_count == 1 {
+        assistant.reasoning_content = preserved_reasoning;
+    } else if reasoning_block_count > 1 {
+        tracing::warn!(
+            target: "kiro_rs::metrics",
+            reasoning_block_count,
+            "signed_thinking_history_experiment_dropped_merged_reasoning"
+        );
+    }
     if !all_tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(all_tool_uses);
     }
@@ -2604,6 +2652,7 @@ startxref
             &req,
             ConversionOptions {
                 clean_probe_mode: true,
+                ..Default::default()
             },
         )
         .unwrap()
@@ -2660,6 +2709,7 @@ startxref
             &req,
             ConversionOptions {
                 clean_probe_mode: true,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -3316,7 +3366,8 @@ startxref
             ]),
         };
 
-        let result = convert_assistant_message(&msg, &mut HashMap::new()).expect("应该成功转换");
+        let result = convert_assistant_message(&msg, &mut HashMap::new(), Default::default())
+            .expect("应该成功转换");
 
         // 验证 content 不为空（使用占位符）
         assert!(
@@ -3351,7 +3402,8 @@ startxref
             ]),
         };
 
-        let result = convert_assistant_message(&msg, &mut HashMap::new()).expect("应该成功转换");
+        let result = convert_assistant_message(&msg, &mut HashMap::new(), Default::default())
+            .expect("应该成功转换");
 
         // 验证 content 使用原始文本（不是占位符）
         assert_eq!(
@@ -3464,7 +3516,8 @@ startxref
         };
 
         let messages: Vec<&AnthropicMessage> = vec![&msg1, &msg2];
-        let result = merge_assistant_messages(&messages, &mut HashMap::new()).expect("合并应成功");
+        let result = merge_assistant_messages(&messages, &mut HashMap::new(), Default::default())
+            .expect("合并应成功");
 
         let content = &result.assistant_response_message.content;
         assert!(content.contains("<thinking>"), "应包含 thinking 标签");
@@ -3479,6 +3532,80 @@ startxref
             .expect("应有 tool_uses");
         assert_eq!(tool_uses.len(), 1);
         assert_eq!(tool_uses[0].tool_use_id, "toolu_01ABC");
+    }
+
+    #[test]
+    fn test_history_experiment_preserves_signed_thinking_reasoning_content() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let msg = AnthropicMessage {
+            role: "assistant".to_string(),
+            content: serde_json::json!([
+                {"type": "thinking", "thinking": "signed thought", "signature": "sig_real"},
+                {"type": "text", "text": "answer"}
+            ]),
+        };
+
+        let normal = convert_assistant_message(&msg, &mut HashMap::new(), Default::default())
+            .expect("normal conversion should succeed");
+        assert!(
+            normal
+                .assistant_response_message
+                .content
+                .contains("<thinking>signed thought</thinking>")
+        );
+        assert!(
+            normal
+                .assistant_response_message
+                .reasoning_content
+                .is_none()
+        );
+
+        let experimental = convert_assistant_message(
+            &msg,
+            &mut HashMap::new(),
+            ConversionOptions {
+                signed_thinking_history_experiment: true,
+                ..Default::default()
+            },
+        )
+        .expect("experimental conversion should succeed");
+        assert_eq!(experimental.assistant_response_message.content, "answer");
+        let reasoning = experimental
+            .assistant_response_message
+            .reasoning_content
+            .expect("signed thinking should be preserved");
+        assert_eq!(reasoning.reasoning_text.text, "signed thought");
+        assert_eq!(reasoning.reasoning_text.signature, "sig_real");
+    }
+
+    #[test]
+    fn test_history_experiment_preserves_empty_thinking_with_signature() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let msg = AnthropicMessage {
+            role: "assistant".to_string(),
+            content: serde_json::json!([
+                {"type": "thinking", "thinking": "", "signature": "sig_real"},
+                {"type": "text", "text": "answer"}
+            ]),
+        };
+
+        let experimental = convert_assistant_message(
+            &msg,
+            &mut HashMap::new(),
+            ConversionOptions {
+                signed_thinking_history_experiment: true,
+                ..Default::default()
+            },
+        )
+        .expect("experimental conversion should succeed");
+        let reasoning = experimental
+            .assistant_response_message
+            .reasoning_content
+            .expect("signed empty thinking should be preserved");
+        assert_eq!(reasoning.reasoning_text.text, "");
+        assert_eq!(reasoning.reasoning_text.signature, "sig_real");
     }
 
     #[test]
