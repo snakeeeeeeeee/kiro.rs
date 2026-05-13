@@ -360,6 +360,8 @@ mod tests {
     #[test]
     fn plain_opus47_mode_off_does_not_inject_adaptive() {
         let mut payload = request("claude-opus-4-7");
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
         let mode =
             apply_opus47_plain_stabilization(&mut payload, "claude-opus-4-7", &settings("off"));
 
@@ -369,13 +371,16 @@ mod tests {
         assert!(!client_thinking_enabled_for_request(
             "claude-opus-4-7",
             &payload,
-            "native"
+            "native",
+            client_requested_thinking
         ));
     }
 
     #[test]
     fn plain_opus47_adaptive_low_injects_upstream_but_hides_client_thinking() {
         let mut payload = request("claude-opus-4-7");
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
         let mode = apply_opus47_plain_stabilization(
             &mut payload,
             "claude-opus-4-7",
@@ -394,13 +399,38 @@ mod tests {
         assert!(!client_thinking_enabled_for_request(
             "claude-opus-4-7",
             &payload,
-            "native"
+            "native",
+            client_requested_thinking
+        ));
+    }
+
+    #[test]
+    fn plain_opus47_explicit_client_thinking_exposes_thinking() {
+        let mut payload = request("claude-opus-4-7");
+        payload.thinking = Some(Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: 20000,
+        });
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+        let mode =
+            apply_opus47_plain_stabilization(&mut payload, "claude-opus-4-7", &settings("off"));
+
+        assert_eq!(mode, "off");
+        assert!(client_requested_thinking);
+        assert!(client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload,
+            "native",
+            client_requested_thinking
         ));
     }
 
     #[test]
     fn opus47_thinking_keeps_adaptive_high_and_exposes_client_thinking() {
         let mut payload = request("claude-opus-4-7-thinking");
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7-thinking", &payload);
         override_thinking_from_model_name(&mut payload);
         let mode = apply_opus47_plain_stabilization(
             &mut payload,
@@ -420,7 +450,8 @@ mod tests {
         assert!(client_thinking_enabled_for_request(
             "claude-opus-4-7-thinking",
             &payload,
-            "native"
+            "native",
+            client_requested_thinking
         ));
     }
 
@@ -514,12 +545,15 @@ mod tests {
     #[test]
     fn compat_plain_text_hides_opus47_thinking_and_normalizes_response_model() {
         let mut payload = request("claude-opus-4-7-thinking");
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7-thinking", &payload);
         override_thinking_from_model_name(&mut payload);
 
         assert!(!client_thinking_enabled_for_request(
             "claude-opus-4-7-thinking",
             &payload,
-            "plain_text"
+            "plain_text",
+            client_requested_thinking
         ));
         assert_eq!(
             response_model_for_request("claude-opus-4-7-thinking", "plain_text"),
@@ -542,6 +576,7 @@ mod tests {
             1,
             "adaptive_low",
             false,
+            false,
         ));
 
         let events = ctx.process_kiro_event(&Event::ReasoningContent(ReasoningContentEvent {
@@ -562,7 +597,8 @@ mod tests {
 
     #[test]
     fn opus47_diagnostics_counts_visible_and_tool_events() {
-        let mut diagnostics = Opus47Diagnostics::new(true, "claude-opus-4-7", 7, 2, "off", false);
+        let mut diagnostics =
+            Opus47Diagnostics::new(true, "claude-opus-4-7", 7, 2, "off", false, false);
         let mut assistant = AssistantResponseEvent::default();
         assistant.content = "hello".to_string();
         diagnostics.observe_event(&Event::AssistantResponse(assistant));
@@ -611,6 +647,8 @@ pub async fn post_messages(
     };
 
     let requested_model = payload.model.clone();
+    let client_requested_thinking =
+        client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
     let runtime_settings = provider.token_manager().runtime_settings();
@@ -652,8 +690,12 @@ pub async fn post_messages(
     let compat_thinking_model = runtime_settings.compat_thinking_model.clone();
     let compat_usage_shape = runtime_settings.compat_usage_shape.clone();
     let response_model = response_model_for_request(&payload.model, &compat_thinking_model);
-    let client_thinking_enabled =
-        client_thinking_enabled_for_request(&requested_model, &payload, &compat_thinking_model);
+    let client_thinking_enabled = client_thinking_enabled_for_request(
+        &requested_model,
+        &payload,
+        &compat_thinking_model,
+        client_requested_thinking,
+    );
     let opus47_diagnostics_enabled =
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
@@ -736,6 +778,7 @@ pub async fn post_messages(
             input_tokens,
             estimated_uncached_input_tokens,
             client_thinking_enabled,
+            client_requested_thinking,
             response_model.as_str(),
             compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
@@ -760,6 +803,7 @@ pub async fn post_messages(
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
+            client_requested_thinking,
             response_model.as_str(),
             compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
@@ -784,6 +828,7 @@ async fn handle_stream_request(
     input_tokens: i32,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
+    client_requested_thinking: bool,
     response_model: &str,
     usage_shape: &str,
     stabilization_mode: &str,
@@ -835,6 +880,7 @@ async fn handle_stream_request(
         credential_id,
         attempts,
         stabilization_mode,
+        client_requested_thinking,
         client_thinking_enabled,
     ));
     ctx.set_usage_shape(usage_shape);
@@ -1076,6 +1122,7 @@ fn log_opus47_stream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: In
         credential_id = diagnostics.credential_id,
         attempts = diagnostics.attempts,
         stabilization_mode = %diagnostics.stabilization_mode,
+        client_requested_thinking = diagnostics.client_requested_thinking,
         client_thinking_enabled = diagnostics.client_thinking_enabled,
         assistant_response_count = diagnostics.assistant_response_count,
         reasoning_content_count = diagnostics.reasoning_content_count,
@@ -1102,6 +1149,7 @@ fn log_opus47_nonstream_diagnostics(diagnostics: &Opus47Diagnostics, started_at:
         credential_id = diagnostics.credential_id,
         attempts = diagnostics.attempts,
         stabilization_mode = %diagnostics.stabilization_mode,
+        client_requested_thinking = diagnostics.client_requested_thinking,
         client_thinking_enabled = diagnostics.client_thinking_enabled,
         assistant_response_count = diagnostics.assistant_response_count,
         reasoning_content_count = diagnostics.reasoning_content_count,
@@ -1130,6 +1178,7 @@ fn log_opus47_signature_diagnostics(
         model = %diagnostics.model,
         credential_id = diagnostics.credential_id,
         attempts = diagnostics.attempts,
+        client_requested_thinking = diagnostics.client_requested_thinking,
         client_thinking_enabled = diagnostics.client_thinking_enabled,
         reasoning_content_count = diagnostics.reasoning_content_count,
         signature_seen = diagnostics.signature_seen,
@@ -1236,6 +1285,7 @@ async fn handle_non_stream_request(
     estimated_uncached_input_tokens: i32,
     extract_thinking: bool,
     client_thinking_enabled: bool,
+    client_requested_thinking: bool,
     response_model: &str,
     usage_shape: &str,
     stabilization_mode: &str,
@@ -1269,6 +1319,7 @@ async fn handle_non_stream_request(
         credential_id,
         attempts,
         stabilization_mode,
+        client_requested_thinking,
         client_thinking_enabled,
     );
 
@@ -1569,24 +1620,44 @@ fn is_plain_opus47_model_name(model: &str) -> bool {
     )
 }
 
+fn is_thinking_model_name(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().ends_with("-thinking")
+}
+
+fn client_requested_thinking_for_request(model: &str, payload: &MessagesRequest) -> bool {
+    is_thinking_model_name(model)
+        || payload
+            .thinking
+            .as_ref()
+            .map(|t| t.is_enabled())
+            .unwrap_or(false)
+}
+
 fn client_thinking_enabled_for_request(
     model: &str,
     payload: &MessagesRequest,
     compat_thinking_model: &str,
+    client_requested_thinking: bool,
 ) -> bool {
     if compat_thinking_model == "plain_text" && is_opus47_model_name(model) {
         return false;
     }
 
     if is_plain_opus47_model_name(model) {
-        return false;
+        return client_requested_thinking
+            && payload
+                .thinking
+                .as_ref()
+                .map(|t| t.is_enabled())
+                .unwrap_or(false);
     }
 
-    payload
-        .thinking
-        .as_ref()
-        .map(|t| t.is_enabled())
-        .unwrap_or(false)
+    client_requested_thinking
+        && payload
+            .thinking
+            .as_ref()
+            .map(|t| t.is_enabled())
+            .unwrap_or(false)
 }
 
 fn response_model_for_request(model: &str, compat_thinking_model: &str) -> String {
@@ -1751,6 +1822,8 @@ pub async fn post_messages_cc(
     };
 
     let requested_model = payload.model.clone();
+    let client_requested_thinking =
+        client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
     let runtime_settings = provider.token_manager().runtime_settings();
@@ -1792,8 +1865,12 @@ pub async fn post_messages_cc(
     let compat_thinking_model = runtime_settings.compat_thinking_model.clone();
     let compat_usage_shape = runtime_settings.compat_usage_shape.clone();
     let response_model = response_model_for_request(&payload.model, &compat_thinking_model);
-    let client_thinking_enabled =
-        client_thinking_enabled_for_request(&requested_model, &payload, &compat_thinking_model);
+    let client_thinking_enabled = client_thinking_enabled_for_request(
+        &requested_model,
+        &payload,
+        &compat_thinking_model,
+        client_requested_thinking,
+    );
     let opus47_diagnostics_enabled =
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
 
@@ -1876,6 +1953,7 @@ pub async fn post_messages_cc(
             input_tokens,
             estimated_uncached_input_tokens,
             client_thinking_enabled,
+            client_requested_thinking,
             response_model.as_str(),
             compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
@@ -1900,6 +1978,7 @@ pub async fn post_messages_cc(
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
+            client_requested_thinking,
             response_model.as_str(),
             compat_usage_shape.as_str(),
             stabilization_mode.as_str(),
@@ -1927,6 +2006,7 @@ async fn handle_stream_request_buffered(
     estimated_input_tokens: i32,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
+    client_requested_thinking: bool,
     response_model: &str,
     usage_shape: &str,
     stabilization_mode: &str,
@@ -1967,6 +2047,7 @@ async fn handle_stream_request_buffered(
         credential_id,
         attempts,
         stabilization_mode,
+        client_requested_thinking,
         client_thinking_enabled,
     ));
     ctx.set_usage_shape(usage_shape);

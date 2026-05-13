@@ -18,6 +18,7 @@ pub struct Opus47Diagnostics {
     pub credential_id: u64,
     pub attempts: usize,
     pub stabilization_mode: String,
+    pub client_requested_thinking: bool,
     pub client_thinking_enabled: bool,
     pub assistant_response_count: usize,
     pub reasoning_content_count: usize,
@@ -37,6 +38,7 @@ impl Opus47Diagnostics {
             credential_id: 0,
             attempts: 0,
             stabilization_mode: "off".to_string(),
+            client_requested_thinking: false,
             client_thinking_enabled: false,
             assistant_response_count: 0,
             reasoning_content_count: 0,
@@ -55,6 +57,7 @@ impl Opus47Diagnostics {
         credential_id: u64,
         attempts: usize,
         stabilization_mode: impl Into<String>,
+        client_requested_thinking: bool,
         client_thinking_enabled: bool,
     ) -> Self {
         Self {
@@ -63,6 +66,7 @@ impl Opus47Diagnostics {
             credential_id,
             attempts,
             stabilization_mode: stabilization_mode.into(),
+            client_requested_thinking,
             client_thinking_enabled,
             assistant_response_count: 0,
             reasoning_content_count: 0,
