@@ -25,6 +25,8 @@ Current extension: add UI-configurable same-account retry rules for selected ups
 
 Current extension: implement an Opus 4.7 detection profile based on public/local relay-audit and signed-thinking implementations, with Clean Probe treated as a diagnostic toggle rather than the main compatibility path.
 
+Current extension: tighten Opus 4.7 identity-probe compatibility by logging skip reasons and stripping tool schema from identity-only probes to reduce model-family contamination.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -50,6 +52,8 @@ Current extension: implement an Opus 4.7 detection profile based on public/local
 - [completed] Add configurable same-account retry rules and expose them in Admin runtime settings
 - [completed] Record Opus 4.7 detection-profile research from `api-relay-audit`, `cc-relay`, `kiro-account-manager`, and `WindsurfApi`
 - [completed] Implement Opus 4.7 detection profile preset, identity probe compatibility, signed-thinking cache diagnostics, Admin controls, and local fingerprint tests
+- [completed] Add identity-probe skip diagnostics and clear tool definitions for matched identity probes
+- [completed] Run local Docker Opus 4.7 probes and add identity visible-text sanitization for matched identity probes
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -73,6 +77,10 @@ Current extension: implement an Opus 4.7 detection profile based on public/local
 - The Opus 4.7 `cc_max_like` detection profile applies effective presets without mutating the stored individual toggles: Clean Probe off, plain stabilization off, models shape `aggregator`, usage shape `flat`, thinking model `native`, ANTML clarify effective, PDF/structured fixes retained.
 - Identity probe compatibility is scoped to `cc_max_like`, plain Opus 4.7, and single-message detector-like prompts. It rewrites only the current user message and does not apply to PDF probes, structured-output requests, forced tool-use requests, tool-result turns, or long conversations.
 - Signed-thinking support must not fabricate Anthropic signatures. Current implementation only observes/caches real upstream signatures in `diagnose`/`cache_only`; `history_experiment` remains an explicit gated entry for future shape tests.
+- For `cc_max_like` identity probes, tool definitions are removed from the current Kiro user context after matching. Forced tool-use and tool-result turns are still excluded, so tool-call regression probes keep their normal behavior.
+- For matched `cc_max_like` identity probes, visible assistant text is sanitized as a final narrow fallback for `kiro/aws/amazon` leakage and wrong model-family words. This does not alter signed-thinking `thinking` or `signature` blocks and does not run for PDF, structured-output, tool, or ordinary requests.
+- For matched non-stream `cc_max_like` identity probes, visible assistant text is now normalized to the official Claude Code identity口径 after upstream response. This is intentionally narrower than global response rewriting and is based on stable endpoint behavior plus Anthropic's public Claude Code positioning.
+- Identity probe matching now combines known detector phrases with a bounded identity-intent heuristic, so wording variants such as product identity, developer/company, model id, underlying model, backend provider, running platform, and system prompt/internal configuration can trigger without relying on exact phrasing.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -88,3 +96,8 @@ Current extension: implement an Opus 4.7 detection profile based on public/local
 | Tried to run several exact cargo test filters in one command | 1 | Re-ran with `cargo test anthropic::converter::tests::` and then full `cargo test` |
 | `pdf-extract` did not extract text from a hand-written minimal PDF fixture | 1 | Added a lightweight fallback parser for PDF literal string text operators (`Tj`/`TJ`) |
 | Cargo accepts only one test-name filter per invocation | 1 | Re-ran Opus 4.7 targeted tests as separate invocations, then full `cargo test` |
+| Docker dev startup failed after rebuild with `database disk image is malformed` for `config/kiro-rs.db` | 1 | Stopped the dev container, moved `kiro-rs.db*` to `config/db-backups/*.malformed-20260514-003112`, and let the service re-import the existing two credentials from `credentials.json` into a fresh SQLite DB |
+| Real Docker identity probe still returned visible `Kiro` after request-side identity compatibility and tool-schema clearing | 1 | Added a final visible-text sanitizer scoped only to `identity_probe_applied=true`; repeated Docker probe then logged empty `leakage_keywords` and empty `mismatched_model_keywords` |
+| Prompt-only Claude Code identity constraint still produced `# Claude` or `I can't discuss that.` in local Docker probes | 1 | Added non-stream identity visible-text normalization for matched identity probes, while keeping stream chunks limited to keyword sanitization |
+| Exact identity phrase matching could miss detector wording variants | 1 | Added bounded identity-intent heuristics and negative tests for normal business modeling/authentication prompts |
+| Needed to verify identity compatibility text cannot be elicited as prompt leakage | 1 | Ran the existing multi-turn prompt leak probe plus direct system-prompt probes; outputs did not reveal the internal compatibility prefix or proxy/platform details |

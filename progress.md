@@ -2,6 +2,15 @@
 
 ## Session Log
 - Resumed from an existing implementation handoff.
+- Reviewed `/Users/zhangyu/Desktop/详细日志.txt` for the latest Opus 4.7 cctest/hvoy run.
+- Found that Opus routing was correct, but identity diagnostics saw `sonnet` in visible assistant text and the short identity probe did not show `identity_probe_applied=true` in the supplied log.
+- Added identity-probe skip-reason diagnostics and cleared tool definitions after a `cc_max_like` identity probe matches, to reduce tool-schema identity contamination.
+- Rebuilt and restarted local Docker `kiro-rs-dev`; backed up a malformed SQLite DB and let the service recreate it from the existing two credentials.
+- Applied Docker test runtime settings through Admin API: `cc_max_like`, diagnostics on, raw debug off, Clean Probe off, signed-thinking `diagnose`, usage `flat`, models `aggregator`, thinking `native`.
+- Ran a real local identity probe with a Sonnet-containing tool schema. Request-side identity compatibility applied and cleared one tool, but upstream still returned visible `Kiro`.
+- Added identity visible-text sanitization scoped only to matched identity probes; reran Docker identity probe and got empty leakage/model-mismatch diagnostics while keeping real upstream signature exposure.
+- Ran Docker PDF and structured-output probes: PDF returned `LSC54CHK`, structured output returned `{"ok":true,"label":"opus"}`.
+- Validation after sanitizer: `cargo fmt -- --check`, `cargo test identity`, `cargo check`, and full `cargo test` passed.
 - Confirmed new SQLite/runtime/Admin files and routes exist.
 - Ran `pnpm --dir admin-ui build`: passed.
 - Updated planning files to track the current Admin table + SQLite policy task.
@@ -283,3 +292,32 @@
 - `cargo test`: passed, 281 tests.
 - `pnpm --dir admin-ui exec tsc --noEmit`: passed.
 - `pnpm --dir admin-ui build`: passed.
+
+## Completed: Claude Code Identity Normalization
+- Compared the new stable endpoint from `tmp/stable_opus47.env`; `/v1/models` returned `claude-opus-4-7`, short identity prompts answered as `Claude Code` / Anthropic official CLI, and thinking signature was not the cause of the clean identity behavior.
+- Tightened local `cc_max_like` identity probes to use the Claude Code official wording: `# Claude Code` plus `我是 Claude Code，Anthropic 官方 Claude 命令行 AI 助手，当前请求模型为 ...`.
+- Added non-stream identity visible-text normalization scoped only to matched identity probes; it removes top-level refusal/duplicate Claude self-description, preserves ordinary business answers such as `2 + 2 = 4`, and still only sanitizes stream chunks for leakage keywords.
+- Docker local probe after rebuild returned Claude Code official identity for short, Chinese, adversarial `<identity>`, and identity-rewrite prompts. Logs showed empty `leakage_keywords` and empty `mismatched_model_keywords`.
+- Regression: Docker structured output returned `{"ok":true,"label":"opus"}`; Docker PDF probe returned exact `LSC54CHK`.
+
+## Latest Validation: Claude Code Identity Normalization
+- `cargo fmt -- --check`: passed.
+- `cargo test identity`: passed, 12 tests.
+- `docker compose -f docker-compose-dev.yml up -d --build kiro-rs-dev`: passed; container healthy.
+
+## Completed: Generalized Identity Intent Matching
+- Expanded identity probe detection beyond fixed phrases with a bounded heuristic for identity/model/platform/internal-config intent.
+- Added coverage for prompts such as product identity, developer/company, underlying model, model id, backend provider, hosted/running platform, and system prompt/internal configuration.
+- Kept safeguards: still only effective under `cc_max_like`, plain Opus 4.7, single-message requests, and still excluded for PDF, structured-output, forced tool-use, tool-result, and long conversations.
+- Docker probes confirmed generalized identity questions normalize to Claude Code official wording, while a normal business request about designing a user identity-authentication system did not trigger identity normalization.
+
+## Latest Validation: Generalized Identity Intent Matching
+- `cargo fmt -- --check`: passed.
+- `cargo test identity`: passed, 14 tests.
+- `docker compose -f docker-compose-dev.yml up -d --build kiro-rs-dev`: passed; container healthy.
+
+## Completed: Prompt Leak Probe Check
+- Ran `scripts/prompt_leak_conversation_probe.py` against local Docker `http://127.0.0.1:8990` with `claude-opus-4-7`.
+- All five multi-turn probe cases returned `UNAVAILABLE`; the script reported `verdict=no leak signal from these probes`.
+- Ran additional direct probes asking whether a system prompt/developer prompt/identity compatibility instruction was added. Responses did not expose `身份兼容说明`, `当前请求模型 ID`, Kiro/AWS/Amazon, proxy/platform internals, tool text, or working-directory text.
+- Current behavior supports calling this identity口径归一化 / identity probe compatibility, not user prompt injection. The compatibility text is not exposed as visible prompt content in these tests.

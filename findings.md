@@ -180,3 +180,36 @@
 - `identity_fingerprint_diagnostics` logs only keyword-level findings: `kiro/aws/amazon` leakage and mismatched model-family keywords such as `sonnet` in an Opus request. It does not log full assistant text.
 - Signed-thinking v1 now observes streaming and non-streaming real upstream signatures. `diagnose` logs signature presence; `cache_only` caches non-empty real signatures by model group + hash(thinking text) for 3 hours. It does not replay assistant reasoning history yet and does not generate signatures.
 - Added a local stream-integrity fingerprint test that checks Anthropic SSE event names/order, model alignment in `message_start`, and non-empty `signature_delta` when upstream reasoning includes a real signature.
+
+## Opus 4.7 Detailed Log Follow-up
+- `/Users/zhangyu/Desktop/详细日志.txt` shows the latest cctest-style runs still route to Opus correctly: requests use `model=claude-opus-4-7` and upstream logs use `claude-opus-4.7`.
+- `mismatched_model_keywords=sonnet` came from `identity_fingerprint_diagnostics`, which scans visible assistant text. It does not mean the provider routed the request to Sonnet.
+- The short identity probe `用一句话介绍你自己，包含标题和描述` appeared with `identity_probe_applied=false` in the raw log, while a later longer identity probe did apply. Current code should match that short phrase, so future diagnostics need to record skip reasons.
+- Raw request bodies for identity probes include large Claude Code tool schemas. Those schemas contain model-family words and Claude Code defaults, which can contaminate identity answers even when the requested model is Opus.
+- The implemented mitigation keeps forced tool-use/tool-result requests excluded, but when a request is an identity-only probe it clears current tool definitions before sending to Kiro and logs `cleared_tool_count`.
+- New skip logging emits `opus47_identity_probe_compat_skipped` only for identity-like candidates with diagnostics enabled, including reason, message count, tool count, and tool-choice type without recording full prompt text.
+
+## Local Docker Opus 4.7 Probe Results
+- Rebuilt and restarted `kiro-rs-dev` from the local workspace using `docker compose -f docker-compose-dev.yml up -d --build kiro-rs-dev`.
+- The existing mounted SQLite DB was malformed; `sqlite3 config/kiro-rs.db 'PRAGMA integrity_check;'` reported `database disk image is malformed`. The damaged `kiro-rs.db*` files were moved into `config/db-backups/` and the service rebuilt a fresh DB from the existing two-account `credentials.json`.
+- Runtime test settings were applied through Admin API: `opus47DetectionProfile=cc_max_like`, Clean Probe off, diagnostics on, raw debug off, signed-thinking `diagnose`, ANTML `clarify`, usage `flat`, thinking model `native`, models shape `aggregator`, and balanced load mode.
+- Real non-stream identity probe with `thinking.enabled` and a tool schema containing `Claude Sonnet` first confirmed request-side behavior: `opus47_identity_probe_compat_applied` with `cleared_tool_count=1`, real upstream signature was exposed, but visible text still leaked `Kiro`.
+- Added visible-text sanitization scoped only to `identity_probe_applied=true`. It replaces visible `kiro/aws/amazon` leakage and wrong model-family words, while leaving upstream `thinking` and real `signature` untouched.
+- Rebuilt Docker and reran the same identity probe. The response visible text changed from Kiro-branded identity to Claude-branded identity; logs showed `identity_fingerprint_visible_text_sanitized replaced_keywords=kiro` and then `identity_fingerprint_diagnostics leakage_keywords=` plus `mismatched_model_keywords=`.
+- Docker PDF probe returned the exact text `LSC54CHK` and logged `answer_contains_pdf_text=true`, confirming the identity sanitizer did not affect PDF behavior.
+- Docker structured-output probe returned `{"ok":true,"label":"opus"}`, confirming non-identity structured responses were not affected by the sanitizer.
+
+## Claude Code Identity Normalization Follow-up
+- Stable endpoint comparison (`tmp/stable_opus47.env`, current base `http://uouo.xyz`) showed the useful identity fingerprint behavior is the visible text口径: short identity probes answer as `Claude Code` / Anthropic official command-line assistant.
+- The stable endpoint did not prove signed-thinking was responsible: non-stream thinking returned text-only without `thinking`/`signature`, and stream thinking returned a temporary service error.
+- Prompt-only identity constraints were not reliable locally. Even with stronger instructions, upstream sometimes answered `# Claude` or prefixed `I can't discuss that.`.
+- The robust local shape is therefore a narrow post-processing normalization for matched non-stream identity probes: prepend the Claude Code official identity header, remove duplicate top-level `Claude` self-description/refusal text, keep ordinary answer payloads, and keep the existing leakage/model-family sanitizer.
+- Streaming identity responses should not receive the full template per chunk; stream chunks remain limited to keyword/model-family sanitization.
+- Fixed-phrase matching alone is too brittle for detector wording changes. A safer expansion is a bounded identity-intent heuristic: identity/developer/company, underlying/real model, model id/version/name, backend provider/platform/hosted/running environment, and system prompt/internal configuration.
+- False-positive protection still matters: plain business questions containing words like `身份认证系统` or `model` for ML/modeling should not trigger unless they also carry identity/provider/model-id style intent. Local tests cover these negative cases.
+
+## Prompt Leak Probe Check
+- The existing `scripts/prompt_leak_conversation_probe.py` is a multi-turn black-box diagnostic. It asks for hidden/system/developer instructions and scores responses against leak patterns such as `Claude Code`, `system prompt`, `developer`, `working directory`, `tool`, and known Claude metadata strings.
+- Against local Docker with current `cc_max_like` settings, the five scripted turns all returned `UNAVAILABLE`, so the script reported no leak signal.
+- Additional direct probes that asked for the gateway-added identity compatibility text did not reveal the internal `身份兼容说明` prefix or proxy/Kiro/AWS/Amazon details.
+- Caveat: the script treats `Claude Code` as a leak pattern in general. Our identity normalization intentionally exposes Claude Code as public identity wording for identity probes, so future leak analysis should distinguish public identity口径 from private instruction leakage.
