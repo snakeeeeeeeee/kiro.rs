@@ -236,3 +236,12 @@
 - Validation after rollback of unsupported fields: `cargo fmt -- --check` passed; `cargo test` passed with 252 tests; `pnpm --dir admin-ui build` passed.
 - Follow-up after live logs showed `extracted_chars=8`: enhanced PDF fallback to inspect PDF streams, inflate `/FlateDecode` streams, decode literal and hex text strings, and detect UTF-16BE hex strings without BOM.
 - Validation after fallback enhancement: `cargo fmt -- --check` passed; `cargo test` passed with 253 tests; `pnpm --dir admin-ui build` passed.
+
+## Completed: Opus 4.7 Clean Probe Mode
+- Added runtime config field `opus47CleanProbeMode` and persisted/Admin-exposed values `off` / `clean`.
+- Added Admin UI runtime-settings dropdown `Opus 4.7 Clean Probe`.
+- Added `ConversionOptions.clean_probe_mode` and wired `/v1/messages` plus `/cc/v1/messages` conversion through it.
+- Clean mode is scoped to plain Opus 4.7 and avoids local synthetic prompt/history/tool-description additions that can pollute detector probes.
+- Added diagnostics so `opus47_request_thinking_state` logs `clean_probe_mode`, making live cctest/hvoy comparisons explicit.
+- Added config example and README entries for the Opus 4.7 detector/diagnostic settings.
+- Validation: `cargo fmt -- --check`, `cargo test clean_probe -- --nocapture`, `cargo test`, `pnpm --dir admin-ui exec tsc --noEmit`, and `pnpm --dir admin-ui build` passed.

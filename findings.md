@@ -128,3 +128,9 @@
 - Later live logs showed no 400 but `extracted_chars=8`, so the remaining PDF issue is extraction quality. The fallback now reads PDF streams, inflates `/FlateDecode`, and decodes literal plus hex strings including UTF-16BE-without-BOM cases.
 - Structured-output detector failure was also a conversion gap: `MessagesRequest` accepted no `response_format`, and `output_config.format` only carried reasoning effort before. The new path supports both and injects a per-request JSON/schema instruction.
 - A trial alignment with sibling `kiro-account-manager` for assistant `reasoningContent.reasoningText.signature` is not safe on the current Kiro endpoint: live `message_count=3` requests returned repeated upstream `400 Improperly formed request`, and model-signature detection still failed. Keep signature non-spoofing and do not emit unsupported history fields until the exact upstream shape is known.
+
+## Opus 4.7 Clean Probe Mode
+- Added a runtime/Admin setting `opus47CleanProbeMode` with values `off` and `clean`, scoped only to plain `claude-opus-4-7` / `claude-opus-4.7`.
+- Clean mode avoids several local synthetic additions that can affect detector prompts: the synthetic assistant acknowledgement after system messages, no-system synthetic history for thinking/structured-output hints, Write/Edit tool description suffixes, and structured-output hint history pollution.
+- In clean mode, thinking and structured-output hints stay on the current user message, with thinking first and JSON/schema instruction second. This keeps the request closer to the visible user probe while still preserving the requested behavior.
+- The mode does not spoof signatures. For validation, compare `opus47_request_thinking_state clean_probe_mode=true` with later `opus47_stream_diagnostics` / `opus47_nonstream_diagnostics`: detector-relevant signature evidence still requires `reasoning_content_count>0` and `signature_seen=true`.

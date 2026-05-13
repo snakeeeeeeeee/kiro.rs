@@ -19,6 +19,8 @@ Current extension: add an opt-in Opus 4.7 ANTML probe compatibility mode for cct
 
 Current extension: close remaining cctest/hvoy gaps by extracting PDF document text and adding structured-output request hints without adding Kiro fields that trigger upstream 400s.
 
+Current extension: add an opt-in Opus 4.7 Clean Probe mode in Admin runtime settings to reduce local prompt/context pollution during detector probes while preserving the rule that signatures are only passed through when upstream actually returns them.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -40,6 +42,7 @@ Current extension: close remaining cctest/hvoy gaps by extracting PDF document t
 - [completed] Analyze Opus 4.7 detector failures against sibling gateway, public proxy behavior, and official Anthropic protocol expectations
 - [completed] Add narrow Opus 4.7 ANTML probe compatibility config, request rewrite, Admin UI control, and tests
 - [completed] Add PDF document text extraction and structured-output compatibility hints; avoid unsupported Kiro document/reasoning history fields
+- [completed] Add Opus 4.7 Clean Probe runtime/Admin toggle, scoped conversion behavior, diagnostics, and tests
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -58,6 +61,7 @@ Current extension: close remaining cctest/hvoy gaps by extracting PDF document t
 - PDF documents are converted to extracted text in message content. Do not send a Kiro `documents` field on this endpoint because live logs showed upstream `400 Improperly formed request`.
 - Structured output is handled with request-scoped JSON/schema instructions, not response post-processing, so stream protocol remains intact and invalid model JSON is not silently rewritten.
 - Do not send assistant `reasoningContent` history fields yet: live logs with `message_count=3` showed repeated upstream `400 Improperly formed request`, and the detector still failed model signature. No placeholder or fake signature is generated.
+- Opus 4.7 Clean Probe is a diagnostic/compatibility toggle, not a signature generator. It reduces synthetic local context for plain `claude-opus-4-7` only; a valid signature can only be exposed when upstream Kiro sends reasoning/signature events.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

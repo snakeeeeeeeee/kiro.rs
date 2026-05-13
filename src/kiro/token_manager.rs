@@ -616,6 +616,8 @@ pub struct ManagerSnapshot {
     pub opus47_plain_stabilization_mode: String,
     /// Opus 4.7 ANTML 探针兼容模式
     pub opus47_antml_probe_compat: String,
+    /// Opus 4.7 clean probe 模式
+    pub opus47_clean_probe_mode: String,
     /// Opus 4.7 诊断日志开关
     pub opus47_diagnostics_enabled: bool,
     /// Opus 4.7 原始请求/响应调试日志开关
@@ -2226,6 +2228,7 @@ impl MultiTokenManager {
             session_affinity_ttl_secs: settings.session_affinity_ttl_secs,
             opus47_plain_stabilization_mode: settings.opus47_plain_stabilization_mode,
             opus47_antml_probe_compat: settings.opus47_antml_probe_compat,
+            opus47_clean_probe_mode: settings.opus47_clean_probe_mode,
             opus47_diagnostics_enabled: settings.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: settings.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: settings.opus47_raw_debug_max_chars,

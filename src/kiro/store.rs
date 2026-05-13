@@ -11,7 +11,7 @@ use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::{
     CredentialPolicy, RuntimeSettings, normalize_dynamic_proxy_protocol,
     normalize_dynamic_proxy_provider, normalize_opus47_antml_probe_compat,
-    normalize_opus47_plain_stabilization_mode,
+    normalize_opus47_clean_probe_mode, normalize_opus47_plain_stabilization_mode,
 };
 use crate::model::config::Config;
 
@@ -443,6 +443,10 @@ fn runtime_settings_pairs(
             settings.opus47_antml_probe_compat.clone(),
         ),
         (
+            "opus47CleanProbeMode",
+            settings.opus47_clean_probe_mode.clone(),
+        ),
+        (
             "opus47DiagnosticsEnabled",
             settings.opus47_diagnostics_enabled.to_string(),
         ),
@@ -612,6 +616,9 @@ fn apply_runtime_setting(
         }
         "opus47AntmlProbeCompat" => {
             settings.opus47_antml_probe_compat = normalize_opus47_antml_probe_compat(value)
+        }
+        "opus47CleanProbeMode" => {
+            settings.opus47_clean_probe_mode = normalize_opus47_clean_probe_mode(value)
         }
         "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
         "opus47RawDebugEnabled" => settings.opus47_raw_debug_enabled = parse_bool(key, value)?,
@@ -885,6 +892,7 @@ mod tests {
         updated.session_affinity_ttl_secs = 900;
         updated.opus47_plain_stabilization_mode = "adaptive_low".to_string();
         updated.opus47_antml_probe_compat = "clarify".to_string();
+        updated.opus47_clean_probe_mode = "clean".to_string();
         updated.opus47_diagnostics_enabled = false;
         updated.opus47_raw_debug_enabled = true;
         updated.opus47_raw_debug_max_chars = 12_345;
@@ -901,6 +909,7 @@ mod tests {
         assert_eq!(loaded.session_affinity_ttl_secs, 900);
         assert_eq!(loaded.opus47_plain_stabilization_mode, "adaptive_low");
         assert_eq!(loaded.opus47_antml_probe_compat, "clarify");
+        assert_eq!(loaded.opus47_clean_probe_mode, "clean");
         assert!(!loaded.opus47_diagnostics_enabled);
         assert!(loaded.opus47_raw_debug_enabled);
         assert_eq!(loaded.opus47_raw_debug_max_chars, 12_345);

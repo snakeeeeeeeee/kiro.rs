@@ -208,6 +208,12 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `globalRpm` | number | `0` | 全局每分钟请求数限制，`0` 表示不限制 |
 | `rateLimitCooldownMs` | number | `60000` | 上游返回 `429` 后该凭据的冷却时间 |
 | `transientCooldownMs` | number | `10000` | 上游 `408`、`5xx` 或网络超时后的短冷却时间 |
+| `opus47PlainStabilizationMode` | string | `off` | Opus 4.7 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
+| `opus47AntmlProbeCompat` | string | `off` | Opus 4.7 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
+| `opus47CleanProbeMode` | string | `off` | Opus 4.7 clean probe 模式：`off` 或 `clean`。开启后减少本地合成提示、工具描述后缀和结构化输出历史污染，仅作用于 plain `claude-opus-4-7` |
+| `opus47DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.7 响应形态诊断日志，包括 reasoning/signature 是否由上游出现并暴露给客户端 |
+| `opus47RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.7 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
+| `opus47RawDebugMaxChars` | number | `20000` | Opus 4.7 原始调试日志单字段最大字符数 |
 | `shutdownDrainTimeoutSecs` | number | `60` | 收到关闭信号后等待已有请求结束的最长时间 |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
@@ -244,6 +250,12 @@ docker compose -f docker-compose-dev.yml up -d --build
    "globalRpm": 0,
    "rateLimitCooldownMs": 60000,
    "transientCooldownMs": 10000,
+   "opus47PlainStabilizationMode": "off",
+   "opus47AntmlProbeCompat": "off",
+   "opus47CleanProbeMode": "off",
+   "opus47DiagnosticsEnabled": true,
+   "opus47RawDebugEnabled": false,
+   "opus47RawDebugMaxChars": 20000,
    "shutdownDrainTimeoutSecs": 60,
    "extractThinking": true
 }

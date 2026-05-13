@@ -24,7 +24,9 @@ use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
 
-use super::converter::{ConversionError, PdfDebugInfo, convert_request};
+use super::converter::{
+    ConversionError, ConversionOptions, PdfDebugInfo, convert_request, convert_request_with_options,
+};
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, Opus47Diagnostics, SseEvent, StreamContext};
 use super::types::{
@@ -349,6 +351,12 @@ mod tests {
         settings
     }
 
+    fn clean_probe_settings(mode: &str) -> RuntimeSettings {
+        let mut settings = settings("off");
+        settings.opus47_clean_probe_mode = mode.to_string();
+        settings
+    }
+
     fn request_with_content(model: &str, content: &str) -> MessagesRequest {
         let mut payload = request(model);
         payload.messages[0].content = serde_json::json!(content);
@@ -501,6 +509,22 @@ mod tests {
             "native",
             client_requested_thinking
         ));
+    }
+
+    #[test]
+    fn clean_probe_mode_is_scoped_to_plain_opus47() {
+        let enabled =
+            conversion_options_for_request("claude-opus-4-7", &clean_probe_settings("clean"));
+        let thinking_model = conversion_options_for_request(
+            "claude-opus-4-7-thinking",
+            &clean_probe_settings("clean"),
+        );
+        let other_model =
+            conversion_options_for_request("claude-sonnet-4-6", &clean_probe_settings("clean"));
+
+        assert!(enabled.clean_probe_mode);
+        assert!(!thinking_model.clean_probe_mode);
+        assert!(!other_model.clean_probe_mode);
     }
 
     #[test]
@@ -747,9 +771,10 @@ pub async fn post_messages(
     );
     let opus47_diagnostics_enabled =
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
+    let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
 
     // 转换请求
-    let mut conversion_result = match convert_request(&payload) {
+    let mut conversion_result = match convert_request_with_options(&payload, conversion_options) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -780,6 +805,7 @@ pub async fn post_messages(
         client_thinking_enabled,
         stabilization_mode.as_str(),
         compat_thinking_model.as_str(),
+        conversion_options.clean_probe_mode,
         &conversion_result.conversation_state,
     );
 
@@ -1710,6 +1736,7 @@ fn log_opus47_request_thinking_state(
     client_thinking_enabled: bool,
     stabilization_mode: &str,
     compat_thinking_model: &str,
+    clean_probe_mode: bool,
     conversation_state: &ConversationState,
 ) {
     if !is_opus47_model_name(requested_model) {
@@ -1732,6 +1759,7 @@ fn log_opus47_request_thinking_state(
         client_thinking_enabled,
         stabilization_mode,
         compat_thinking_model,
+        clean_probe_mode,
         thinking_directives_present,
         current_content_chars = current_content.chars().count(),
         "opus47_request_thinking_state"
@@ -1838,6 +1866,18 @@ fn apply_opus47_plain_stabilization(
     );
 
     mode
+}
+
+fn conversion_options_for_request(
+    requested_model: &str,
+    settings: &crate::kiro::settings::RuntimeSettings,
+) -> ConversionOptions {
+    ConversionOptions {
+        clean_probe_mode: is_plain_opus47_model_name(requested_model)
+            && crate::kiro::settings::normalize_opus47_clean_probe_mode(
+                &settings.opus47_clean_probe_mode,
+            ) == "clean",
+    }
 }
 
 fn apply_opus47_antml_probe_compat(
@@ -2009,9 +2049,10 @@ pub async fn post_messages_cc(
     );
     let opus47_diagnostics_enabled =
         runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
+    let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
 
     // 转换请求
-    let mut conversion_result = match convert_request(&payload) {
+    let mut conversion_result = match convert_request_with_options(&payload, conversion_options) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -2042,6 +2083,7 @@ pub async fn post_messages_cc(
         client_thinking_enabled,
         stabilization_mode.as_str(),
         compat_thinking_model.as_str(),
+        conversion_options.clean_probe_mode,
         &conversion_result.conversation_state,
     );
 

@@ -168,6 +168,11 @@ pub struct ConversionResult {
     pub pdf_debug: Option<PdfDebugInfo>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConversionOptions {
+    pub clean_probe_mode: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct PdfDebugInfo {
     pub name: String,
@@ -270,6 +275,14 @@ fn create_placeholder_tool(name: &str) -> Tool {
 
 /// 将 Anthropic 请求转换为 Kiro 请求
 pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, ConversionError> {
+    convert_request_with_options(req, ConversionOptions::default())
+}
+
+/// 将 Anthropic 请求转换为 Kiro 请求，并应用调用方提供的兼容选项。
+pub fn convert_request_with_options(
+    req: &MessagesRequest,
+    options: ConversionOptions,
+) -> Result<ConversionResult, ConversionError> {
     // 1. 映射模型
     let model_id = map_model(&req.model)
         .ok_or_else(|| ConversionError::UnsupportedModel(req.model.clone()))?;
@@ -311,7 +324,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     // 5. 处理最后一条消息作为 current_message（经过 prefill 预处理，末尾必为 user）
     let last_message = messages.last().unwrap();
     let processed_content = process_message_content(&last_message.content)?;
-    let text_content = apply_current_message_thinking_prefix(req, processed_content.text);
+    let text_content = apply_current_message_prefixes(req, processed_content.text, options);
     let images = processed_content.images;
     let tool_results = processed_content.tool_results;
     let pdf_debug = processed_content.pdf_debug;
@@ -328,10 +341,10 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     // 6. 转换工具定义（超长名称自动缩短并记录映射）
     let mut tool_name_map = HashMap::new();
-    let mut tools = convert_tools(&req.tools, &mut tool_name_map);
+    let mut tools = convert_tools(&req.tools, &mut tool_name_map, options);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
-    let mut history = build_history(req, messages, &model_id, &mut tool_name_map)?;
+    let mut history = build_history(req, messages, &model_id, &mut tool_name_map, options)?;
 
     // 8. 验证并过滤 tool_use/tool_result 配对
     // 移除孤立的 tool_result（没有对应的 tool_use）
@@ -1604,6 +1617,7 @@ fn map_tool_name(name: &str, tool_name_map: &mut HashMap<String, String>) -> Str
 fn convert_tools(
     tools: &Option<Vec<super::types::Tool>>,
     tool_name_map: &mut HashMap<String, String>,
+    options: ConversionOptions,
 ) -> Vec<Tool> {
     let Some(tools) = tools else {
         return Vec::new();
@@ -1615,14 +1629,16 @@ fn convert_tools(
             let mut description = t.description.clone();
 
             // 对 Write/Edit 工具追加自定义描述后缀
-            let suffix = match t.name.as_str() {
-                "Write" => WRITE_TOOL_DESCRIPTION_SUFFIX,
-                "Edit" => EDIT_TOOL_DESCRIPTION_SUFFIX,
-                _ => "",
-            };
-            if !suffix.is_empty() {
-                description.push('\n');
-                description.push_str(suffix);
+            if !options.clean_probe_mode {
+                let suffix = match t.name.as_str() {
+                    "Write" => WRITE_TOOL_DESCRIPTION_SUFFIX,
+                    "Edit" => EDIT_TOOL_DESCRIPTION_SUFFIX,
+                    _ => "",
+                };
+                if !suffix.is_empty() {
+                    description.push('\n');
+                    description.push_str(suffix);
+                }
             }
 
             // 限制描述长度为 10000 字符（安全截断 UTF-8，单次遍历）
@@ -1688,6 +1704,36 @@ fn apply_current_message_thinking_prefix(req: &MessagesRequest, content: String)
     }
 }
 
+fn apply_current_message_prefixes(
+    req: &MessagesRequest,
+    content: String,
+    options: ConversionOptions,
+) -> String {
+    if !options.clean_probe_mode {
+        return apply_current_message_thinking_prefix(req, content);
+    }
+
+    let mut parts = Vec::new();
+
+    if let Some(prefix) = generate_thinking_prefix(req) {
+        if !has_thinking_tags(&content) {
+            parts.push(prefix);
+        }
+    }
+
+    if let Some(hint) = structured_output_hint(req) {
+        if !content.contains("Respond with valid JSON only") {
+            parts.push(hint);
+        }
+    }
+
+    if !content.is_empty() {
+        parts.push(content);
+    }
+
+    parts.join("\n")
+}
+
 fn structured_output_hint(req: &MessagesRequest) -> Option<String> {
     let format = req
         .output_config
@@ -1745,6 +1791,7 @@ fn build_history(
     messages: &[super::types::Message],
     model_id: &str,
     tool_name_map: &mut HashMap<String, String>,
+    options: ConversionOptions,
 ) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
@@ -1761,17 +1808,26 @@ fn build_history(
             .join("\n");
 
         if !system_content.is_empty() {
-            // 追加分块写入策略到系统消息
-            let mut system_content = format!("{}\n{}", system_content, SYSTEM_CHUNKED_POLICY);
-            if let Some(ref hint) = output_hint {
+            let mut system_content = system_content;
+            if !options.clean_probe_mode {
                 system_content.push('\n');
-                system_content.push_str(hint);
+                system_content.push_str(SYSTEM_CHUNKED_POLICY);
+            }
+            if !options.clean_probe_mode {
+                if let Some(ref hint) = output_hint {
+                    system_content.push('\n');
+                    system_content.push_str(hint);
+                }
             }
 
             // 注入thinking标签到系统消息最前面（如果需要且不存在）
-            let final_content = if let Some(ref prefix) = thinking_prefix {
-                if !has_thinking_tags(&system_content) {
-                    format!("{}\n{}", prefix, system_content)
+            let final_content = if !options.clean_probe_mode {
+                if let Some(ref prefix) = thinking_prefix {
+                    if !has_thinking_tags(&system_content) {
+                        format!("{}\n{}", prefix, system_content)
+                    } else {
+                        system_content
+                    }
                 } else {
                     system_content
                 }
@@ -1783,10 +1839,13 @@ fn build_history(
             let user_msg = HistoryUserMessage::new(final_content, model_id);
             history.push(Message::User(user_msg));
 
-            let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
-            history.push(Message::Assistant(assistant_msg));
+            if !options.clean_probe_mode {
+                let assistant_msg =
+                    HistoryAssistantMessage::new("I will follow these instructions.");
+                history.push(Message::Assistant(assistant_msg));
+            }
         }
-    } else if thinking_prefix.is_some() || output_hint.is_some() {
+    } else if !options.clean_probe_mode && (thinking_prefix.is_some() || output_hint.is_some()) {
         // 没有系统消息但有 thinking/structured-output 配置，插入新的系统消息
         let mut parts = Vec::new();
         if let Some(ref prefix) = thinking_prefix {
@@ -1811,9 +1870,7 @@ fn build_history(
     let mut user_buffer: Vec<&super::types::Message> = Vec::new();
     let mut assistant_buffer: Vec<&super::types::Message> = Vec::new();
 
-    for i in 0..history_end_index {
-        let msg = &messages[i];
-
+    for msg in messages.iter().take(history_end_index) {
         if msg.role == "user" {
             // 先处理累积的 assistant 消息
             if !assistant_buffer.is_empty() {
@@ -2507,6 +2564,124 @@ startxref
         assert!(content.contains("Respond with valid JSON only"));
         assert!(content.contains("JSON Schema named `answer` strictly"));
         assert!(content.contains("\"additionalProperties\":false"));
+    }
+
+    #[test]
+    fn test_clean_probe_mode_keeps_thinking_and_schema_on_current_message_without_synthetic_history()
+     {
+        use super::super::types::{OutputConfig, StructuredOutputFormat, SystemMessage, Thinking};
+
+        let mut req = minimal_request(serde_json::json!("Return the result."));
+        req.model = "claude-opus-4-7".to_string();
+        req.system = Some(vec![SystemMessage {
+            text: "System instruction".to_string(),
+            cache_control: None,
+        }]);
+        req.thinking = Some(Thinking {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: 20000,
+        });
+        req.output_config = Some(OutputConfig {
+            effort: "high".to_string(),
+            format: Some(StructuredOutputFormat {
+                format_type: "json_schema".to_string(),
+                name: Some("answer".to_string()),
+                schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    },
+                    "required": ["answer"],
+                    "additionalProperties": false
+                })),
+                json_schema: None,
+                strict: Some(true),
+            }),
+        });
+
+        let state = convert_request_with_options(
+            &req,
+            ConversionOptions {
+                clean_probe_mode: true,
+            },
+        )
+        .unwrap()
+        .conversation_state;
+
+        assert_eq!(state.history.len(), 1);
+        let Message::User(system_msg) = &state.history[0] else {
+            panic!("clean probe should only preserve the real system message");
+        };
+        assert_eq!(system_msg.user_input_message.content, "System instruction");
+
+        let current = &state.current_message.user_input_message.content;
+        assert!(current.starts_with(
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>"
+        ));
+        assert!(current.contains("Respond with valid JSON only"));
+        assert!(current.contains("Return the result."));
+    }
+
+    #[test]
+    fn test_clean_probe_mode_skips_write_edit_description_suffixes() {
+        use super::super::types::{Message as AnthropicMessage, Tool as AnthropicTool};
+
+        let mut schema = std::collections::HashMap::new();
+        schema.insert("type".to_string(), serde_json::json!("object"));
+        schema.insert("properties".to_string(), serde_json::json!({}));
+
+        let req = MessagesRequest {
+            model: "claude-opus-4-7".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("test"),
+            }],
+            system: None,
+            stream: false,
+            tools: Some(vec![AnthropicTool {
+                name: "Write".to_string(),
+                description: "Write a file".to_string(),
+                input_schema: schema,
+                tool_type: None,
+                max_uses: None,
+                cache_control: None,
+            }]),
+            thinking: None,
+            tool_choice: None,
+            output_config: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let normal = convert_request(&req).unwrap();
+        let clean = convert_request_with_options(
+            &req,
+            ConversionOptions {
+                clean_probe_mode: true,
+            },
+        )
+        .unwrap();
+
+        let normal_description = &normal
+            .conversation_state
+            .current_message
+            .user_input_message
+            .user_input_message_context
+            .tools[0]
+            .tool_specification
+            .description;
+        let clean_description = &clean
+            .conversation_state
+            .current_message
+            .user_input_message
+            .user_input_message_context
+            .tools[0]
+            .tool_specification
+            .description;
+
+        assert!(normal_description.contains("IMPORTANT"));
+        assert_eq!(clean_description, "Write a file");
     }
 
     #[test]

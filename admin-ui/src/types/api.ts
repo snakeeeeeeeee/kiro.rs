@@ -59,6 +59,7 @@ export interface RuntimeStatusResponse {
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47AntmlProbeCompat: 'off' | 'clarify'
+  opus47CleanProbeMode: 'off' | 'clean'
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
@@ -238,6 +239,7 @@ export interface RuntimeSettings {
   sessionAffinityTtlSecs: number
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47AntmlProbeCompat: 'off' | 'clarify'
+  opus47CleanProbeMode: 'off' | 'clean'
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number

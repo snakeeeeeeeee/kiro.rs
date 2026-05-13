@@ -21,6 +21,7 @@ pub struct RuntimeSettings {
     pub session_affinity_ttl_secs: u64,
     pub opus47_plain_stabilization_mode: String,
     pub opus47_antml_probe_compat: String,
+    pub opus47_clean_probe_mode: String,
     pub opus47_diagnostics_enabled: bool,
     pub opus47_raw_debug_enabled: bool,
     pub opus47_raw_debug_max_chars: usize,
@@ -91,6 +92,9 @@ impl RuntimeSettings {
             ),
             opus47_antml_probe_compat: normalize_opus47_antml_probe_compat(
                 &config.opus47_antml_probe_compat,
+            ),
+            opus47_clean_probe_mode: normalize_opus47_clean_probe_mode(
+                &config.opus47_clean_probe_mode,
             ),
             opus47_diagnostics_enabled: config.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: config.opus47_raw_debug_enabled,
@@ -184,6 +188,9 @@ impl RuntimeSettings {
         }
         if !matches!(self.opus47_antml_probe_compat.as_str(), "off" | "clarify") {
             anyhow::bail!("opus47AntmlProbeCompat 必须是 'off' 或 'clarify'");
+        }
+        if !matches!(self.opus47_clean_probe_mode.as_str(), "off" | "clean") {
+            anyhow::bail!("opus47CleanProbeMode 必须是 'off' 或 'clean'");
         }
         if self.compat_usage_shape != "anthropic" && self.compat_usage_shape != "flat" {
             anyhow::bail!("compatUsageShape 必须是 'anthropic' 或 'flat'");
@@ -360,6 +367,14 @@ pub fn normalize_opus47_plain_stabilization_mode(mode: &str) -> String {
 pub fn normalize_opus47_antml_probe_compat(mode: &str) -> String {
     if mode.trim().eq_ignore_ascii_case("clarify") {
         "clarify".to_string()
+    } else {
+        "off".to_string()
+    }
+}
+
+pub fn normalize_opus47_clean_probe_mode(mode: &str) -> String {
+    if mode.trim().eq_ignore_ascii_case("clean") {
+        "clean".to_string()
     } else {
         "off".to_string()
     }
