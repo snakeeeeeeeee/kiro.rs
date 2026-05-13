@@ -1134,7 +1134,8 @@ impl StreamContext {
                 "index": index,
                 "content_block": {
                     "type": "thinking",
-                    "thinking": ""
+                    "thinking": "",
+                    "signature": ""
                 }
             }),
         );
@@ -2552,6 +2553,22 @@ mod tests {
                 .as_str()
                 .unwrap_or_default()
                 .is_empty()
+        );
+
+        let thinking_start = events
+            .iter()
+            .find(|event| {
+                event.event == "content_block_start"
+                    && event.data["content_block"]["type"] == "thinking"
+            })
+            .expect("thinking block should start");
+        assert_eq!(
+            thinking_start.data["content_block"]["thinking"].as_str(),
+            Some("")
+        );
+        assert_eq!(
+            thinking_start.data["content_block"]["signature"].as_str(),
+            Some("")
         );
 
         let message_start_index = 0;
