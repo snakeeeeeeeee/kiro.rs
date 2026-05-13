@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -87,6 +87,60 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
         toast.error(`保存失败: ${extractErrorMessage(error)}`)
       },
     })
+  }
+
+  const addRecommendedRetryRule = () => {
+    setForm(prev => prev ? {
+      ...prev,
+      sameAccountRetryRules: [
+        ...prev.sameAccountRetryRules,
+        {
+          enabled: true,
+          status: '429',
+          reason: 'INSUFFICIENT_MODEL_CAPACITY',
+          attempts: 2,
+          delayMs: 1500,
+          respectRetryAfter: true,
+        },
+      ],
+    } : prev)
+  }
+
+  const addRetryRule = () => {
+    setForm(prev => prev ? {
+      ...prev,
+      sameAccountRetryRules: [
+        ...prev.sameAccountRetryRules,
+        {
+          enabled: true,
+          status: '500-599',
+          reason: '',
+          attempts: 1,
+          delayMs: 1000,
+          respectRetryAfter: true,
+        },
+      ],
+    } : prev)
+  }
+
+  const updateRetryRule = (
+    index: number,
+    patch: Partial<RuntimeSettings['sameAccountRetryRules'][number]>,
+  ) => {
+    setForm(prev => {
+      if (!prev) return prev
+      const sameAccountRetryRules = prev.sameAccountRetryRules.map((rule, idx) =>
+        idx === index ? { ...rule, ...patch } : rule,
+      )
+      return { ...prev, sameAccountRetryRules }
+    })
+  }
+
+  const removeRetryRule = (index: number) => {
+    setForm(prev => prev ? {
+      ...prev,
+      sameAccountRetryRules: prev.sameAccountRetryRules.filter((_, idx) => idx !== index),
+    } : prev)
   }
 
   return (
@@ -243,6 +297,108 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="anthropic">Anthropic 风格</option>
                 <option value="aggregator">聚合器风格</option>
               </select>
+            </div>
+
+            <div className="space-y-3 md:col-span-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <label className="text-sm font-medium">单号重试规则</label>
+                  <p className="text-xs text-muted-foreground">
+                    命中规则时先用当前账号重试，耗尽后才进入账号冷却或换号。
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={addRecommendedRetryRule}>
+                    添加推荐规则
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={addRetryRule}>
+                    添加规则
+                  </Button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto rounded-md border">
+                <table className="w-full min-w-[860px] text-sm">
+                  <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+                    <tr>
+                      <th className="w-16 px-3 py-2 font-medium">启用</th>
+                      <th className="px-3 py-2 font-medium">状态码</th>
+                      <th className="px-3 py-2 font-medium">reason</th>
+                      <th className="w-28 px-3 py-2 font-medium">次数</th>
+                      <th className="w-32 px-3 py-2 font-medium">间隔 ms</th>
+                      <th className="w-32 px-3 py-2 font-medium">Retry-After</th>
+                      <th className="w-20 px-3 py-2 font-medium">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {form.sameAccountRetryRules.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                          未配置规则，单号重试关闭。
+                        </td>
+                      </tr>
+                    ) : form.sameAccountRetryRules.map((rule, index) => (
+                      <tr key={index} className="align-top">
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={rule.enabled}
+                            onChange={event => updateRetryRule(index, { enabled: event.target.checked })}
+                            className="mt-2"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <Input
+                            value={rule.status}
+                            onChange={event => updateRetryRule(index, { status: event.target.value })}
+                            placeholder="429 或 408,500-599"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <Input
+                            value={rule.reason ?? ''}
+                            onChange={event => updateRetryRule(index, { reason: event.target.value })}
+                            placeholder="可留空"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <Input
+                            type="number"
+                            min={0}
+                            max={10}
+                            value={rule.attempts}
+                            onChange={event => updateRetryRule(index, { attempts: Number(event.target.value) || 0 })}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <Input
+                            type="number"
+                            min={100}
+                            value={rule.delayMs}
+                            onChange={event => updateRetryRule(index, { delayMs: Number(event.target.value) || 0 })}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={rule.respectRetryAfter}
+                            onChange={event => updateRetryRule(index, { respectRetryAfter: event.target.checked })}
+                            className="mt-2"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <Button type="button" variant="ghost" size="sm" onClick={() => removeRetryRule(index)}>
+                            删除
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                状态码支持单值、范围和逗号组合，例如 429、500-599、408,500-599。reason 留空时只匹配状态码。
+              </p>
             </div>
 
             <div className="space-y-2">

@@ -2,6 +2,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::config::Config;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SameAccountRetryRule {
+    #[serde(default = "default_same_account_retry_rule_enabled")]
+    pub enabled: bool,
+    pub status: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub attempts: usize,
+    pub delay_ms: u64,
+    #[serde(default = "default_same_account_retry_rule_respect_retry_after")]
+    pub respect_retry_after: bool,
+}
+
+fn default_same_account_retry_rule_enabled() -> bool {
+    true
+}
+
+fn default_same_account_retry_rule_respect_retry_after() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettings {
@@ -15,6 +37,7 @@ pub struct RuntimeSettings {
     pub transient_cooldown_ms: u64,
     pub max_retry_accounts: usize,
     pub model_capacity_cooldown_ms: u64,
+    pub same_account_retry_rules: Vec<SameAccountRetryRule>,
     pub token_auto_refresh_enabled: bool,
     pub token_auto_refresh_interval_secs: u64,
     pub token_auto_refresh_window_secs: u64,
@@ -83,6 +106,7 @@ impl RuntimeSettings {
             transient_cooldown_ms: config.transient_cooldown_ms,
             max_retry_accounts: config.max_retry_accounts.max(1),
             model_capacity_cooldown_ms: config.model_capacity_cooldown_ms,
+            same_account_retry_rules: config.same_account_retry_rules.clone(),
             token_auto_refresh_enabled: config.token_auto_refresh_enabled,
             token_auto_refresh_interval_secs: config.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: config.token_auto_refresh_window_secs,
@@ -169,6 +193,7 @@ impl RuntimeSettings {
         validate_cooldown("transientCooldownMs", self.transient_cooldown_ms)?;
         validate_max_concurrent("maxRetryAccounts", self.max_retry_accounts, 128)?;
         validate_cooldown("modelCapacityCooldownMs", self.model_capacity_cooldown_ms)?;
+        validate_same_account_retry_rules(&self.same_account_retry_rules)?;
         if !(30..=86_400).contains(&self.token_auto_refresh_interval_secs) {
             anyhow::bail!("tokenAutoRefreshIntervalSecs 必须在 30..86400 范围内");
         }
@@ -452,6 +477,120 @@ pub fn normalize_dynamic_proxy_protocol(protocol: &str) -> String {
     }
 }
 
+pub fn same_account_retry_rule_matches(
+    rule: &SameAccountRetryRule,
+    status: u16,
+    reason: Option<&str>,
+) -> bool {
+    if !rule.enabled || rule.attempts == 0 {
+        return false;
+    }
+    if !status_pattern_matches(&rule.status, status) {
+        return false;
+    }
+    match rule
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(expected) => reason
+            .map(|actual| actual.eq_ignore_ascii_case(expected))
+            .unwrap_or(false),
+        None => true,
+    }
+}
+
+pub fn matching_same_account_retry_rule<'a>(
+    rules: &'a [SameAccountRetryRule],
+    status: u16,
+    reason: Option<&str>,
+) -> Option<&'a SameAccountRetryRule> {
+    rules
+        .iter()
+        .find(|rule| same_account_retry_rule_matches(rule, status, reason))
+}
+
+fn validate_same_account_retry_rules(rules: &[SameAccountRetryRule]) -> anyhow::Result<()> {
+    if rules.len() > 50 {
+        anyhow::bail!("sameAccountRetryRules 不能超过 50 条");
+    }
+
+    for (idx, rule) in rules.iter().enumerate() {
+        validate_status_pattern(&rule.status)
+            .map_err(|err| anyhow::anyhow!("sameAccountRetryRules[{}].status {}", idx, err))?;
+        if rule.attempts > 10 {
+            anyhow::bail!(
+                "sameAccountRetryRules[{}].attempts 必须在 0..10 范围内",
+                idx
+            );
+        }
+        if !(100..=60_000).contains(&rule.delay_ms) {
+            anyhow::bail!(
+                "sameAccountRetryRules[{}].delayMs 必须在 100..60000 范围内",
+                idx
+            );
+        }
+        if let Some(reason) = &rule.reason {
+            if reason.len() > 128 {
+                anyhow::bail!("sameAccountRetryRules[{}].reason 不能超过 128 字符", idx);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_status_pattern(pattern: &str) -> anyhow::Result<()> {
+    if pattern.trim().is_empty() {
+        anyhow::bail!("不能为空");
+    }
+    for part in pattern.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            anyhow::bail!("包含空片段");
+        }
+        if let Some((start, end)) = part.split_once('-') {
+            let start = parse_status_code(start.trim())?;
+            let end = parse_status_code(end.trim())?;
+            if start > end {
+                anyhow::bail!("范围起点不能大于终点");
+            }
+        } else {
+            parse_status_code(part)?;
+        }
+    }
+    Ok(())
+}
+
+fn status_pattern_matches(pattern: &str, status: u16) -> bool {
+    pattern.split(',').any(|part| {
+        let part = part.trim();
+        if let Some((start, end)) = part.split_once('-') {
+            match (
+                parse_status_code(start.trim()),
+                parse_status_code(end.trim()),
+            ) {
+                (Ok(start), Ok(end)) => start <= status && status <= end,
+                _ => false,
+            }
+        } else {
+            parse_status_code(part)
+                .map(|expected| expected == status)
+                .unwrap_or(false)
+        }
+    })
+}
+
+fn parse_status_code(value: &str) -> anyhow::Result<u16> {
+    let status = value
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("状态码必须是数字"))?;
+    if !(100..=599).contains(&status) {
+        anyhow::bail!("状态码必须在 100..599 范围内");
+    }
+    Ok(status)
+}
+
 fn validate_max_concurrent(name: &str, value: usize, max: usize) -> anyhow::Result<()> {
     if value == 0 || value > max {
         anyhow::bail!("{} 必须在 1..{} 范围内", name, max);
@@ -478,4 +617,50 @@ fn validate_virtual_cache_tokens(name: &str, value: u32) -> anyhow::Result<()> {
         anyhow::bail!("{} 不能超过 10000000", name);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(status: &str, reason: Option<&str>) -> SameAccountRetryRule {
+        SameAccountRetryRule {
+            enabled: true,
+            status: status.to_string(),
+            reason: reason.map(str::to_string),
+            attempts: 2,
+            delay_ms: 1_500,
+            respect_retry_after: true,
+        }
+    }
+
+    #[test]
+    fn same_account_retry_rule_matches_status_and_reason() {
+        let capacity = rule("429", Some("INSUFFICIENT_MODEL_CAPACITY"));
+        assert!(same_account_retry_rule_matches(
+            &capacity,
+            429,
+            Some("INSUFFICIENT_MODEL_CAPACITY")
+        ));
+        assert!(!same_account_retry_rule_matches(
+            &capacity,
+            429,
+            Some("OTHER")
+        ));
+        assert!(!same_account_retry_rule_matches(&capacity, 500, None));
+    }
+
+    #[test]
+    fn same_account_retry_rule_supports_ranges_and_lists() {
+        let transient = rule("408,500-599", None);
+        assert!(same_account_retry_rule_matches(&transient, 408, None));
+        assert!(same_account_retry_rule_matches(&transient, 503, None));
+        assert!(!same_account_retry_rule_matches(&transient, 429, None));
+    }
+
+    #[test]
+    fn same_account_retry_rule_validation_rejects_bad_status() {
+        let invalid = rule("599-500", None);
+        assert!(validate_same_account_retry_rules(&[invalid]).is_err());
+    }
 }

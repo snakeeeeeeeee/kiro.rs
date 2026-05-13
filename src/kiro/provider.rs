@@ -23,6 +23,7 @@ use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownManager;
 use crate::kiro::parser::frame::Frame;
+use crate::kiro::settings::{SameAccountRetryRule, matching_same_account_retry_rule};
 use crate::kiro::token_manager::{CredentialLease, MultiTokenManager};
 use crate::metrics::{MetricsRecorder, RequestTimingSample, UpstreamOutcome, duration_ms};
 use crate::model::config::TlsBackend;
@@ -385,6 +386,21 @@ fn provider_rate_limit_error(
         retry_after_secs: retry_after_secs(retry_after_ms),
     }
     .into()
+}
+
+fn same_account_retry_key(
+    credential_id: u64,
+    status: u16,
+    reason: Option<&str>,
+    rule: &SameAccountRetryRule,
+) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        credential_id,
+        status,
+        reason.unwrap_or(""),
+        rule.status
+    )
 }
 
 fn truncate_for_raw_debug(value: &str, max_chars: usize) -> (String, bool) {
@@ -865,6 +881,8 @@ impl KiroProvider {
         let mut attempted_credentials: Vec<u64> = Vec::new();
         let mut http_attempts = 0usize;
         let mut model_capacity_failures = 0usize;
+        let mut model_capacity_failures_by_credential: HashMap<u64, usize> = HashMap::new();
+        let mut same_account_retry_counts: HashMap<String, usize> = HashMap::new();
         let mut last_retry_after_ms: Option<u64> = None;
         let api_type = if is_stream { "流式" } else { "非流式" };
 
@@ -898,6 +916,7 @@ impl KiroProvider {
         let mut last_status: Option<u16> = None;
         let mut acquire_ms_total = 0;
         let mut upstream_ms_total = 0;
+        let mut retry_same_credential: Option<u64> = None;
 
         loop {
             if attempted_credentials.len() >= max_retry_accounts {
@@ -906,29 +925,54 @@ impl KiroProvider {
 
             // 获取调用上下文（绑定 index、credentials、token）
             let acquire_started_at = Instant::now();
-            let ctx = match self
-                .token_manager
-                .acquire_context_with_session_excluding(
-                    model.as_deref(),
-                    session_id,
-                    &excluded_credentials,
-                )
-                .await
-            {
-                Ok(c) => {
-                    acquire_ms_total += duration_ms(acquire_started_at.elapsed());
-                    c
+            let ctx = match retry_same_credential.take() {
+                Some(credential_id) => {
+                    match self
+                        .token_manager
+                        .acquire_context_for_credential(credential_id, model.as_deref())
+                        .await
+                    {
+                        Ok(c) => {
+                            acquire_ms_total += duration_ms(acquire_started_at.elapsed());
+                            c
+                        }
+                        Err(e) => {
+                            acquire_ms_total += duration_ms(acquire_started_at.elapsed());
+                            tracing::warn!(
+                                credential_id,
+                                error = %e,
+                                "同号重试获取凭据失败，切换到账号故障转移"
+                            );
+                            excluded_credentials.insert(credential_id);
+                            last_error = Some(e);
+                            continue;
+                        }
+                    }
                 }
-                Err(e) => {
-                    acquire_ms_total += duration_ms(acquire_started_at.elapsed());
-                    last_error = Some(e);
-                    break;
-                }
+                None => match self
+                    .token_manager
+                    .acquire_context_with_session_excluding(
+                        model.as_deref(),
+                        session_id,
+                        &excluded_credentials,
+                    )
+                    .await
+                {
+                    Ok(c) => {
+                        acquire_ms_total += duration_ms(acquire_started_at.elapsed());
+                        c
+                    }
+                    Err(e) => {
+                        acquire_ms_total += duration_ms(acquire_started_at.elapsed());
+                        last_error = Some(e);
+                        break;
+                    }
+                },
             };
-            last_credential_id = Some(ctx.id);
             if !attempted_credentials.contains(&ctx.id) {
                 attempted_credentials.push(ctx.id);
             }
+            last_credential_id = Some(ctx.id);
 
             let config = self.token_manager.config();
             let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
@@ -1092,6 +1136,41 @@ impl KiroProvider {
             };
             last_retry_after_ms = upstream_error.retry_after_ms.or(last_retry_after_ms);
 
+            if let Some(rule) = matching_same_account_retry_rule(
+                &settings.same_account_retry_rules,
+                status.as_u16(),
+                upstream_error.reason.as_deref(),
+            ) {
+                let retry_key = same_account_retry_key(
+                    ctx.id,
+                    status.as_u16(),
+                    upstream_error.reason.as_deref(),
+                    rule,
+                );
+                let retry_count = same_account_retry_counts.entry(retry_key).or_default();
+                if *retry_count < rule.attempts {
+                    *retry_count += 1;
+                    let delay_ms = if rule.respect_retry_after {
+                        upstream_error.retry_after_ms.unwrap_or(rule.delay_ms)
+                    } else {
+                        rule.delay_ms
+                    };
+                    tracing::info!(
+                        credential_id = ctx.id,
+                        status = status.as_u16(),
+                        upstream_reason = upstream_error.reason.as_deref(),
+                        same_account_retry = *retry_count,
+                        same_account_retry_limit = rule.attempts,
+                        retry_after_ms = delay_ms,
+                        rule_status = rule.status.as_str(),
+                        "请求失败命中单号重试规则，继续使用同一账号重试"
+                    );
+                    retry_same_credential = Some(ctx.id);
+                    sleep(Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
+            }
+
             // 402 Payment Required 且额度用尽：禁用凭据并故障转移
             if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
                 tracing::warn!(
@@ -1227,6 +1306,9 @@ impl KiroProvider {
                     && upstream_error.reason.as_deref() == Some("INSUFFICIENT_MODEL_CAPACITY");
                 if is_model_capacity {
                     model_capacity_failures += 1;
+                    *model_capacity_failures_by_credential
+                        .entry(ctx.id)
+                        .or_default() += 1;
                     last_retry_after_ms = upstream_error.retry_after_ms.or(last_retry_after_ms);
                 } else if status.as_u16() == 429 {
                     let cooldown_ms = upstream_error
@@ -1306,7 +1388,11 @@ impl KiroProvider {
             }
         }
 
-        if model_capacity_failures > 0 && model_capacity_failures == attempted_credentials.len() {
+        let all_attempted_accounts_hit_model_capacity = !attempted_credentials.is_empty()
+            && attempted_credentials.iter().all(|credential_id| {
+                model_capacity_failures_by_credential.contains_key(credential_id)
+            });
+        if model_capacity_failures > 0 && all_attempted_accounts_hit_model_capacity {
             let cooldown_ms = last_retry_after_ms.unwrap_or(settings.model_capacity_cooldown_ms);
             self.model_cooldowns.set_cooldown(
                 &model_for_metrics,

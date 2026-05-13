@@ -604,6 +604,8 @@ pub struct ManagerSnapshot {
     pub max_retry_accounts: usize,
     /// 模型容量不足冷却时间
     pub model_capacity_cooldown_ms: u64,
+    /// 单账号原地重试规则
+    pub same_account_retry_rules: Vec<crate::kiro::settings::SameAccountRetryRule>,
     /// 是否启用后台 Token 自动刷新
     pub token_auto_refresh_enabled: bool,
     /// 后台 Token 自动刷新扫描间隔
@@ -1340,6 +1342,45 @@ impl MultiTokenManager {
                         anyhow::bail!("所有凭据均已禁用（0/{}）", total);
                     }
                 }
+            }
+        }
+    }
+
+    pub async fn acquire_context_for_credential(
+        self: &Arc<Self>,
+        id: u64,
+        model: Option<&str>,
+    ) -> anyhow::Result<CallContext> {
+        let (id, credentials) = {
+            let mut entries = self.entries.lock();
+            let now = Utc::now();
+            let settings = self.runtime_settings.lock().clone();
+            let is_opus = model
+                .map(|m| m.to_lowercase().contains("opus"))
+                .unwrap_or(false);
+
+            Self::cleanup_entries_for_dispatch(&mut entries, now);
+            let entry = entries
+                .iter_mut()
+                .find(|entry| entry.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据 #{} 不存在", id))?;
+            if !Self::is_entry_dispatch_available(
+                entry,
+                now,
+                Self::entry_effective_max_concurrent(entry, &settings),
+                Self::entry_effective_rpm(entry, &settings),
+                is_opus,
+            ) {
+                anyhow::bail!("凭据 #{} 当前不可调度", id);
+            }
+            Self::reserve_entry(entry, now)
+        };
+
+        match self.try_ensure_token(id, &credentials).await {
+            Ok(ctx) => Ok(ctx),
+            Err(err) => {
+                self.release_credential(id);
+                Err(err)
             }
         }
     }
@@ -2222,6 +2263,7 @@ impl MultiTokenManager {
             transient_cooldown_ms: settings.transient_cooldown_ms,
             max_retry_accounts: settings.max_retry_accounts,
             model_capacity_cooldown_ms: settings.model_capacity_cooldown_ms,
+            same_account_retry_rules: settings.same_account_retry_rules,
             token_auto_refresh_enabled: settings.token_auto_refresh_enabled,
             token_auto_refresh_interval_secs: settings.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: settings.token_auto_refresh_window_secs,

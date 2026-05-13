@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::kiro::settings::SameAccountRetryRule;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TlsBackend {
@@ -134,6 +136,10 @@ pub struct Config {
     /// 模型容量不足后的模型级冷却时间（毫秒）
     #[serde(default = "default_model_capacity_cooldown_ms")]
     pub model_capacity_cooldown_ms: u64,
+
+    /// 单账号原地重试规则。匹配后先同号重试，耗尽后才进入账号冷却/换号逻辑。
+    #[serde(default = "default_same_account_retry_rules")]
+    pub same_account_retry_rules: Vec<SameAccountRetryRule>,
 
     /// 是否启用后台 Token 自动刷新
     #[serde(default = "default_token_auto_refresh_enabled")]
@@ -411,6 +417,17 @@ fn default_model_capacity_cooldown_ms() -> u64 {
     10_000
 }
 
+fn default_same_account_retry_rules() -> Vec<SameAccountRetryRule> {
+    vec![SameAccountRetryRule {
+        enabled: true,
+        status: "429".to_string(),
+        reason: Some("INSUFFICIENT_MODEL_CAPACITY".to_string()),
+        attempts: 2,
+        delay_ms: 1_500,
+        respect_retry_after: true,
+    }]
+}
+
 fn default_token_auto_refresh_enabled() -> bool {
     true
 }
@@ -620,6 +637,7 @@ impl Default for Config {
             transient_cooldown_ms: default_transient_cooldown_ms(),
             max_retry_accounts: default_max_retry_accounts(),
             model_capacity_cooldown_ms: default_model_capacity_cooldown_ms(),
+            same_account_retry_rules: default_same_account_retry_rules(),
             token_auto_refresh_enabled: default_token_auto_refresh_enabled(),
             token_auto_refresh_interval_secs: default_token_auto_refresh_interval_secs(),
             token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),

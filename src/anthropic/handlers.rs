@@ -25,7 +25,7 @@ use tokio::time::interval;
 use uuid::Uuid;
 
 use super::converter::{
-    ConversionError, ConversionOptions, PdfDebugInfo, convert_request, convert_request_with_options,
+    ConversionError, ConversionOptions, PdfDebugInfo, convert_request_with_options,
 };
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, Opus47Diagnostics, SseEvent, StreamContext};
@@ -313,6 +313,7 @@ fn aggregator_models() -> Vec<Model> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anthropic::converter::convert_request;
     use crate::anthropic::types::Message;
     use crate::kiro::model::events::{
         AssistantResponseEvent, Event, ReasoningContentEvent, ToolUseEvent,

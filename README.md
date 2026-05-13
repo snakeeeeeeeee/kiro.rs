@@ -208,6 +208,9 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `globalRpm` | number | `0` | 全局每分钟请求数限制，`0` 表示不限制 |
 | `rateLimitCooldownMs` | number | `60000` | 上游返回 `429` 后该凭据的冷却时间 |
 | `transientCooldownMs` | number | `10000` | 上游 `408`、`5xx` 或网络超时后的短冷却时间 |
+| `maxRetryAccounts` | number | `3` | 单个请求最多尝试的不同账号数，`1` 表示不换号 |
+| `modelCapacityCooldownMs` | number | `10000` | 所有尝试账号都遇到 `INSUFFICIENT_MODEL_CAPACITY` 后的模型级冷却时间 |
+| `sameAccountRetryRules` | array | 见示例 | 单号重试规则。命中规则时先用当前账号重试，耗尽后才进入账号冷却或换号 |
 | `opus47PlainStabilizationMode` | string | `off` | Opus 4.7 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
 | `opus47AntmlProbeCompat` | string | `off` | Opus 4.7 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
 | `opus47CleanProbeMode` | string | `off` | Opus 4.7 clean probe 模式：`off` 或 `clean`。开启后减少本地合成提示、工具描述后缀和结构化输出历史污染，仅作用于 plain `claude-opus-4-7` |
@@ -250,6 +253,18 @@ docker compose -f docker-compose-dev.yml up -d --build
    "globalRpm": 0,
    "rateLimitCooldownMs": 60000,
    "transientCooldownMs": 10000,
+   "maxRetryAccounts": 3,
+   "modelCapacityCooldownMs": 10000,
+   "sameAccountRetryRules": [
+      {
+         "enabled": true,
+         "status": "429",
+         "reason": "INSUFFICIENT_MODEL_CAPACITY",
+         "attempts": 2,
+         "delayMs": 1500,
+         "respectRetryAfter": true
+      }
+   ],
    "opus47PlainStabilizationMode": "off",
    "opus47AntmlProbeCompat": "off",
    "opus47CleanProbeMode": "off",

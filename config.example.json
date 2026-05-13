@@ -14,6 +14,18 @@
   "globalRpm": 0,
   "rateLimitCooldownMs": 60000,
   "transientCooldownMs": 10000,
+  "maxRetryAccounts": 3,
+  "modelCapacityCooldownMs": 10000,
+  "sameAccountRetryRules": [
+    {
+      "enabled": true,
+      "status": "429",
+      "reason": "INSUFFICIENT_MODEL_CAPACITY",
+      "attempts": 2,
+      "delayMs": 1500,
+      "respectRetryAfter": true
+    }
+  ],
   "opus47PlainStabilizationMode": "off",
   "opus47AntmlProbeCompat": "off",
   "opus47CleanProbeMode": "off",

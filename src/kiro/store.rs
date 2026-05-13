@@ -9,7 +9,7 @@ use crate::kiro::dynamic_proxy::DynamicProxyBinding;
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::{
-    CredentialPolicy, RuntimeSettings, normalize_dynamic_proxy_protocol,
+    CredentialPolicy, RuntimeSettings, SameAccountRetryRule, normalize_dynamic_proxy_protocol,
     normalize_dynamic_proxy_provider, normalize_opus47_antml_probe_compat,
     normalize_opus47_clean_probe_mode, normalize_opus47_plain_stabilization_mode,
 };
@@ -419,6 +419,10 @@ fn runtime_settings_pairs(
             settings.model_capacity_cooldown_ms.to_string(),
         ),
         (
+            "sameAccountRetryRules",
+            serde_json::to_string(&settings.same_account_retry_rules)?,
+        ),
+        (
             "tokenAutoRefreshEnabled",
             settings.token_auto_refresh_enabled.to_string(),
         ),
@@ -602,6 +606,19 @@ fn apply_runtime_setting(
         "transientCooldownMs" => settings.transient_cooldown_ms = parse_u64(key, value)?,
         "maxRetryAccounts" => settings.max_retry_accounts = parse_usize(key, value)?,
         "modelCapacityCooldownMs" => settings.model_capacity_cooldown_ms = parse_u64(key, value)?,
+        "sameAccountRetryRules" => {
+            settings.same_account_retry_rules =
+                serde_json::from_str(value).with_context(|| format!("解析 {} 失败", key))?
+        }
+        "modelCapacitySameAccountRetries" => {
+            apply_legacy_model_capacity_same_account_retries(settings, parse_usize(key, value)?)
+        }
+        "modelCapacitySameAccountRetryDelayMs" => {
+            apply_legacy_model_capacity_same_account_retry_delay_ms(
+                settings,
+                parse_u64(key, value)?,
+            )
+        }
         "tokenAutoRefreshEnabled" => settings.token_auto_refresh_enabled = parse_bool(key, value)?,
         "tokenAutoRefreshIntervalSecs" => {
             settings.token_auto_refresh_interval_secs = parse_u64(key, value)?
@@ -744,6 +761,51 @@ fn parse_u64(key: &str, value: &str) -> anyhow::Result<u64> {
     value
         .parse::<u64>()
         .with_context(|| format!("runtime setting {} 不是有效整数", key))
+}
+
+fn apply_legacy_model_capacity_same_account_retries(
+    settings: &mut RuntimeSettings,
+    attempts: usize,
+) {
+    let rule = legacy_model_capacity_rule(settings);
+    rule.attempts = attempts;
+    rule.enabled = attempts > 0;
+}
+
+fn apply_legacy_model_capacity_same_account_retry_delay_ms(
+    settings: &mut RuntimeSettings,
+    delay_ms: u64,
+) {
+    legacy_model_capacity_rule(settings).delay_ms = delay_ms;
+}
+
+fn legacy_model_capacity_rule(settings: &mut RuntimeSettings) -> &mut SameAccountRetryRule {
+    let index = settings.same_account_retry_rules.iter().position(|rule| {
+        rule.status.trim() == "429"
+            && rule
+                .reason
+                .as_deref()
+                .map(|reason| reason.eq_ignore_ascii_case("INSUFFICIENT_MODEL_CAPACITY"))
+                .unwrap_or(false)
+    });
+
+    let index = match index {
+        Some(index) => index,
+        None => {
+            settings
+                .same_account_retry_rules
+                .push(SameAccountRetryRule {
+                    enabled: true,
+                    status: "429".to_string(),
+                    reason: Some("INSUFFICIENT_MODEL_CAPACITY".to_string()),
+                    attempts: 0,
+                    delay_ms: 1_500,
+                    respect_retry_after: true,
+                });
+            settings.same_account_retry_rules.len() - 1
+        }
+    };
+    &mut settings.same_account_retry_rules[index]
 }
 
 fn dynamic_proxy_binding_from_row(
@@ -890,6 +952,14 @@ mod tests {
         updated.global_max_concurrent = 11;
         updated.per_account_default_max_concurrent = 4;
         updated.session_affinity_ttl_secs = 900;
+        updated.same_account_retry_rules = vec![SameAccountRetryRule {
+            enabled: true,
+            status: "408,500-599".to_string(),
+            reason: None,
+            attempts: 1,
+            delay_ms: 1_250,
+            respect_retry_after: false,
+        }];
         updated.opus47_plain_stabilization_mode = "adaptive_low".to_string();
         updated.opus47_antml_probe_compat = "clarify".to_string();
         updated.opus47_clean_probe_mode = "clean".to_string();
@@ -907,6 +977,11 @@ mod tests {
         assert_eq!(loaded.global_max_concurrent, 11);
         assert_eq!(loaded.per_account_default_max_concurrent, 4);
         assert_eq!(loaded.session_affinity_ttl_secs, 900);
+        assert_eq!(loaded.same_account_retry_rules.len(), 1);
+        assert_eq!(loaded.same_account_retry_rules[0].status, "408,500-599");
+        assert_eq!(loaded.same_account_retry_rules[0].attempts, 1);
+        assert_eq!(loaded.same_account_retry_rules[0].delay_ms, 1_250);
+        assert!(!loaded.same_account_retry_rules[0].respect_retry_after);
         assert_eq!(loaded.opus47_plain_stabilization_mode, "adaptive_low");
         assert_eq!(loaded.opus47_antml_probe_compat, "clarify");
         assert_eq!(loaded.opus47_clean_probe_mode, "clean");

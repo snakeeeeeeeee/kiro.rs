@@ -53,6 +53,7 @@ export interface RuntimeStatusResponse {
   transientCooldownMs: number
   maxRetryAccounts: number
   modelCapacityCooldownMs: number
+  sameAccountRetryRules: SameAccountRetryRule[]
   tokenAutoRefreshEnabled: boolean
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
@@ -76,6 +77,15 @@ export interface RuntimeStatusResponse {
   modelCooldowns: ModelCooldownSnapshot[]
   dynamicProxy: DynamicProxySummary
   credentials: RuntimeCredentialStatus[]
+}
+
+export interface SameAccountRetryRule {
+  enabled: boolean
+  status: string
+  reason?: string | null
+  attempts: number
+  delayMs: number
+  respectRetryAfter: boolean
 }
 
 export interface RuntimeMetricsSnapshot {
@@ -233,6 +243,7 @@ export interface RuntimeSettings {
   transientCooldownMs: number
   maxRetryAccounts: number
   modelCapacityCooldownMs: number
+  sameAccountRetryRules: SameAccountRetryRule[]
   tokenAutoRefreshEnabled: boolean
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number

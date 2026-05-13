@@ -134,3 +134,9 @@
 - Clean mode avoids several local synthetic additions that can affect detector prompts: the synthetic assistant acknowledgement after system messages, no-system synthetic history for thinking/structured-output hints, Write/Edit tool description suffixes, and structured-output hint history pollution.
 - In clean mode, thinking and structured-output hints stay on the current user message, with thinking first and JSON/schema instruction second. This keeps the request closer to the visible user probe while still preserving the requested behavior.
 - The mode does not spoof signatures. For validation, compare `opus47_request_thinking_state clean_probe_mode=true` with later `opus47_stream_diagnostics` / `opus47_nonstream_diagnostics`: detector-relevant signature evidence still requires `reasoning_content_count>0` and `signature_seen=true`.
+
+## Configurable Same-Account Retry Rules
+- Live logs showed `INSUFFICIENT_MODEL_CAPACITY` on both available credentials. This is upstream model pool capacity pressure, not an account-specific bad credential signal.
+- Existing behavior changed accounts immediately after a capacity 429. With small account pools that can waste a chance to retry the same account after a short wait.
+- Same-account retry is now a configurable rule table rather than a hardcoded capacity-only switch. Status expressions support exact values, ranges, and comma lists such as `429`, `400-429`, and `408,500-599`; `reason` can be blank or narrowed to values like `INSUFFICIENT_MODEL_CAPACITY`.
+- Rule matching happens before account cooldown/failover classification. If the rule says to retry, the provider reacquires the same credential and does not mark account CD yet. Once rule attempts are exhausted, the original account/model cooldown and account switching logic handles the failure.

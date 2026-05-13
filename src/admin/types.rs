@@ -110,6 +110,7 @@ pub struct RuntimeStatusResponse {
     pub transient_cooldown_ms: u64,
     pub max_retry_accounts: usize,
     pub model_capacity_cooldown_ms: u64,
+    pub same_account_retry_rules: Vec<crate::kiro::settings::SameAccountRetryRule>,
     pub token_auto_refresh_enabled: bool,
     pub token_auto_refresh_interval_secs: u64,
     pub token_auto_refresh_window_secs: u64,

@@ -245,3 +245,19 @@
 - Added diagnostics so `opus47_request_thinking_state` logs `clean_probe_mode`, making live cctest/hvoy comparisons explicit.
 - Added config example and README entries for the Opus 4.7 detector/diagnostic settings.
 - Validation: `cargo fmt -- --check`, `cargo test clean_probe -- --nocapture`, `cargo test`, `pnpm --dir admin-ui exec tsc --noEmit`, and `pnpm --dir admin-ui build` passed.
+
+## Completed: Configurable Same-Account Retry Rules
+- Replaced the model-capacity-only retry knobs with `sameAccountRetryRules`, a runtime/config/Admin rule table.
+- Each rule can match status expressions such as `429`, `400-429`, or `408,500-599`, optionally narrow by upstream `reason`, and configure attempts, delay, and `Retry-After` handling.
+- Provider retry behavior now checks the rule table before deciding account cooldown or account failover. If a rule matches, it retries the same credential first; once rule attempts are exhausted, the existing cooldown/failover classification resumes.
+- Added a locked same-credential acquisition path so same-account retry remains on the same credential even in balanced mode.
+- Kept backward compatibility for legacy `modelCapacitySameAccountRetries` and `modelCapacitySameAccountRetryDelayMs` persisted/config keys by converting them into the default capacity rule.
+
+## Latest Validation: Configurable Same-Account Retry Rules
+- `cargo test same_account_retry_rule -- --nocapture`: passed.
+- `cargo test runtime_settings_round_trip -- --nocapture`: passed.
+- `cargo check`: passed.
+- `cargo test`: passed, 267 tests.
+- `cargo fmt -- --check`: passed.
+- `pnpm --dir admin-ui exec tsc --noEmit`: passed.
+- `pnpm --dir admin-ui build`: passed.

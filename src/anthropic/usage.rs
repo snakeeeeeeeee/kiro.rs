@@ -560,6 +560,7 @@ mod tests {
             transient_cooldown_ms: 10_000,
             max_retry_accounts: 3,
             model_capacity_cooldown_ms: 10_000,
+            same_account_retry_rules: Vec::new(),
             token_auto_refresh_enabled: true,
             token_auto_refresh_interval_secs: 300,
             token_auto_refresh_window_secs: 1_800,

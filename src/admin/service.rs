@@ -169,6 +169,7 @@ impl AdminService {
             transient_cooldown_ms: snapshot.transient_cooldown_ms,
             max_retry_accounts: snapshot.max_retry_accounts,
             model_capacity_cooldown_ms: snapshot.model_capacity_cooldown_ms,
+            same_account_retry_rules: snapshot.same_account_retry_rules,
             token_auto_refresh_enabled: snapshot.token_auto_refresh_enabled,
             token_auto_refresh_interval_secs: snapshot.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: snapshot.token_auto_refresh_window_secs,
