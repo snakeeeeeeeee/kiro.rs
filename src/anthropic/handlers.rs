@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_opus47_enabled_client_thinking_normalizes_to_adaptive_high() {
+    fn plain_opus47_enabled_client_thinking_keeps_enabled_directive() {
         let mut payload = request("claude-opus-4-7");
         payload.thinking = Some(Thinking {
             thinking_type: "enabled".to_string(),
@@ -455,17 +455,22 @@ mod tests {
 
         assert_eq!(
             payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
-            Some("adaptive")
+            Some("enabled")
         );
         assert_eq!(
-            payload.output_config.as_ref().map(|c| c.effort.as_str()),
-            Some("high")
+            payload.thinking.as_ref().map(|t| t.budget_tokens),
+            Some(20000)
         );
         assert!(client_thinking_enabled_for_request(
             "claude-opus-4-7",
             &payload,
             "native",
             client_requested_thinking
+        ));
+
+        let state = convert_request(&payload).unwrap().conversation_state;
+        assert!(state.current_message.user_input_message.content.starts_with(
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>"
         ));
     }
 
@@ -1669,9 +1674,15 @@ fn normalize_opus47_client_thinking(
         return;
     }
 
+    let budget_tokens = payload
+        .thinking
+        .as_ref()
+        .map(|thinking| thinking.budget_tokens.max(20000))
+        .unwrap_or(20000);
+
     payload.thinking = Some(Thinking {
-        thinking_type: "adaptive".to_string(),
-        budget_tokens: 20000,
+        thinking_type: "enabled".to_string(),
+        budget_tokens,
     });
 
     let format = payload
@@ -1685,9 +1696,10 @@ fn normalize_opus47_client_thinking(
 
     tracing::info!(
         model = %requested_model,
-        thinking_type = "adaptive",
+        thinking_type = "enabled",
+        budget_tokens,
         effort = "high",
-        "Opus 4.7 客户端 thinking 请求已归一为 adaptive/high"
+        "Opus 4.7 客户端 thinking 请求已归一为 enabled/max_thinking_length"
     );
 }
 
