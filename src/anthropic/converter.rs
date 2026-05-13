@@ -908,6 +908,9 @@ fn maybe_dump_pdf_debug_file(name: &str, bytes: &[u8]) {
     let Ok(dir) = env::var("KIRO_RS_PDF_DEBUG_DIR") else {
         return;
     };
+    if dir.trim().is_empty() {
+        return;
+    }
     let dir = Path::new(&dir);
     if let Err(err) = fs::create_dir_all(dir) {
         tracing::warn!(name = name, dir = %dir.display(), error = %err, "PDF debug 目录创建失败");
