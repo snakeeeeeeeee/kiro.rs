@@ -424,6 +424,49 @@ mod tests {
             "native",
             client_requested_thinking
         ));
+
+        let state = convert_request(&payload).unwrap().conversation_state;
+        assert!(
+            state
+                .current_message
+                .user_input_message
+                .content
+                .starts_with(
+                    "<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>"
+                )
+        );
+    }
+
+    #[test]
+    fn plain_opus47_enabled_client_thinking_normalizes_to_adaptive_high() {
+        let mut payload = request("claude-opus-4-7");
+        payload.thinking = Some(Thinking {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: 1024,
+        });
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+
+        normalize_opus47_client_thinking(
+            &mut payload,
+            "claude-opus-4-7",
+            client_requested_thinking,
+        );
+
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
+            payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("high")
+        );
+        assert!(client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload,
+            "native",
+            client_requested_thinking
+        ));
     }
 
     #[test]
@@ -651,6 +694,7 @@ pub async fn post_messages(
         client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
+    normalize_opus47_client_thinking(&mut payload, &requested_model, client_requested_thinking);
     let runtime_settings = provider.token_manager().runtime_settings();
     let usage_session_key = session_key_for_request(
         &payload,
@@ -723,6 +767,15 @@ pub async fn post_messages(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
+    );
+    log_opus47_request_thinking_state(
+        &requested_model,
+        &payload,
+        client_requested_thinking,
+        client_thinking_enabled,
+        stabilization_mode.as_str(),
+        compat_thinking_model.as_str(),
+        &conversion_result.conversation_state,
     );
 
     // 构建 Kiro 请求（profile_arn 由 provider 层根据实际凭据注入）
@@ -1603,6 +1656,76 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     }
 }
 
+fn normalize_opus47_client_thinking(
+    payload: &mut MessagesRequest,
+    requested_model: &str,
+    client_requested_thinking: bool,
+) {
+    if !client_requested_thinking || !is_opus47_model_name(requested_model) {
+        return;
+    }
+
+    if !payload.thinking.as_ref().is_some_and(|t| t.is_enabled()) {
+        return;
+    }
+
+    payload.thinking = Some(Thinking {
+        thinking_type: "adaptive".to_string(),
+        budget_tokens: 20000,
+    });
+
+    let format = payload
+        .output_config
+        .as_ref()
+        .and_then(|config| config.format.clone());
+    payload.output_config = Some(OutputConfig {
+        effort: "high".to_string(),
+        format,
+    });
+
+    tracing::info!(
+        model = %requested_model,
+        thinking_type = "adaptive",
+        effort = "high",
+        "Opus 4.7 客户端 thinking 请求已归一为 adaptive/high"
+    );
+}
+
+fn log_opus47_request_thinking_state(
+    requested_model: &str,
+    payload: &MessagesRequest,
+    client_requested_thinking: bool,
+    client_thinking_enabled: bool,
+    stabilization_mode: &str,
+    compat_thinking_model: &str,
+    conversation_state: &ConversationState,
+) {
+    if !is_opus47_model_name(requested_model) {
+        return;
+    }
+
+    let current_content = conversation_state
+        .current_message
+        .user_input_message
+        .content
+        .as_str();
+    let thinking_directives_present = current_content.contains("<thinking_mode>");
+
+    tracing::info!(
+        model = %requested_model,
+        effective_model = %payload.model,
+        thinking_type = payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+        effort = payload.output_config.as_ref().map(|c| c.effort.as_str()),
+        client_requested_thinking,
+        client_thinking_enabled,
+        stabilization_mode,
+        compat_thinking_model,
+        thinking_directives_present,
+        current_content_chars = current_content.chars().count(),
+        "opus47_request_thinking_state"
+    );
+}
+
 fn is_opus47_model_name(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
@@ -1826,6 +1949,7 @@ pub async fn post_messages_cc(
         client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
+    normalize_opus47_client_thinking(&mut payload, &requested_model, client_requested_thinking);
     let runtime_settings = provider.token_manager().runtime_settings();
     let usage_session_key = session_key_for_request(
         &payload,
@@ -1898,6 +2022,15 @@ pub async fn post_messages_cc(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
+    );
+    log_opus47_request_thinking_state(
+        &requested_model,
+        &payload,
+        client_requested_thinking,
+        client_thinking_enabled,
+        stabilization_mode.as_str(),
+        compat_thinking_model.as_str(),
+        &conversion_result.conversation_state,
     );
 
     // 构建 Kiro 请求（profile_arn 由 provider 层根据实际凭据注入）
