@@ -20,7 +20,6 @@ Environment:
   KIRO_RS_BIND               Host bind address, default 0.0.0.0
   KIRO_RS_PORT               Host port, default 18990
   RUST_LOG                   Container log level, default info
-  KIRO_RS_PDF_DEBUG_DIR      In-container PDF dump directory, default /app/config/pdf-debug
   DOCKER_BUILDKIT            Enable BuildKit, default 1
   DOCKER_BUILD_PROGRESS      Build progress output, default plain
   HEALTH_TIMEOUT_SECS        Health wait timeout, default 90
@@ -34,7 +33,6 @@ KIRO_RS_IMAGE="${KIRO_RS_IMAGE:-kiro-rs:prod}"
 KIRO_RS_BIND="${KIRO_RS_BIND:-0.0.0.0}"
 KIRO_RS_PORT="${KIRO_RS_PORT:-18990}"
 RUST_LOG="${RUST_LOG:-info}"
-KIRO_RS_PDF_DEBUG_DIR="${KIRO_RS_PDF_DEBUG_DIR:-/app/config/pdf-debug}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-90}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${KIRO_RS_PORT}/healthz}"
 RUN_SMOKE="${RUN_SMOKE:-0}"
@@ -84,15 +82,11 @@ if [ ! -f config/config.json ]; then
 fi
 
 mkdir -p config
-if [ -n "$KIRO_RS_PDF_DEBUG_DIR" ] && [[ "$KIRO_RS_PDF_DEBUG_DIR" == /app/config/* ]]; then
-  mkdir -p "config/${KIRO_RS_PDF_DEBUG_DIR#/app/config/}"
-fi
 
 export KIRO_RS_IMAGE
 export KIRO_RS_BIND
 export KIRO_RS_PORT
 export RUST_LOG
-export KIRO_RS_PDF_DEBUG_DIR
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 export DOCKER_BUILD_PROGRESS
 
@@ -110,12 +104,6 @@ up_args+=("$SERVICE_NAME")
 
 echo "Building and starting production container"
 echo "image=$KIRO_RS_IMAGE bind=$KIRO_RS_BIND port=$KIRO_RS_PORT"
-if [ -n "$KIRO_RS_PDF_DEBUG_DIR" ]; then
-  echo "pdf_debug_dir=$KIRO_RS_PDF_DEBUG_DIR"
-  if [[ "$KIRO_RS_PDF_DEBUG_DIR" == /app/config/* ]]; then
-    echo "pdf_debug_host_dir=$ROOT_DIR/config/${KIRO_RS_PDF_DEBUG_DIR#/app/config/}"
-  fi
-fi
 echo "docker_buildkit=$DOCKER_BUILDKIT docker_build_progress=$DOCKER_BUILD_PROGRESS"
 
 docker compose "${compose_args[@]}" "${build_args[@]}"

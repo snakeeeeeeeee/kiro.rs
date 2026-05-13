@@ -3,10 +3,7 @@
 //! 负责将 Anthropic API 请求格式转换为 Kiro API 请求格式
 
 use std::collections::HashMap;
-use std::env;
-use std::fs;
 use std::io::Read;
-use std::path::Path;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use flate2::read::{DeflateDecoder, ZlibDecoder};
@@ -668,7 +665,6 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
     );
     if text.chars().count() < MIN_PDF_PRIMARY_TEXT_CHARS {
         log_pdf_low_text_diagnostics(name, &bytes, &fallback);
-        maybe_dump_pdf_debug_file(name, &bytes);
     }
 
     let debug = PdfDebugInfo {
@@ -1021,61 +1017,6 @@ fn log_pdf_low_text_diagnostics(name: &str, bytes: &[u8], fallback: &PdfFallback
             data_hex_prefix = %stream.hex_prefix,
             "PDF stream 诊断"
         );
-    }
-}
-
-fn maybe_dump_pdf_debug_file(name: &str, bytes: &[u8]) {
-    let Ok(dir) = env::var("KIRO_RS_PDF_DEBUG_DIR") else {
-        tracing::warn!(
-            name = name,
-            "PDF debug 文件未写入：KIRO_RS_PDF_DEBUG_DIR 未设置"
-        );
-        return;
-    };
-    if dir.trim().is_empty() {
-        tracing::warn!(
-            name = name,
-            "PDF debug 文件未写入：KIRO_RS_PDF_DEBUG_DIR 为空"
-        );
-        return;
-    }
-    let dir = Path::new(&dir);
-    if let Err(err) = fs::create_dir_all(dir) {
-        tracing::warn!(name = name, dir = %dir.display(), error = %err, "PDF debug 目录创建失败");
-        return;
-    }
-
-    let digest = Sha256::digest(bytes);
-    let filename = format!(
-        "{}-{}.pdf",
-        sanitize_pdf_debug_name(name),
-        hex::encode(&digest[..8])
-    );
-    let path = dir.join(filename);
-    match fs::write(&path, bytes) {
-        Ok(()) => tracing::warn!(name = name, path = %path.display(), "PDF debug 文件已写入"),
-        Err(err) => {
-            tracing::warn!(name = name, path = %path.display(), error = %err, "PDF debug 文件写入失败")
-        }
-    }
-}
-
-fn sanitize_pdf_debug_name(name: &str) -> String {
-    let sanitized: String = name
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .take(80)
-        .collect();
-    if sanitized.is_empty() {
-        "document".to_string()
-    } else {
-        sanitized
     }
 }
 

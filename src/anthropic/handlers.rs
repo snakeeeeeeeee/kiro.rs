@@ -1081,12 +1081,14 @@ fn log_opus47_stream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: In
         reasoning_content_count = diagnostics.reasoning_content_count,
         tool_use_count = diagnostics.tool_use_count,
         signature_seen = diagnostics.signature_seen,
+        signature_exposed_to_client = diagnostics.signature_exposed_to_client,
         visible_text_chars = diagnostics.visible_text_chars,
         hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
         first_event_type = diagnostics.first_event_type(),
         duration_ms = crate::metrics::duration_ms(started_at.elapsed()),
         "opus47_stream_diagnostics"
     );
+    log_opus47_signature_diagnostics(diagnostics, diagnostics.signature_exposed_to_client);
 }
 
 fn log_opus47_nonstream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: Instant) {
@@ -1105,11 +1107,37 @@ fn log_opus47_nonstream_diagnostics(diagnostics: &Opus47Diagnostics, started_at:
         reasoning_content_count = diagnostics.reasoning_content_count,
         tool_use_count = diagnostics.tool_use_count,
         signature_seen = diagnostics.signature_seen,
+        signature_exposed_to_client = diagnostics.signature_exposed_to_client,
         visible_text_chars = diagnostics.visible_text_chars,
         hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
         first_event_type = diagnostics.first_event_type(),
         duration_ms = crate::metrics::duration_ms(started_at.elapsed()),
         "opus47_nonstream_diagnostics"
+    );
+    log_opus47_signature_diagnostics(diagnostics, diagnostics.signature_exposed_to_client);
+}
+
+fn log_opus47_signature_diagnostics(
+    diagnostics: &Opus47Diagnostics,
+    signature_exposed_to_client: bool,
+) {
+    if !diagnostics.enabled {
+        return;
+    }
+
+    tracing::warn!(
+        target: "kiro_rs::metrics",
+        model = %diagnostics.model,
+        credential_id = diagnostics.credential_id,
+        attempts = diagnostics.attempts,
+        client_thinking_enabled = diagnostics.client_thinking_enabled,
+        reasoning_content_count = diagnostics.reasoning_content_count,
+        signature_seen = diagnostics.signature_seen,
+        signature_exposed_to_client,
+        hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
+        visible_text_chars = diagnostics.visible_text_chars,
+        first_event_type = diagnostics.first_event_type(),
+        "opus47_signature_diagnostics"
     );
 }
 
@@ -1412,6 +1440,7 @@ async fn handle_non_stream_request(
         });
         if let Some(signature) = reasoning_signature {
             thinking["signature"] = json!(signature);
+            opus47_diagnostics.mark_signature_exposed_to_client();
         }
         content.push(thinking);
     }

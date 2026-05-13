@@ -10,7 +10,6 @@ services:
       - ./config/:/app/config/
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-      KIRO_RS_PDF_DEBUG_DIR: "${KIRO_RS_PDF_DEBUG_DIR:-}"
     restart: unless-stopped
     stop_grace_period: 75s
     healthcheck:

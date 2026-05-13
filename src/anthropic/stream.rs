@@ -23,6 +23,7 @@ pub struct Opus47Diagnostics {
     pub reasoning_content_count: usize,
     pub tool_use_count: usize,
     pub signature_seen: bool,
+    pub signature_exposed_to_client: bool,
     pub visible_text_chars: usize,
     pub hidden_reasoning_chars: usize,
     pub first_event_type: Option<String>,
@@ -41,6 +42,7 @@ impl Opus47Diagnostics {
             reasoning_content_count: 0,
             tool_use_count: 0,
             signature_seen: false,
+            signature_exposed_to_client: false,
             visible_text_chars: 0,
             hidden_reasoning_chars: 0,
             first_event_type: None,
@@ -66,6 +68,7 @@ impl Opus47Diagnostics {
             reasoning_content_count: 0,
             tool_use_count: 0,
             signature_seen: false,
+            signature_exposed_to_client: false,
             visible_text_chars: 0,
             hidden_reasoning_chars: 0,
             first_event_type: None,
@@ -112,6 +115,12 @@ impl Opus47Diagnostics {
 
     pub fn first_event_type(&self) -> &str {
         self.first_event_type.as_deref().unwrap_or("none")
+    }
+
+    pub fn mark_signature_exposed_to_client(&mut self) {
+        if self.enabled {
+            self.signature_exposed_to_client = true;
+        }
     }
 }
 
@@ -1129,6 +1138,7 @@ impl StreamContext {
             if !signature.is_empty() && !self.reasoning_signature_sent {
                 events.push(self.create_signature_delta_event(index, signature));
                 self.reasoning_signature_sent = true;
+                self.opus47_diagnostics.mark_signature_exposed_to_client();
             }
         }
 
