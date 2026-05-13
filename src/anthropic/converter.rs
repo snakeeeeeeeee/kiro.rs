@@ -3,7 +3,10 @@
 //! 负责将 Anthropic API 请求格式转换为 Kiro API 请求格式
 
 use std::collections::HashMap;
+use std::env;
+use std::fs;
 use std::io::Read;
+use std::path::Path;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use flate2::read::{DeflateDecoder, ZlibDecoder};
@@ -576,6 +579,10 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         extracted_preview = %pdf_text_preview(text),
         "PDF 文档文本提取预览"
     );
+    if text.chars().count() < MIN_PDF_PRIMARY_TEXT_CHARS {
+        log_pdf_low_text_diagnostics(name, &bytes, &fallback);
+        maybe_dump_pdf_debug_file(name, &bytes);
+    }
 
     Some(ProcessedPdfDocument { text: content })
 }
@@ -696,6 +703,7 @@ struct PdfFallbackText {
     text: String,
     stream_count: usize,
     decoded_stream_count: usize,
+    stream_diagnostics: Vec<PdfStreamDiagnostic>,
 }
 
 fn extract_simple_pdf_text_ops(bytes: &[u8]) -> PdfFallbackText {
@@ -718,7 +726,22 @@ fn extract_simple_pdf_text_ops(bytes: &[u8]) -> PdfFallbackText {
         text: dedupe_preserve_order(out).join("\n"),
         stream_count,
         decoded_stream_count,
+        stream_diagnostics: collect_pdf_stream_diagnostics(bytes),
     }
+}
+
+struct PdfStreamDiagnostic {
+    index: usize,
+    dict_preview: String,
+    data_len: usize,
+    filter_summary: String,
+    subtype_summary: String,
+    has_bt: bool,
+    has_tj: bool,
+    has_tj_array: bool,
+    has_do: bool,
+    ascii_preview: String,
+    hex_prefix: String,
 }
 
 struct PdfStream<'a> {
@@ -768,6 +791,186 @@ fn extract_pdf_streams(bytes: &[u8]) -> Vec<PdfStream<'_>> {
     }
 
     streams
+}
+
+fn collect_pdf_stream_diagnostics(bytes: &[u8]) -> Vec<PdfStreamDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut pos = 0usize;
+
+    while let Some(relative_start) = find_subslice(&bytes[pos..], b"stream") {
+        let stream_keyword = pos + relative_start;
+        let after_keyword = stream_keyword + b"stream".len();
+        let data_start = if bytes.get(after_keyword) == Some(&b'\r')
+            && bytes.get(after_keyword + 1) == Some(&b'\n')
+        {
+            after_keyword + 2
+        } else if bytes.get(after_keyword) == Some(&b'\n')
+            || bytes.get(after_keyword) == Some(&b'\r')
+        {
+            after_keyword + 1
+        } else {
+            after_keyword
+        };
+
+        let Some(relative_end) = find_subslice(&bytes[data_start..], b"endstream") else {
+            break;
+        };
+        let mut data_end = data_start + relative_end;
+        while data_end > data_start && matches!(bytes[data_end - 1], b'\n' | b'\r') {
+            data_end -= 1;
+        }
+
+        let dict_start = stream_keyword.saturating_sub(1024);
+        let dict = String::from_utf8_lossy(&bytes[dict_start..stream_keyword]);
+        let data = &bytes[data_start..data_end];
+        diagnostics.push(PdfStreamDiagnostic {
+            index: diagnostics.len(),
+            dict_preview: pdf_ascii_preview(dict.as_bytes(), 400),
+            data_len: data.len(),
+            filter_summary: extract_pdf_name_after_key(&dict, "/Filter")
+                .unwrap_or_else(|| "none".to_string()),
+            subtype_summary: extract_pdf_name_after_key(&dict, "/Subtype")
+                .unwrap_or_else(|| "none".to_string()),
+            has_bt: find_subslice(data, b"BT").is_some(),
+            has_tj: find_subslice(data, b"Tj").is_some(),
+            has_tj_array: find_subslice(data, b"TJ").is_some(),
+            has_do: find_subslice(data, b" Do").is_some() || data.ends_with(b"Do"),
+            ascii_preview: pdf_ascii_preview(data, 240),
+            hex_prefix: pdf_hex_prefix(data, 64),
+        });
+
+        pos = data_start + relative_end + b"endstream".len();
+    }
+
+    diagnostics
+}
+
+fn extract_pdf_name_after_key(dict: &str, key: &str) -> Option<String> {
+    let start = dict.rfind(key)?;
+    let rest = dict[start + key.len()..].trim_start();
+    if let Some(array) = rest.strip_prefix('[') {
+        let end = array.find(']').unwrap_or(array.len());
+        return Some(
+            array[..end]
+                .split_whitespace()
+                .take(8)
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    rest.split_whitespace()
+        .next()
+        .map(|value| value.trim_matches(|ch| ch == '<' || ch == '>').to_string())
+}
+
+fn log_pdf_low_text_diagnostics(name: &str, bytes: &[u8], fallback: &PdfFallbackText) {
+    let pdf_text = String::from_utf8_lossy(bytes);
+    tracing::warn!(
+        name = name,
+        pdf_bytes = bytes.len(),
+        page_markers = count_pdf_pages(bytes).unwrap_or(0),
+        obj_count = pdf_text.matches(" obj").count(),
+        endobj_count = pdf_text.matches("endobj").count(),
+        stream_count = fallback.stream_count,
+        decoded_stream_count = fallback.decoded_stream_count,
+        fallback_chars = fallback.text.chars().count(),
+        has_xobject = pdf_text.contains("/XObject"),
+        has_image_subtype =
+            pdf_text.contains("/Subtype /Image") || pdf_text.contains("/Subtype/Image"),
+        has_tounicode = pdf_text.contains("/ToUnicode"),
+        has_flate = pdf_text.contains("FlateDecode"),
+        has_dct = pdf_text.contains("DCTDecode"),
+        has_jpx = pdf_text.contains("JPXDecode"),
+        has_objstm = pdf_text.contains("/ObjStm"),
+        "PDF 低文本提取诊断"
+    );
+
+    for stream in fallback.stream_diagnostics.iter().take(8) {
+        tracing::warn!(
+            name = name,
+            stream_index = stream.index,
+            data_len = stream.data_len,
+            filter = %stream.filter_summary,
+            subtype = %stream.subtype_summary,
+            has_bt = stream.has_bt,
+            has_tj = stream.has_tj,
+            has_tj_array = stream.has_tj_array,
+            has_do = stream.has_do,
+            dict = %stream.dict_preview,
+            data_ascii_preview = %stream.ascii_preview,
+            data_hex_prefix = %stream.hex_prefix,
+            "PDF stream 诊断"
+        );
+    }
+}
+
+fn maybe_dump_pdf_debug_file(name: &str, bytes: &[u8]) {
+    let Ok(dir) = env::var("KIRO_RS_PDF_DEBUG_DIR") else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    if let Err(err) = fs::create_dir_all(dir) {
+        tracing::warn!(name = name, dir = %dir.display(), error = %err, "PDF debug 目录创建失败");
+        return;
+    }
+
+    let digest = Sha256::digest(bytes);
+    let filename = format!(
+        "{}-{}.pdf",
+        sanitize_pdf_debug_name(name),
+        hex::encode(&digest[..8])
+    );
+    let path = dir.join(filename);
+    match fs::write(&path, bytes) {
+        Ok(()) => tracing::warn!(name = name, path = %path.display(), "PDF debug 文件已写入"),
+        Err(err) => {
+            tracing::warn!(name = name, path = %path.display(), error = %err, "PDF debug 文件写入失败")
+        }
+    }
+}
+
+fn sanitize_pdf_debug_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect();
+    if sanitized.is_empty() {
+        "document".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn pdf_ascii_preview(bytes: &[u8], max_chars: usize) -> String {
+    let mut preview = String::new();
+    for byte in bytes.iter().copied() {
+        let ch = match byte {
+            b'\n' | b'\r' | b'\t' => ' ',
+            0x20..=0x7e => byte as char,
+            _ => '.',
+        };
+        preview.push(ch);
+        if preview.chars().count() >= max_chars {
+            break;
+        }
+    }
+    preview.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn pdf_hex_prefix(bytes: &[u8], max_bytes: usize) -> String {
+    bytes
+        .iter()
+        .take(max_bytes)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 struct PdfDecodedStream {
