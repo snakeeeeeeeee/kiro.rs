@@ -512,6 +512,89 @@ mod tests {
     }
 
     #[test]
+    fn plain_opus47_content_thinking_mode_enabled_unlocks_signature_exposure() {
+        // Claude Code 风格：客户端在 content 里用 <thinking_mode>enabled</thinking_mode>
+        // 而不设 API 层 `thinking`。cctest 经 Claude Code 打过来的 probe 全都是这种。
+        let payload = request_with_content(
+            "claude-opus-4-7",
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n请逐步推理",
+        );
+        assert!(
+            payload.thinking.is_none(),
+            "API 层 thinking 字段必须保持 None 以反映真实 cctest 流量"
+        );
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+        assert!(
+            client_requested_thinking,
+            "content 层 <thinking_mode>enabled</thinking_mode> 必须被识别为客户端请求 thinking"
+        );
+        assert!(
+            client_thinking_enabled_for_request(
+                "claude-opus-4-7",
+                &payload,
+                "native",
+                client_requested_thinking,
+            ),
+            "plain claude-opus-4-7 在客户端请求 thinking 后必须允许下发 signature_delta"
+        );
+    }
+
+    #[test]
+    fn plain_opus47_content_thinking_mode_disabled_does_not_trigger() {
+        let payload = request_with_content(
+            "claude-opus-4-7",
+            "<thinking_mode>disabled</thinking_mode>\nhello",
+        );
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+        assert!(!client_requested_thinking);
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload,
+            "native",
+            client_requested_thinking,
+        ));
+    }
+
+    #[test]
+    fn plain_opus47_content_thinking_mode_enabled_in_array_content() {
+        // Anthropic `content` 允许是 ContentBlock 数组；必须正确取出 text 片段里的标签。
+        let mut payload = request("claude-opus-4-7");
+        payload.messages[0].content = serde_json::json!([
+            { "type": "text", "text": "<thinking_mode>enabled</thinking_mode>" },
+            { "type": "text", "text": "解方程 2x + 3 = 7" }
+        ]);
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+        assert!(client_requested_thinking);
+        assert!(client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload,
+            "native",
+            client_requested_thinking,
+        ));
+    }
+
+    #[test]
+    fn plain_opus47_plain_text_compat_still_hides_thinking_even_when_requested() {
+        // compat_thinking_model=plain_text 是显式要求隐藏 thinking，不应被 content 识别覆盖。
+        let payload = request_with_content(
+            "claude-opus-4-7",
+            "<thinking_mode>enabled</thinking_mode>hello",
+        );
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+        assert!(client_requested_thinking);
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload,
+            "plain_text",
+            client_requested_thinking,
+        ));
+    }
+
+    #[test]
     fn clean_probe_mode_is_scoped_to_plain_opus47() {
         let enabled =
             conversion_options_for_request("claude-opus-4-7", &clean_probe_settings("clean"));
@@ -2492,39 +2575,93 @@ fn is_thinking_model_name(model: &str) -> bool {
 }
 
 fn client_requested_thinking_for_request(model: &str, payload: &MessagesRequest) -> bool {
-    is_thinking_model_name(model)
-        || payload
-            .thinking
-            .as_ref()
-            .map(|t| t.is_enabled())
-            .unwrap_or(false)
+    if is_thinking_model_name(model) {
+        return true;
+    }
+    if payload
+        .thinking
+        .as_ref()
+        .map(|t| t.is_enabled())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // Claude Code 风格：客户端在 content 文本里用 <thinking_mode>enabled</thinking_mode>
+    // 请求 thinking，而不是 API 层的 `thinking` 字段。cctest 经 Claude Code 发起的 probe
+    // 都是这种形态，如果只看 API 字段会把它们全部漏判为无 thinking 请求。
+    last_user_text(payload)
+        .as_deref()
+        .is_some_and(content_requests_thinking)
 }
 
 fn client_thinking_enabled_for_request(
     model: &str,
-    payload: &MessagesRequest,
+    _payload: &MessagesRequest,
     compat_thinking_model: &str,
     client_requested_thinking: bool,
 ) -> bool {
     if compat_thinking_model == "plain_text" && is_opus47_model_name(model) {
         return false;
     }
-
-    if is_plain_opus47_model_name(model) {
-        return client_requested_thinking
-            && payload
-                .thinking
-                .as_ref()
-                .map(|t| t.is_enabled())
-                .unwrap_or(false);
-    }
-
+    // 以前 plain claude-opus-4-7 会额外要求 API 层的 `thinking` 字段为 enabled，
+    // 但 client_requested_thinking 已经覆盖 API 字段 / `-thinking` 模型后缀 /
+    // content 层 `<thinking_mode>enabled</thinking_mode>` 三种入口，
+    // 再加一层 API 字段硬闸会把合法的 Claude Code 风格 thinking 请求全部拒掉，
+    // 导致即便上游真返了 signature 也不会通过 signature_delta 下发给客户端。
     client_requested_thinking
-        && payload
-            .thinking
-            .as_ref()
-            .map(|t| t.is_enabled())
-            .unwrap_or(false)
+}
+
+/// 提取最后一条用户消息的可读文本，用于 content 层 thinking 标签识别。
+/// 同时兼容 `content` 为字符串和 `content` 为数组（仅取 `type=text` 的片段）。
+fn last_user_text(payload: &MessagesRequest) -> Option<String> {
+    let last_user = payload
+        .messages
+        .iter()
+        .rfind(|msg| msg.role.eq_ignore_ascii_case("user"))?;
+    match &last_user.content {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                let block_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if block_type == "text" {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        if !out.is_empty() {
+                            out.push('\n');
+                        }
+                        out.push_str(text);
+                    }
+                }
+            }
+            if out.is_empty() { None } else { Some(out) }
+        }
+        _ => None,
+    }
+}
+
+/// 匹配 Claude Code 风格的 content 内 thinking 请求：
+/// `<thinking_mode>enabled</thinking_mode>`，允许标签内外有空白。
+/// disabled 不算，其它值按不命中处理。
+fn content_requests_thinking(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let Some(mut cursor) = lower.find("<thinking_mode>") else {
+        return false;
+    };
+    loop {
+        let start = cursor + "<thinking_mode>".len();
+        let Some(end_rel) = lower[start..].find("</thinking_mode>") else {
+            return false;
+        };
+        let inner = lower[start..start + end_rel].trim();
+        if inner == "enabled" {
+            return true;
+        }
+        let next_search_from = start + end_rel + "</thinking_mode>".len();
+        match lower[next_search_from..].find("<thinking_mode>") {
+            Some(rel) => cursor = next_search_from + rel,
+            None => return false,
+        }
+    }
 }
 
 fn response_model_for_request(model: &str, compat_thinking_model: &str) -> String {
