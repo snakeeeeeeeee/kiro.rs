@@ -261,3 +261,25 @@
 - `cargo fmt -- --check`: passed.
 - `pnpm --dir admin-ui exec tsc --noEmit`: passed.
 - `pnpm --dir admin-ui build`: passed.
+
+## Completed: Opus 4.7 Detection Profile Research Notes
+- Recorded why Clean Probe should remain a diagnostic toggle rather than the default cctest/hvoy profile.
+- Reviewed `api-relay-audit`, `cc-relay`, `kiro-account-manager`, and `WindsurfApi` for public/local detector and signed-thinking relay patterns.
+- Key takeaway: the next useful work is not fake signature generation, but stable profile presets, real signed-thinking cache/history preservation, identity-leakage diagnostics, and local stream-integrity probes.
+- No runtime code was changed in this research/documentation step.
+
+## Completed: Opus 4.7 Detection Profile v3
+- Added runtime/config/Admin settings `opus47DetectionProfile` and `opus47SignedThinkingPreservation`.
+- Implemented `cc_max_like` effective presets: Clean Probe off, plain stabilization off, models shape `aggregator`, usage shape `flat`, thinking model `native`, ANTML clarify effective, and existing PDF/structured fixes retained.
+- Implemented `clean_probe_debug` as the explicit A/B path for Clean Probe rather than the default detection profile.
+- Added narrow identity probe compatibility for cctest/hvoy-style prompts, including the prompt patterns from `/Users/zhangyu/Desktop/过cctest.txt`.
+- Added identity diagnostics for `kiro/aws/amazon` leakage and requested-model family mismatch without logging full assistant text.
+- Added signed-thinking diagnose/cache-only infrastructure that stores only real non-empty upstream signatures with a 3-hour TTL.
+- Added local fingerprint regression coverage for identity probes, ANTML profile behavior, signed-thinking cache behavior, SQLite runtime round-trip, and SSE stream integrity.
+
+## Latest Validation: Opus 4.7 Detection Profile v3
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- `cargo test`: passed, 281 tests.
+- `pnpm --dir admin-ui exec tsc --noEmit`: passed.
+- `pnpm --dir admin-ui build`: passed.

@@ -9,12 +9,15 @@ use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
 
+use super::signed_thinking::{SignedThinkingCache, SignedThinkingMode};
 use super::usage::{AnthropicUsage, PendingVirtualUsage, VirtualCacheUsageManager};
 
 #[derive(Debug, Clone)]
 pub struct Opus47Diagnostics {
     pub enabled: bool,
     pub model: String,
+    pub detection_profile: String,
+    pub signed_thinking_mode: String,
     pub credential_id: u64,
     pub attempts: usize,
     pub stabilization_mode: String,
@@ -35,6 +38,8 @@ impl Opus47Diagnostics {
         Self {
             enabled: false,
             model: model.into(),
+            detection_profile: "normal".to_string(),
+            signed_thinking_mode: "off".to_string(),
             credential_id: 0,
             attempts: 0,
             stabilization_mode: "off".to_string(),
@@ -54,6 +59,8 @@ impl Opus47Diagnostics {
     pub fn new(
         enabled: bool,
         model: impl Into<String>,
+        detection_profile: impl Into<String>,
+        signed_thinking_mode: impl Into<String>,
         credential_id: u64,
         attempts: usize,
         stabilization_mode: impl Into<String>,
@@ -63,6 +70,8 @@ impl Opus47Diagnostics {
         Self {
             enabled,
             model: model.into(),
+            detection_profile: detection_profile.into(),
+            signed_thinking_mode: signed_thinking_mode.into(),
             credential_id,
             attempts,
             stabilization_mode: stabilization_mode.into(),
@@ -681,6 +690,10 @@ pub struct StreamContext {
     strip_thinking_leading_newline: bool,
     /// Opus 4.7 响应形态诊断计数器
     opus47_diagnostics: Opus47Diagnostics,
+    signed_thinking_cache: Option<Arc<SignedThinkingCache>>,
+    signed_thinking_mode: SignedThinkingMode,
+    upstream_reasoning_buffer: String,
+    upstream_pending_signature: Option<String>,
 }
 
 impl StreamContext {
@@ -714,6 +727,10 @@ impl StreamContext {
             text_block_index: None,
             strip_thinking_leading_newline: false,
             opus47_diagnostics: Opus47Diagnostics::disabled(""),
+            signed_thinking_cache: None,
+            signed_thinking_mode: SignedThinkingMode::Off,
+            upstream_reasoning_buffer: String::new(),
+            upstream_pending_signature: None,
         }
     }
 
@@ -723,6 +740,15 @@ impl StreamContext {
 
     pub fn opus47_diagnostics(&self) -> &Opus47Diagnostics {
         &self.opus47_diagnostics
+    }
+
+    pub fn set_signed_thinking_cache(
+        &mut self,
+        cache: Option<Arc<SignedThinkingCache>>,
+        mode: SignedThinkingMode,
+    ) {
+        self.signed_thinking_cache = cache;
+        self.signed_thinking_mode = mode;
     }
 
     /// 生成 message_start 事件
@@ -789,6 +815,7 @@ impl StreamContext {
         match event {
             Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
             Event::ReasoningContent(reasoning) => {
+                self.observe_signed_thinking(reasoning);
                 if self.thinking_enabled {
                     self.process_reasoning_content(reasoning)
                 } else {
@@ -1150,6 +1177,54 @@ impl StreamContext {
         events
     }
 
+    fn observe_signed_thinking(
+        &mut self,
+        reasoning: &crate::kiro::model::events::ReasoningContentEvent,
+    ) {
+        if !self.signed_thinking_mode.diagnostics_enabled() {
+            return;
+        }
+        if let Some(text) = reasoning.text.as_deref() {
+            if !text.is_empty() {
+                self.upstream_reasoning_buffer.push_str(text);
+            }
+        }
+        if let Some(signature) = reasoning.signature.as_deref() {
+            if signature.is_empty() {
+                tracing::warn!(
+                    target: "kiro_rs::metrics",
+                    model = %self.model,
+                    mode = self.signed_thinking_mode.as_str(),
+                    "signed_thinking_signature_empty"
+                );
+                return;
+            }
+            self.upstream_pending_signature = Some(signature.to_string());
+            if self.signed_thinking_mode.cache_enabled() {
+                if let Some(cache) = self.signed_thinking_cache.as_ref() {
+                    let cached =
+                        cache.store(&self.model, &self.upstream_reasoning_buffer, signature);
+                    tracing::info!(
+                        target: "kiro_rs::metrics",
+                        model = %self.model,
+                        mode = self.signed_thinking_mode.as_str(),
+                        cached,
+                        thinking_chars = self.upstream_reasoning_buffer.chars().count(),
+                        "signed_thinking_signature_observed"
+                    );
+                }
+            } else {
+                tracing::info!(
+                    target: "kiro_rs::metrics",
+                    model = %self.model,
+                    mode = self.signed_thinking_mode.as_str(),
+                    thinking_chars = self.upstream_reasoning_buffer.chars().count(),
+                    "signed_thinking_signature_observed"
+                );
+            }
+        }
+    }
+
     fn close_reasoning_block_if_open(&mut self, events: &mut Vec<SseEvent>) {
         if let Some(index) = self.reasoning_block_index.take() {
             if let Some(signature) = self.pending_reasoning_signature.take() {
@@ -1415,6 +1490,8 @@ pub struct BufferedStreamContext {
     /// 用于按最终 input 修正 message_start usage 的回调
     usage_builder: Option<Box<dyn FnOnce(i32, i32, bool) -> AnthropicUsage + Send>>,
     usage_shape: String,
+    signed_thinking_cache: Option<Arc<SignedThinkingCache>>,
+    signed_thinking_mode: SignedThinkingMode,
     /// 是否已经生成了初始事件
     initial_events_generated: bool,
 }
@@ -1439,6 +1516,8 @@ impl BufferedStreamContext {
             estimated_input_tokens,
             usage_builder: None,
             usage_shape: "anthropic".to_string(),
+            signed_thinking_cache: None,
+            signed_thinking_mode: SignedThinkingMode::Off,
             initial_events_generated: false,
         }
     }
@@ -1457,6 +1536,16 @@ impl BufferedStreamContext {
 
     pub fn set_opus47_diagnostics(&mut self, diagnostics: Opus47Diagnostics) {
         self.inner.set_opus47_diagnostics(diagnostics);
+    }
+
+    pub fn set_signed_thinking_cache(
+        &mut self,
+        cache: Option<Arc<SignedThinkingCache>>,
+        mode: SignedThinkingMode,
+    ) {
+        self.signed_thinking_cache = cache.clone();
+        self.signed_thinking_mode = mode;
+        self.inner.set_signed_thinking_cache(cache, mode);
     }
 
     pub fn opus47_diagnostics(&self) -> &Opus47Diagnostics {
@@ -2407,6 +2496,86 @@ mod tests {
                 && e.data["delta"]["type"] == "signature_delta"
                 && e.data["delta"]["signature"] == "sig_123"
         }));
+    }
+
+    #[test]
+    fn local_fingerprint_stream_integrity_allows_standard_events_and_nonempty_signature() {
+        let mut ctx = StreamContext::new_with_thinking("claude-opus-4-7", 12, true, HashMap::new());
+        let mut events = ctx.generate_initial_events();
+        events.extend(ctx.process_kiro_event(&Event::ReasoningContent(
+            crate::kiro::model::events::ReasoningContentEvent {
+                text: Some("reason".to_string()),
+                signature: Some("sig_real".to_string()),
+            },
+        )));
+        let mut assistant = crate::kiro::model::events::AssistantResponseEvent::default();
+        assistant.content = "answer".to_string();
+        events.extend(ctx.process_kiro_event(&Event::AssistantResponse(assistant)));
+        events.extend(ctx.generate_final_events());
+
+        let allowed = [
+            "message_start",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop",
+        ];
+        assert!(
+            events
+                .iter()
+                .all(|event| allowed.contains(&event.event.as_str())),
+            "only Anthropic SSE event names should be emitted"
+        );
+        assert_eq!(
+            events.first().map(|event| event.event.as_str()),
+            Some("message_start")
+        );
+        assert_eq!(
+            events.last().map(|event| event.event.as_str()),
+            Some("message_stop")
+        );
+        assert_eq!(
+            events[0].data["message"]["model"].as_str(),
+            Some("claude-opus-4-7")
+        );
+
+        let signature_event = events
+            .iter()
+            .find(|event| {
+                event.event == "content_block_delta"
+                    && event.data["delta"]["type"] == "signature_delta"
+            })
+            .expect("signature_delta should exist when upstream sends a signature");
+        assert!(
+            !signature_event.data["delta"]["signature"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+        );
+
+        let message_start_index = 0;
+        let thinking_start_index = events
+            .iter()
+            .position(|event| {
+                event.event == "content_block_start"
+                    && event.data["content_block"]["type"] == "thinking"
+            })
+            .expect("thinking block should start");
+        let signature_index = events
+            .iter()
+            .position(|event| {
+                event.event == "content_block_delta"
+                    && event.data["delta"]["type"] == "signature_delta"
+            })
+            .expect("signature should be present");
+        let message_delta_index = events
+            .iter()
+            .position(|event| event.event == "message_delta")
+            .expect("message_delta should be present");
+        assert!(message_start_index < thinking_start_index);
+        assert!(thinking_start_index < signature_index);
+        assert!(signature_index < message_delta_index);
     }
 
     #[test]

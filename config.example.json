@@ -29,6 +29,8 @@
   "opus47PlainStabilizationMode": "off",
   "opus47AntmlProbeCompat": "off",
   "opus47CleanProbeMode": "off",
+  "opus47DetectionProfile": "normal",
+  "opus47SignedThinkingPreservation": "off",
   "opus47DiagnosticsEnabled": true,
   "opus47RawDebugEnabled": false,
   "opus47RawDebugMaxChars": 20000,

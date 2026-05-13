@@ -23,6 +23,8 @@ Current extension: add an opt-in Opus 4.7 Clean Probe mode in Admin runtime sett
 
 Current extension: add UI-configurable same-account retry rules for selected upstream HTTP statuses/reasons so small account pools can retry one credential before account cooldown/failover.
 
+Current extension: implement an Opus 4.7 detection profile based on public/local relay-audit and signed-thinking implementations, with Clean Probe treated as a diagnostic toggle rather than the main compatibility path.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -46,6 +48,8 @@ Current extension: add UI-configurable same-account retry rules for selected ups
 - [completed] Add PDF document text extraction and structured-output compatibility hints; avoid unsupported Kiro document/reasoning history fields
 - [completed] Add Opus 4.7 Clean Probe runtime/Admin toggle, scoped conversion behavior, diagnostics, and tests
 - [completed] Add configurable same-account retry rules and expose them in Admin runtime settings
+- [completed] Record Opus 4.7 detection-profile research from `api-relay-audit`, `cc-relay`, `kiro-account-manager`, and `WindsurfApi`
+- [completed] Implement Opus 4.7 detection profile preset, identity probe compatibility, signed-thinking cache diagnostics, Admin controls, and local fingerprint tests
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -66,6 +70,9 @@ Current extension: add UI-configurable same-account retry rules for selected ups
 - Do not send assistant `reasoningContent` history fields yet: live logs with `message_count=3` showed repeated upstream `400 Improperly formed request`, and the detector still failed model signature. No placeholder or fake signature is generated.
 - Opus 4.7 Clean Probe is a diagnostic/compatibility toggle, not a signature generator. It reduces synthetic local context for plain `claude-opus-4-7` only; a valid signature can only be exposed when upstream Kiro sends reasoning/signature events.
 - Same-account retries are rule-driven and happen before account cooldown/failover classification. The default rule covers `429` + `INSUFFICIENT_MODEL_CAPACITY`; after configured attempts are exhausted, the existing cooldown/failover logic runs unchanged.
+- The Opus 4.7 `cc_max_like` detection profile applies effective presets without mutating the stored individual toggles: Clean Probe off, plain stabilization off, models shape `aggregator`, usage shape `flat`, thinking model `native`, ANTML clarify effective, PDF/structured fixes retained.
+- Identity probe compatibility is scoped to `cc_max_like`, plain Opus 4.7, and single-message detector-like prompts. It rewrites only the current user message and does not apply to PDF probes, structured-output requests, forced tool-use requests, tool-result turns, or long conversations.
+- Signed-thinking support must not fabricate Anthropic signatures. Current implementation only observes/caches real upstream signatures in `diagnose`/`cache_only`; `history_experiment` remains an explicit gated entry for future shape tests.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -80,3 +87,4 @@ Current extension: add UI-configurable same-account retry rules for selected ups
 | Tried to pass two unrelated test filters to `cargo test` in one invocation | 1 | Re-ran the targeted tests separately |
 | Tried to run several exact cargo test filters in one command | 1 | Re-ran with `cargo test anthropic::converter::tests::` and then full `cargo test` |
 | `pdf-extract` did not extract text from a hand-written minimal PDF fixture | 1 | Added a lightweight fallback parser for PDF literal string text operators (`Tj`/`TJ`) |
+| Cargo accepts only one test-name filter per invocation | 1 | Re-ran Opus 4.7 targeted tests as separate invocations, then full `cargo test` |

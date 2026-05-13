@@ -118,6 +118,8 @@ pub struct RuntimeStatusResponse {
     pub opus47_plain_stabilization_mode: String,
     pub opus47_antml_probe_compat: String,
     pub opus47_clean_probe_mode: String,
+    pub opus47_detection_profile: String,
+    pub opus47_signed_thinking_preservation: String,
     pub opus47_diagnostics_enabled: bool,
     pub opus47_raw_debug_enabled: bool,
     pub opus47_raw_debug_max_chars: usize,

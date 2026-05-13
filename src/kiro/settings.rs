@@ -45,6 +45,8 @@ pub struct RuntimeSettings {
     pub opus47_plain_stabilization_mode: String,
     pub opus47_antml_probe_compat: String,
     pub opus47_clean_probe_mode: String,
+    pub opus47_detection_profile: String,
+    pub opus47_signed_thinking_preservation: String,
     pub opus47_diagnostics_enabled: bool,
     pub opus47_raw_debug_enabled: bool,
     pub opus47_raw_debug_max_chars: usize,
@@ -119,6 +121,12 @@ impl RuntimeSettings {
             ),
             opus47_clean_probe_mode: normalize_opus47_clean_probe_mode(
                 &config.opus47_clean_probe_mode,
+            ),
+            opus47_detection_profile: normalize_opus47_detection_profile(
+                &config.opus47_detection_profile,
+            ),
+            opus47_signed_thinking_preservation: normalize_opus47_signed_thinking_preservation(
+                &config.opus47_signed_thinking_preservation,
             ),
             opus47_diagnostics_enabled: config.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: config.opus47_raw_debug_enabled,
@@ -216,6 +224,22 @@ impl RuntimeSettings {
         }
         if !matches!(self.opus47_clean_probe_mode.as_str(), "off" | "clean") {
             anyhow::bail!("opus47CleanProbeMode 必须是 'off' 或 'clean'");
+        }
+        if !matches!(
+            self.opus47_detection_profile.as_str(),
+            "normal" | "cc_max_like" | "clean_probe_debug"
+        ) {
+            anyhow::bail!(
+                "opus47DetectionProfile 必须是 'normal'、'cc_max_like' 或 'clean_probe_debug'"
+            );
+        }
+        if !matches!(
+            self.opus47_signed_thinking_preservation.as_str(),
+            "off" | "diagnose" | "cache_only" | "history_experiment"
+        ) {
+            anyhow::bail!(
+                "opus47SignedThinkingPreservation 必须是 'off'、'diagnose'、'cache_only' 或 'history_experiment'"
+            );
         }
         if self.compat_usage_shape != "anthropic" && self.compat_usage_shape != "flat" {
             anyhow::bail!("compatUsageShape 必须是 'anthropic' 或 'flat'");
@@ -402,6 +426,71 @@ pub fn normalize_opus47_clean_probe_mode(mode: &str) -> String {
         "clean".to_string()
     } else {
         "off".to_string()
+    }
+}
+
+pub fn normalize_opus47_detection_profile(profile: &str) -> String {
+    match profile.trim().to_ascii_lowercase().as_str() {
+        "cc_max_like" | "cc-max-like" | "ccmaxlike" => "cc_max_like".to_string(),
+        "clean_probe_debug" | "clean-probe-debug" => "clean_probe_debug".to_string(),
+        _ => "normal".to_string(),
+    }
+}
+
+pub fn normalize_opus47_signed_thinking_preservation(mode: &str) -> String {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "diagnose" => "diagnose".to_string(),
+        "cache_only" | "cache-only" => "cache_only".to_string(),
+        "history_experiment" | "history-experiment" => "history_experiment".to_string(),
+        _ => "off".to_string(),
+    }
+}
+
+pub fn effective_opus47_clean_probe_mode(settings: &RuntimeSettings) -> String {
+    match settings.opus47_detection_profile.as_str() {
+        "clean_probe_debug" => "clean".to_string(),
+        "cc_max_like" => "off".to_string(),
+        _ => normalize_opus47_clean_probe_mode(&settings.opus47_clean_probe_mode),
+    }
+}
+
+pub fn effective_opus47_plain_stabilization_mode(settings: &RuntimeSettings) -> String {
+    if settings.opus47_detection_profile == "cc_max_like" {
+        "off".to_string()
+    } else {
+        normalize_opus47_plain_stabilization_mode(&settings.opus47_plain_stabilization_mode)
+    }
+}
+
+pub fn effective_opus47_antml_probe_compat(settings: &RuntimeSettings) -> String {
+    if settings.opus47_detection_profile == "cc_max_like" {
+        "clarify".to_string()
+    } else {
+        normalize_opus47_antml_probe_compat(&settings.opus47_antml_probe_compat)
+    }
+}
+
+pub fn effective_compat_usage_shape(settings: &RuntimeSettings) -> String {
+    if settings.opus47_detection_profile == "cc_max_like" {
+        "flat".to_string()
+    } else {
+        normalize_compat_usage_shape(&settings.compat_usage_shape)
+    }
+}
+
+pub fn effective_compat_thinking_model(settings: &RuntimeSettings) -> String {
+    if settings.opus47_detection_profile == "cc_max_like" {
+        "native".to_string()
+    } else {
+        normalize_compat_thinking_model(&settings.compat_thinking_model)
+    }
+}
+
+pub fn effective_compat_models_shape(settings: &RuntimeSettings) -> String {
+    if settings.opus47_detection_profile == "cc_max_like" {
+        "aggregator".to_string()
+    } else {
+        normalize_compat_models_shape(&settings.compat_models_shape)
     }
 }
 
@@ -662,5 +751,53 @@ mod tests {
     fn same_account_retry_rule_validation_rejects_bad_status() {
         let invalid = rule("599-500", None);
         assert!(validate_same_account_retry_rules(&[invalid]).is_err());
+    }
+
+    #[test]
+    fn opus47_profile_defaults_and_normalization() {
+        let settings = RuntimeSettings::from_config(&Config::default());
+        assert_eq!(settings.opus47_detection_profile, "normal");
+        assert_eq!(settings.opus47_signed_thinking_preservation, "off");
+        assert_eq!(
+            normalize_opus47_detection_profile("cc-max-like"),
+            "cc_max_like"
+        );
+        assert_eq!(
+            normalize_opus47_detection_profile("clean-probe-debug"),
+            "clean_probe_debug"
+        );
+        assert_eq!(
+            normalize_opus47_signed_thinking_preservation("history-experiment"),
+            "history_experiment"
+        );
+    }
+
+    #[test]
+    fn cc_max_like_profile_applies_effective_presets() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_detection_profile = "cc_max_like".to_string();
+        settings.opus47_clean_probe_mode = "clean".to_string();
+        settings.opus47_plain_stabilization_mode = "adaptive_high".to_string();
+        settings.opus47_antml_probe_compat = "off".to_string();
+        settings.compat_usage_shape = "anthropic".to_string();
+        settings.compat_thinking_model = "plain_text".to_string();
+        settings.compat_models_shape = "anthropic".to_string();
+
+        assert_eq!(effective_opus47_clean_probe_mode(&settings), "off");
+        assert_eq!(effective_opus47_plain_stabilization_mode(&settings), "off");
+        assert_eq!(effective_opus47_antml_probe_compat(&settings), "clarify");
+        assert_eq!(effective_compat_usage_shape(&settings), "flat");
+        assert_eq!(effective_compat_thinking_model(&settings), "native");
+        assert_eq!(effective_compat_models_shape(&settings), "aggregator");
+    }
+
+    #[test]
+    fn clean_probe_debug_profile_keeps_clean_probe_effective() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_detection_profile = "clean_probe_debug".to_string();
+        settings.opus47_clean_probe_mode = "off".to_string();
+
+        assert_eq!(effective_opus47_clean_probe_mode(&settings), "clean");
+        assert_eq!(effective_compat_usage_shape(&settings), "anthropic");
     }
 }

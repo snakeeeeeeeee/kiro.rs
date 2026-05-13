@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -199,6 +199,43 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="adaptive_low">Adaptive Low</option>
                 <option value="adaptive_high">Adaptive High</option>
               </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Opus 4.7 检测 Profile</label>
+              <select
+                value={form.opus47DetectionProfile}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, opus47DetectionProfile: event.target.value as 'normal' | 'cc_max_like' | 'clean_probe_debug' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="normal">Normal</option>
+                <option value="cc_max_like">CC Max Like</option>
+                <option value="clean_probe_debug">Clean Probe Debug</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                CC Max Like 会统一使用聚合器模型列表、flat usage、native thinking，并关闭 Clean Probe。
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Signed Thinking 保留</label>
+              <select
+                value={form.opus47SignedThinkingPreservation}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, opus47SignedThinkingPreservation: event.target.value as 'off' | 'diagnose' | 'cache_only' | 'history_experiment' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="off">关闭</option>
+                <option value="diagnose">仅诊断</option>
+                <option value="cache_only">缓存真实签名</option>
+                <option value="history_experiment">历史回放实验</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                只观察或缓存上游真实 signature，不生成假签名。
+              </p>
             </div>
 
             <div className="space-y-2">

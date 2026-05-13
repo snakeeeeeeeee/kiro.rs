@@ -140,3 +140,43 @@
 - Existing behavior changed accounts immediately after a capacity 429. With small account pools that can waste a chance to retry the same account after a short wait.
 - Same-account retry is now a configurable rule table rather than a hardcoded capacity-only switch. Status expressions support exact values, ranges, and comma lists such as `429`, `400-429`, and `408,500-599`; `reason` can be blank or narrowed to values like `INSUFFICIENT_MODEL_CAPACITY`.
 - Rule matching happens before account cooldown/failover classification. If the rule says to retry, the provider reacquires the same credential and does not mark account CD yet. Once rule attempts are exhausted, the original account/model cooldown and account switching logic handles the failure.
+
+## Opus 4.7 Detection Profile Research
+- Clean Probe should remain a diagnostic toggle, not the default detection profile. User test results show enabling it can lower pass probability and still only yields partial model-signature validation.
+- `api-relay-audit` is useful as a public proxy-audit reference: its stream-integrity check looks at Anthropic SSE event whitelist, usage monotonicity/consistency, non-empty `signature_delta`, and whether `message_start.message.model` contains `claude`.
+- `api-relay-audit` identity checks treat `kiro`, `aws`, and `amazon` as non-Claude identity leakage keywords. That explains why identity can fail even when model consistency passes: the API envelope can look Claude-like while text identity answers still leak Kiro/AWS branding.
+- `kiro-account-manager` has a concrete signed-thinking history preservation path: it extracts `thinking`/`reasoning` blocks plus `signature` into Kiro `reasoningContent.reasoningText.signature` for assistant history. Local `kiro.rs` previously avoided this because live Kiro requests with assistant reasoning history returned upstream 400s, so the shape needs controlled re-test rather than blind porting.
+- `WindsurfApi` is helpful for profile design rather than Claude signature mechanics: it emphasizes stable conversation fingerprints, effective routing model vs display model separation, and avoiding user XML tag pollution in fingerprint logic.
+
+## Opus 4.7 Detection Profile: Detailed Takeaways
+- Public/official protocol point: Anthropic signed thinking `signature` is an opaque verification field. It can be passed through and later returned with the exact thinking block, but should not be parsed, regenerated, or fabricated. In streaming, real `signature_delta` is emitted for thinking blocks near block close.
+- Clean Probe is not a signature mechanism. It only removes some local synthetic prompt/history/tool-description additions. If a detector expects Kiro/CC Max-like default context behavior, Clean Probe can make the request less similar to that baseline.
+- The next profile should be explicit, e.g. `normal`, `cc-max-like`, and `clean-probe-debug`. `cc-max-like` should keep Clean Probe off by default, keep PDF/structured-output fixes, choose a stable usage/models shape, and only expose/carry real upstream signatures.
+- `api-relay-audit` confirms likely detector categories:
+  - identity override/leakage: text answers containing `kiro`, `aws`, `amazon`, or other non-Claude brands can fail identity even when `message.model` is correct.
+  - stream integrity: event names must stay in the Anthropic SSE set, `message_start`/`content_block_*`/`message_delta` ordering must be coherent, usage must be monotonic/consistent, and `signature_delta.signature` must be non-empty when a thinking signature event exists.
+  - model-list and envelope shape matter independently from text behavior.
+- `cc-relay` is the most relevant public implementation found for signed-thinking relay behavior. Its useful ideas:
+  - cache signature by model group + hash(thinking text) with a TTL;
+  - accumulate `thinking_delta` text while streaming, then cache the following `signature_delta`;
+  - process non-streaming `content[].type="thinking"` responses similarly;
+  - on later requests, keep valid client-provided signatures, recover known signatures from cache, drop unsigned thinking blocks instead of inventing signatures, and move thinking blocks before other blocks when needed;
+  - use sticky provider routing when assistant history contains thinking signatures, because signatures are provider/upstream-sensitive.
+- For local `kiro.rs`, the biggest remaining signed-thinking gap is history conversion. Current conversion mostly flattens assistant `thinking` blocks into `<thinking>...</thinking>` text and drops/does not preserve `signature` into a verified Kiro history shape. Response streaming can expose `signature_delta` when upstream sends it, but multi-turn signature continuity is still weak.
+- A direct port of `kiro-account-manager`'s `reasoningContent.reasoningText.signature` history shape previously caused live upstream `400 Improperly formed request` for multi-message requests. The right next step is a gated experiment with diagnostics and small shape variants, not enabling it globally.
+- `WindsurfApi` reinforces a separate but important profile principle: avoid unstable conversation fingerprints. Effective routing model, display model, tool dialect/preamble, and user XML tags must not randomly change the upstream session/fingerprint, or detector runs can see inconsistent behavior.
+- Proposed next implementation path:
+  1. Add a detection profile preset switch that sets existing toggles to known-good combinations rather than asking the user to combine many knobs manually.
+  2. Add a signed-thinking cache/history-preservation experimental toggle with strict no-fake-signature rules.
+  3. Add diagnostics for identity leakage keywords (`kiro`, `aws`, `amazon`) in detector-like self-identification responses before adding any identity compatibility rewrite.
+  4. Add local stream-integrity probe tests modeled after `api-relay-audit`: SSE whitelist, event ordering, usage consistency, and non-empty signature deltas.
+
+## Opus 4.7 Detection Profile Implementation
+- Added `opus47DetectionProfile` with `normal`, `cc_max_like`, and `clean_probe_debug`. The stored default remains `normal`; Admin can switch it at runtime.
+- `cc_max_like` now has effective presets instead of asking the operator to align individual toggles manually: Clean Probe off, plain stabilization off, models shape `aggregator`, usage shape `flat`, thinking model `native`, ANTML clarify effective, PDF/structured fixes retained, and no fake signatures.
+- `clean_probe_debug` remains available for A/B testing and forces effective Clean Probe on, but it is not the recommended cctest/hvoy run profile.
+- Identity compatibility is intentionally narrow: only `cc_max_like` + plain Opus 4.7 + single-message detector prompts. It covers the prompts from `/Users/zhangyu/Desktop/过cctest.txt`, including `用一句话介绍你自己，包含标题和描述`, `<identity>...</identity>`, Chinese “真实模型/平台/model id” questions, and English “Who are you / What model are you / Who made you”.
+- The identity rewrite modifies only the current user message. It does not insert synthetic history, does not run for PDF probes, structured output requests, forced tool-use requests, tool-result turns, or long conversations, and it allows ordinary Claude Code requests that merely define tools.
+- `identity_fingerprint_diagnostics` logs only keyword-level findings: `kiro/aws/amazon` leakage and mismatched model-family keywords such as `sonnet` in an Opus request. It does not log full assistant text.
+- Signed-thinking v1 now observes streaming and non-streaming real upstream signatures. `diagnose` logs signature presence; `cache_only` caches non-empty real signatures by model group + hash(thinking text) for 3 hours. It does not replay assistant reasoning history yet and does not generate signatures.
+- Added a local stream-integrity fingerprint test that checks Anthropic SSE event names/order, model alignment in `message_start`, and non-empty `signature_delta` when upstream reasoning includes a real signature.

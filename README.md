@@ -214,6 +214,8 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `opus47PlainStabilizationMode` | string | `off` | Opus 4.7 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
 | `opus47AntmlProbeCompat` | string | `off` | Opus 4.7 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
 | `opus47CleanProbeMode` | string | `off` | Opus 4.7 clean probe 模式：`off` 或 `clean`。开启后减少本地合成提示、工具描述后缀和结构化输出历史污染，仅作用于 plain `claude-opus-4-7` |
+| `opus47DetectionProfile` | string | `normal` | Opus 4.7 检测 profile：`normal`、`cc_max_like` 或 `clean_probe_debug`。`cc_max_like` 会统一应用聚合器模型列表、flat usage、native thinking、关闭 Clean Probe，并启用窄身份/ANTML 探针兼容 |
+| `opus47SignedThinkingPreservation` | string | `off` | Opus 4.7 signed-thinking 实验：`off`、`diagnose`、`cache_only` 或 `history_experiment`。当前只观察/缓存上游真实 signature，不伪造 signature |
 | `opus47DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.7 响应形态诊断日志，包括 reasoning/signature 是否由上游出现并暴露给客户端 |
 | `opus47RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.7 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
 | `opus47RawDebugMaxChars` | number | `20000` | Opus 4.7 原始调试日志单字段最大字符数 |
@@ -268,6 +270,8 @@ docker compose -f docker-compose-dev.yml up -d --build
    "opus47PlainStabilizationMode": "off",
    "opus47AntmlProbeCompat": "off",
    "opus47CleanProbeMode": "off",
+   "opus47DetectionProfile": "normal",
+   "opus47SignedThinkingPreservation": "off",
    "opus47DiagnosticsEnabled": true,
    "opus47RawDebugEnabled": false,
    "opus47RawDebugMaxChars": 20000,

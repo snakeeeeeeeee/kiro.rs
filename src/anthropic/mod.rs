@@ -26,6 +26,7 @@ mod converter;
 mod handlers;
 mod middleware;
 mod router;
+mod signed_thinking;
 mod stream;
 pub mod types;
 mod usage;

@@ -177,6 +177,8 @@ impl AdminService {
             opus47_plain_stabilization_mode: snapshot.opus47_plain_stabilization_mode,
             opus47_antml_probe_compat: snapshot.opus47_antml_probe_compat,
             opus47_clean_probe_mode: snapshot.opus47_clean_probe_mode,
+            opus47_detection_profile: snapshot.opus47_detection_profile,
+            opus47_signed_thinking_preservation: snapshot.opus47_signed_thinking_preservation,
             opus47_diagnostics_enabled: snapshot.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: snapshot.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: snapshot.opus47_raw_debug_max_chars,

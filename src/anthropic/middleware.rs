@@ -14,6 +14,7 @@ use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
 use crate::runtime::RuntimeLimiter;
 
+use super::signed_thinking::SignedThinkingCache;
 use super::types::ErrorResponse;
 use super::usage::VirtualCacheUsageManager;
 
@@ -31,6 +32,8 @@ pub struct AppState {
     pub runtime_limiter: Arc<RuntimeLimiter>,
     /// 虚拟缓存 usage 账本
     pub virtual_cache_usage: Arc<VirtualCacheUsageManager>,
+    /// 真实 upstream signed-thinking signature 缓存
+    pub signed_thinking_cache: Arc<SignedThinkingCache>,
 }
 
 impl AppState {
@@ -46,6 +49,9 @@ impl AppState {
             extract_thinking,
             runtime_limiter,
             virtual_cache_usage: Arc::new(VirtualCacheUsageManager::new()),
+            signed_thinking_cache: Arc::new(SignedThinkingCache::new(
+                std::time::Duration::from_secs(3 * 60 * 60),
+            )),
         }
     }
 

@@ -547,68 +547,27 @@ fn cache_control_ttl(ttl: Option<&str>, default_ttl: CacheTtl) -> CacheTtl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::config::Config;
 
     fn settings() -> RuntimeSettings {
-        RuntimeSettings {
-            global_max_concurrent: 32,
-            per_account_default_max_concurrent: 3,
-            queue_max_size: 128,
-            queue_timeout_ms: 30_000,
-            per_account_default_rpm: 0,
-            global_rpm: 0,
-            rate_limit_cooldown_ms: 60_000,
-            transient_cooldown_ms: 10_000,
-            max_retry_accounts: 3,
-            model_capacity_cooldown_ms: 10_000,
-            same_account_retry_rules: Vec::new(),
-            token_auto_refresh_enabled: true,
-            token_auto_refresh_interval_secs: 300,
-            token_auto_refresh_window_secs: 1_800,
-            session_affinity_ttl_secs: 3_600,
-            opus47_plain_stabilization_mode: "off".to_string(),
-            opus47_antml_probe_compat: "off".to_string(),
-            opus47_clean_probe_mode: "off".to_string(),
-            opus47_diagnostics_enabled: true,
-            opus47_raw_debug_enabled: false,
-            opus47_raw_debug_max_chars: 20_000,
-            compat_usage_shape: "anthropic".to_string(),
-            compat_thinking_model: "native".to_string(),
-            compat_models_shape: "anthropic".to_string(),
-            load_balancing_mode: "priority".to_string(),
-            virtual_cache_usage_enabled: true,
-            virtual_cache_default_ttl: "5m".to_string(),
-            virtual_cache_uncached_input_tokens: 1,
-            virtual_cache_input_mode: "fixed".to_string(),
-            virtual_cache_min_input_tokens: 8,
-            virtual_cache_max_input_tokens: 96,
-            virtual_cache_warmup_tokens: 18_000,
-            virtual_cache_min_creation_tokens: 128,
-            virtual_cache_max_creation_tokens: 1_200,
-            virtual_cache_creation_mode: "fixed".to_string(),
-            virtual_cache_creation_jitter_ratio: 0.25,
-            virtual_cache_burst_every_turns: 7,
-            virtual_cache_burst_min_tokens: 1_500,
-            virtual_cache_burst_max_tokens: 3_000,
-            virtual_cache_fallback_scope: "model".to_string(),
-            dynamic_proxy_enabled: false,
-            dynamic_proxy_provider: "novproxy".to_string(),
-            dynamic_proxy_protocol: "http".to_string(),
-            dynamic_proxy_host: "us.novproxy.io".to_string(),
-            dynamic_proxy_port: 1000,
-            dynamic_proxy_username_template:
-                "nfgr68136-region-{region}-st-{state}-sid-{sid}-t-{ttl}".to_string(),
-            dynamic_proxy_password: String::new(),
-            dynamic_proxy_region: "US".to_string(),
-            dynamic_proxy_state: "New Jersey".to_string(),
-            dynamic_proxy_ttl_minutes: 120,
-            dynamic_proxy_renew_before_ms: 900_000,
-            dynamic_proxy_verify_url: "https://ipinfo.io/json".to_string(),
-            dynamic_proxy_max_bind_retries: 3,
-            dynamic_proxy_auto_bind_new_accounts: false,
-            dynamic_proxy_worker_interval_ms: 60_000,
-            dynamic_proxy_worker_batch_size: 20,
-            dynamic_proxy_worker_concurrency: 3,
-        }
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.same_account_retry_rules.clear();
+        settings.virtual_cache_usage_enabled = true;
+        settings.virtual_cache_default_ttl = "5m".to_string();
+        settings.virtual_cache_uncached_input_tokens = 1;
+        settings.virtual_cache_input_mode = "fixed".to_string();
+        settings.virtual_cache_min_input_tokens = 8;
+        settings.virtual_cache_max_input_tokens = 96;
+        settings.virtual_cache_warmup_tokens = 18_000;
+        settings.virtual_cache_min_creation_tokens = 128;
+        settings.virtual_cache_max_creation_tokens = 1_200;
+        settings.virtual_cache_creation_mode = "fixed".to_string();
+        settings.virtual_cache_creation_jitter_ratio = 0.25;
+        settings.virtual_cache_burst_every_turns = 7;
+        settings.virtual_cache_burst_min_tokens = 1_500;
+        settings.virtual_cache_burst_max_tokens = 3_000;
+        settings.virtual_cache_fallback_scope = "model".to_string();
+        settings
     }
 
     fn input(session: &str, observed: i32, ttl: CacheTtl) -> VirtualUsageInput {

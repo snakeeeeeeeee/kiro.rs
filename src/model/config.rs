@@ -169,6 +169,14 @@ pub struct Config {
     #[serde(default = "default_opus47_clean_probe_mode")]
     pub opus47_clean_probe_mode: String,
 
+    /// Opus 4.7 检测 profile："normal"、"cc_max_like" 或 "clean_probe_debug"
+    #[serde(default = "default_opus47_detection_profile")]
+    pub opus47_detection_profile: String,
+
+    /// Opus 4.7 signed-thinking 保留实验："off"、"diagnose"、"cache_only" 或 "history_experiment"
+    #[serde(default = "default_opus47_signed_thinking_preservation")]
+    pub opus47_signed_thinking_preservation: String,
+
     /// 是否启用 Opus 4.7 响应形态诊断日志
     #[serde(default = "default_opus47_diagnostics_enabled")]
     pub opus47_diagnostics_enabled: bool,
@@ -456,6 +464,14 @@ fn default_opus47_clean_probe_mode() -> String {
     "off".to_string()
 }
 
+fn default_opus47_detection_profile() -> String {
+    "normal".to_string()
+}
+
+fn default_opus47_signed_thinking_preservation() -> String {
+    "off".to_string()
+}
+
 fn default_opus47_diagnostics_enabled() -> bool {
     true
 }
@@ -645,6 +661,8 @@ impl Default for Config {
             opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
             opus47_antml_probe_compat: default_opus47_antml_probe_compat(),
             opus47_clean_probe_mode: default_opus47_clean_probe_mode(),
+            opus47_detection_profile: default_opus47_detection_profile(),
+            opus47_signed_thinking_preservation: default_opus47_signed_thinking_preservation(),
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
             opus47_raw_debug_enabled: false,
             opus47_raw_debug_max_chars: default_opus47_raw_debug_max_chars(),
