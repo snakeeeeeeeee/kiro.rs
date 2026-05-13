@@ -1106,6 +1106,116 @@ mod tests {
         assert_eq!(diagnostics.visible_text_chars, 5);
         assert_eq!(diagnostics.first_event_type(), "assistant_response");
     }
+
+    #[test]
+    fn opus47_signature_diagnostics_classifies_failure_modes() {
+        let mut diagnostics = Opus47Diagnostics::new(
+            true,
+            "claude-opus-4-7",
+            "cc_max_like",
+            "history_experiment",
+            7,
+            1,
+            "off",
+            false,
+            false,
+        );
+        assert_eq!(
+            diagnostics.signature_classification(false),
+            "no_client_thinking"
+        );
+
+        diagnostics.client_requested_thinking = true;
+        assert_eq!(diagnostics.signature_classification(false), "client_hidden");
+
+        diagnostics.client_thinking_enabled = true;
+        assert_eq!(
+            diagnostics.signature_classification(false),
+            "upstream_no_reasoning"
+        );
+
+        diagnostics.reasoning_content_count = 1;
+        assert_eq!(
+            diagnostics.signature_classification(false),
+            "upstream_reasoning_no_signature"
+        );
+
+        diagnostics.signature_seen = true;
+        assert_eq!(
+            diagnostics.signature_classification(false),
+            "upstream_signature_not_exposed"
+        );
+        assert_eq!(diagnostics.signature_classification(true), "signed_ok");
+    }
+
+    #[test]
+    fn opus47_short_thinking_experiment_rewrites_short_enabled_prefix() {
+        let mut payload = request_with_content(
+            "claude-opus-4-7",
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n读 PDF 中的代码",
+        );
+        payload.max_tokens = 1024;
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+        let mut state = convert_request(&payload).unwrap().conversation_state;
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_detection_profile = "cc_max_like".to_string();
+        settings.opus47_signed_thinking_preservation = "history_experiment".to_string();
+        settings.opus47_short_thinking_experiment = "adaptive_high".to_string();
+
+        let applied = apply_opus47_short_thinking_experiment(
+            &mut state,
+            "claude-opus-4-7",
+            &settings,
+            &payload,
+            client_requested_thinking,
+            false,
+        );
+
+        let content = state.current_message.user_input_message.content.as_str();
+        assert_eq!(applied, "adaptive_high");
+        assert!(content.starts_with(
+            "<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>"
+        ));
+        assert!(!content.contains("<max_thinking_length>"));
+        assert!(content.contains("读 PDF 中的代码"));
+    }
+
+    #[test]
+    fn opus47_short_thinking_experiment_is_narrowly_gated() {
+        let content = format!(
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n{}",
+            "x".repeat(600)
+        );
+        let mut payload = request_with_content("claude-opus-4-7", &content);
+        payload.max_tokens = 1024;
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+        let mut state = convert_request(&payload).unwrap().conversation_state;
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_detection_profile = "cc_max_like".to_string();
+        settings.opus47_signed_thinking_preservation = "history_experiment".to_string();
+        settings.opus47_short_thinking_experiment = "adaptive_high".to_string();
+
+        let applied = apply_opus47_short_thinking_experiment(
+            &mut state,
+            "claude-opus-4-7",
+            &settings,
+            &payload,
+            client_requested_thinking,
+            false,
+        );
+
+        assert_eq!(applied, "off");
+        assert!(
+            state
+                .current_message
+                .user_input_message
+                .content
+                .as_str()
+                .starts_with("<thinking_mode>enabled</thinking_mode>")
+        );
+    }
 }
 
 /// POST /v1/messages
@@ -1222,6 +1332,14 @@ pub async fn post_messages(
         &requested_model,
         &runtime_settings,
     );
+    let short_thinking_experiment = apply_opus47_short_thinking_experiment(
+        &mut conversion_result.conversation_state,
+        &requested_model,
+        &runtime_settings,
+        &payload,
+        client_requested_thinking,
+        conversion_result.pdf_debug.is_some(),
+    );
     let identity_probe_applied = apply_opus47_identity_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -1238,6 +1356,7 @@ pub async fn post_messages(
         compat_thinking_model.as_str(),
         conversion_options.clean_probe_mode,
         identity_probe_applied,
+        short_thinking_experiment.as_str(),
         &conversion_result.conversation_state,
     );
 
@@ -1748,6 +1867,7 @@ fn log_opus47_signature_diagnostics(
         reasoning_content_count = diagnostics.reasoning_content_count,
         signature_seen = diagnostics.signature_seen,
         signature_exposed_to_client,
+        classification = diagnostics.signature_classification(signature_exposed_to_client),
         hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
         visible_text_chars = diagnostics.visible_text_chars,
         first_event_type = diagnostics.first_event_type(),
@@ -2528,6 +2648,7 @@ fn log_opus47_request_thinking_state(
     compat_thinking_model: &str,
     clean_probe_mode: bool,
     identity_probe_applied: bool,
+    short_thinking_experiment: &str,
     conversation_state: &ConversationState,
 ) {
     if !is_opus47_model_name(requested_model) {
@@ -2553,6 +2674,7 @@ fn log_opus47_request_thinking_state(
         compat_thinking_model,
         clean_probe_mode,
         identity_probe_applied,
+        short_thinking_experiment,
         thinking_directives_present,
         current_content_chars = current_content.chars().count(),
         "opus47_request_thinking_state"
@@ -2757,6 +2879,117 @@ fn apply_opus47_antml_probe_compat(
     );
 
     mode
+}
+
+fn apply_opus47_short_thinking_experiment(
+    conversation_state: &mut ConversationState,
+    requested_model: &str,
+    settings: &crate::kiro::settings::RuntimeSettings,
+    payload: &MessagesRequest,
+    client_requested_thinking: bool,
+    is_pdf_request: bool,
+) -> String {
+    let mode = crate::kiro::settings::normalize_opus47_short_thinking_experiment(
+        &settings.opus47_short_thinking_experiment,
+    );
+    if mode == "off" {
+        return "off".to_string();
+    }
+    if !is_opus47_model_name(requested_model)
+        || settings.opus47_detection_profile != "cc_max_like"
+        || settings.opus47_signed_thinking_preservation != "history_experiment"
+        || !client_requested_thinking
+        || payload.max_tokens > 1024
+    {
+        return "off".to_string();
+    }
+
+    let content = &mut conversation_state
+        .current_message
+        .user_input_message
+        .content;
+    let content_chars = content.chars().count();
+    let is_short_text = content_chars <= 512;
+    if !is_short_text && !is_pdf_request {
+        return "off".to_string();
+    }
+
+    match mode.as_str() {
+        "adaptive_high" => {
+            let next = rewrite_thinking_directive_to_adaptive_high(content);
+            if next == *content {
+                return "off".to_string();
+            }
+            *content = next;
+            tracing::info!(
+                model = %requested_model,
+                mode = %mode,
+                max_tokens = payload.max_tokens,
+                content_chars,
+                pdf_request = is_pdf_request,
+                "opus47_short_thinking_experiment_applied"
+            );
+            mode
+        }
+        _ => "off".to_string(),
+    }
+}
+
+fn rewrite_thinking_directive_to_adaptive_high(content: &str) -> String {
+    let Some(start) = find_ascii_case_insensitive(content, "<thinking_mode>") else {
+        return content.to_string();
+    };
+    let after_start = start + "<thinking_mode>".len();
+    let Some(end_rel) = find_ascii_case_insensitive(&content[after_start..], "</thinking_mode>")
+    else {
+        return content.to_string();
+    };
+    let end = after_start + end_rel;
+    if !content[after_start..end]
+        .trim()
+        .eq_ignore_ascii_case("enabled")
+    {
+        return content.to_string();
+    }
+    let after_end = end + "</thinking_mode>".len();
+    let mut rewritten = String::new();
+    rewritten.push_str(&content[..start]);
+    rewritten
+        .push_str("<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>");
+    rewritten.push_str(strip_leading_max_thinking_length(&content[after_end..]));
+    rewritten
+}
+
+fn strip_leading_max_thinking_length(rest: &str) -> &str {
+    let trimmed = rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
+    let Some(start_end) = trimmed
+        .get(.."<max_thinking_length>".len())
+        .filter(|tag| tag.eq_ignore_ascii_case("<max_thinking_length>"))
+    else {
+        return rest;
+    };
+    let after_start = start_end.len();
+    let Some(end_rel) =
+        find_ascii_case_insensitive(&trimmed[after_start..], "</max_thinking_length>")
+    else {
+        return rest;
+    };
+    let after_end = after_start + end_rel + "</max_thinking_length>".len();
+    &trimmed[after_end..]
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn apply_opus47_identity_probe_compat(
@@ -3248,6 +3481,14 @@ pub async fn post_messages_cc(
         &requested_model,
         &runtime_settings,
     );
+    let short_thinking_experiment = apply_opus47_short_thinking_experiment(
+        &mut conversion_result.conversation_state,
+        &requested_model,
+        &runtime_settings,
+        &payload,
+        client_requested_thinking,
+        conversion_result.pdf_debug.is_some(),
+    );
     let identity_probe_applied = apply_opus47_identity_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -3264,6 +3505,7 @@ pub async fn post_messages_cc(
         compat_thinking_model.as_str(),
         conversion_options.clean_probe_mode,
         identity_probe_applied,
+        short_thinking_experiment.as_str(),
         &conversion_result.conversation_state,
     );
 

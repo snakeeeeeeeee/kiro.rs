@@ -339,3 +339,17 @@
 - `cargo test identity`: passed, 14 tests.
 - `cargo check`: passed.
 - `docker compose -f docker-compose-dev.yml up -d --build kiro-rs-dev`: passed; container healthy.
+
+## Completed: Opus 4.7 Signature Classification and Short Thinking Experiment
+- Added `classification` to `opus47_signature_diagnostics` so the next cctest run can separate no-client-thinking, hidden-client-thinking, upstream-no-reasoning, upstream-reasoning-no-signature, local-not-exposed, and signed-ok cases.
+- Added runtime/config/Admin setting `opus47ShortThinkingExperiment` with values `off` and `adaptive_high`; default is `off`.
+- Implemented the experiment as a narrow current-message XML directive rewrite only: enabled/max-thinking-length becomes adaptive/high for Opus 4.7 + `cc_max_like` + `history_experiment` + client-requested thinking + `max_tokens <= 1024` + PDF or short text.
+- Added backend tests for signature classification, experiment gating, XML rewrite behavior, settings normalization, and SQLite round-trip persistence.
+
+## Latest Validation: Signature Classification and Short Thinking Experiment
+- `git diff --check`: passed.
+- `cargo fmt -- --check`: passed.
+- `cargo test opus47 -- --nocapture`: passed, 18 tests.
+- `cargo test runtime_settings_round_trip -- --nocapture`: passed.
+- `cargo test -q`: passed, 298 tests.
+- `pnpm --dir admin-ui build`: passed.

@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -235,6 +235,23 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               </select>
               <p className="text-xs text-muted-foreground">
                 只观察或缓存上游真实 signature，不生成假签名。
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">短请求 Thinking 实验</label>
+              <select
+                value={form.opus47ShortThinkingExperiment}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, opus47ShortThinkingExperiment: event.target.value as 'off' | 'adaptive_high' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="off">关闭</option>
+                <option value="adaptive_high">Adaptive High</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                默认关闭；仅用于 cc_max_like + history_experiment 下的短请求/PDF 签名 A/B。
               </p>
             </div>
 

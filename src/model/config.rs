@@ -177,6 +177,10 @@ pub struct Config {
     #[serde(default = "default_opus47_signed_thinking_preservation")]
     pub opus47_signed_thinking_preservation: String,
 
+    /// Opus 4.7 短请求 thinking 标签实验："off" 或 "adaptive_high"
+    #[serde(default = "default_opus47_short_thinking_experiment")]
+    pub opus47_short_thinking_experiment: String,
+
     /// 是否启用 Opus 4.7 响应形态诊断日志
     #[serde(default = "default_opus47_diagnostics_enabled")]
     pub opus47_diagnostics_enabled: bool,
@@ -472,6 +476,10 @@ fn default_opus47_signed_thinking_preservation() -> String {
     "off".to_string()
 }
 
+fn default_opus47_short_thinking_experiment() -> String {
+    "off".to_string()
+}
+
 fn default_opus47_diagnostics_enabled() -> bool {
     true
 }
@@ -663,6 +671,7 @@ impl Default for Config {
             opus47_clean_probe_mode: default_opus47_clean_probe_mode(),
             opus47_detection_profile: default_opus47_detection_profile(),
             opus47_signed_thinking_preservation: default_opus47_signed_thinking_preservation(),
+            opus47_short_thinking_experiment: default_opus47_short_thinking_experiment(),
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
             opus47_raw_debug_enabled: false,
             opus47_raw_debug_max_chars: default_opus47_raw_debug_max_chars(),

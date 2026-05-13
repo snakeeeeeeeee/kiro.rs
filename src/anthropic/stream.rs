@@ -135,6 +135,25 @@ impl Opus47Diagnostics {
             self.signature_exposed_to_client = true;
         }
     }
+
+    pub fn signature_classification(&self, signature_exposed_to_client: bool) -> &'static str {
+        if !self.client_requested_thinking {
+            return "no_client_thinking";
+        }
+        if !self.client_thinking_enabled {
+            return "client_hidden";
+        }
+        if self.signature_seen && signature_exposed_to_client {
+            return "signed_ok";
+        }
+        if self.signature_seen {
+            return "upstream_signature_not_exposed";
+        }
+        if self.reasoning_content_count == 0 {
+            return "upstream_no_reasoning";
+        }
+        "upstream_reasoning_no_signature"
+    }
 }
 
 fn event_metric_name(event: &Event) -> &str {

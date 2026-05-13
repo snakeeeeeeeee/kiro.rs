@@ -221,3 +221,10 @@
 - Claude 4.7 can use an empty thinking string with a non-empty signature for continuity. The history experiment therefore preserves signed thinking when the signature is non-empty even if `thinking` text is empty.
 - Consecutive assistant-history merging must not concatenate multiple signed-thinking blocks under one signature. The current implementation only carries one reasoning block through a merge and logs/drop-merges if more than one would need combining.
 - Simple one-shot requests can legitimately return text-only despite `thinking.enabled`; those runs will show `signature_seen=false` and cannot prove or disprove signature history behavior. Multi-turn replay tests are more diagnostic.
+
+## Opus 4.7 Signature Classification and Short Thinking Experiment
+- Latest cctest logs show the successful signature path already works when upstream returns reasoning/signature: `client_requested_thinking=true`, `client_thinking_enabled=true`, `signature_seen=true`, and `signature_exposed_to_client=true`.
+- Remaining failures now get classified in `opus47_signature_diagnostics.classification`: `signed_ok`, `no_client_thinking`, `client_hidden`, `upstream_no_reasoning`, `upstream_reasoning_no_signature`, or `upstream_signature_not_exposed`.
+- Short/PDF probes can still be `thinking_type=enabled` with `client_thinking_enabled=true` but receive only `assistant_response`; this is upstream no-reasoning behavior, not local signature swallowing.
+- Added default-off `opus47ShortThinkingExperiment`. The `adaptive_high` mode rewrites only the existing XML thinking directive to `<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>` for narrow cctest-like traffic under Opus 4.7 + `cc_max_like` + `history_experiment` + client-requested thinking + `max_tokens <= 1024` + PDF/short current text.
+- The experiment avoids hidden natural-language prompt injection, protocol envelope changes, fake signatures, and global plain Opus 4.7 stabilization changes.

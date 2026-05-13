@@ -624,6 +624,8 @@ pub struct ManagerSnapshot {
     pub opus47_detection_profile: String,
     /// Opus 4.7 signed-thinking 保留实验
     pub opus47_signed_thinking_preservation: String,
+    /// Opus 4.7 短请求 thinking 标签实验
+    pub opus47_short_thinking_experiment: String,
     /// Opus 4.7 诊断日志开关
     pub opus47_diagnostics_enabled: bool,
     /// Opus 4.7 原始请求/响应调试日志开关
@@ -2277,6 +2279,7 @@ impl MultiTokenManager {
             opus47_clean_probe_mode: settings.opus47_clean_probe_mode,
             opus47_detection_profile: settings.opus47_detection_profile,
             opus47_signed_thinking_preservation: settings.opus47_signed_thinking_preservation,
+            opus47_short_thinking_experiment: settings.opus47_short_thinking_experiment,
             opus47_diagnostics_enabled: settings.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: settings.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: settings.opus47_raw_debug_max_chars,

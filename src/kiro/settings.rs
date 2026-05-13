@@ -47,6 +47,7 @@ pub struct RuntimeSettings {
     pub opus47_clean_probe_mode: String,
     pub opus47_detection_profile: String,
     pub opus47_signed_thinking_preservation: String,
+    pub opus47_short_thinking_experiment: String,
     pub opus47_diagnostics_enabled: bool,
     pub opus47_raw_debug_enabled: bool,
     pub opus47_raw_debug_max_chars: usize,
@@ -127,6 +128,9 @@ impl RuntimeSettings {
             ),
             opus47_signed_thinking_preservation: normalize_opus47_signed_thinking_preservation(
                 &config.opus47_signed_thinking_preservation,
+            ),
+            opus47_short_thinking_experiment: normalize_opus47_short_thinking_experiment(
+                &config.opus47_short_thinking_experiment,
             ),
             opus47_diagnostics_enabled: config.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: config.opus47_raw_debug_enabled,
@@ -240,6 +244,12 @@ impl RuntimeSettings {
             anyhow::bail!(
                 "opus47SignedThinkingPreservation 必须是 'off'、'diagnose'、'cache_only' 或 'history_experiment'"
             );
+        }
+        if !matches!(
+            self.opus47_short_thinking_experiment.as_str(),
+            "off" | "adaptive_high"
+        ) {
+            anyhow::bail!("opus47ShortThinkingExperiment 必须是 'off' 或 'adaptive_high'");
         }
         if self.compat_usage_shape != "anthropic" && self.compat_usage_shape != "flat" {
             anyhow::bail!("compatUsageShape 必须是 'anthropic' 或 'flat'");
@@ -442,6 +452,13 @@ pub fn normalize_opus47_signed_thinking_preservation(mode: &str) -> String {
         "diagnose" => "diagnose".to_string(),
         "cache_only" | "cache-only" => "cache_only".to_string(),
         "history_experiment" | "history-experiment" => "history_experiment".to_string(),
+        _ => "off".to_string(),
+    }
+}
+
+pub fn normalize_opus47_short_thinking_experiment(mode: &str) -> String {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "adaptive_high" | "adaptive-high" => "adaptive_high".to_string(),
         _ => "off".to_string(),
     }
 }
@@ -758,6 +775,7 @@ mod tests {
         let settings = RuntimeSettings::from_config(&Config::default());
         assert_eq!(settings.opus47_detection_profile, "normal");
         assert_eq!(settings.opus47_signed_thinking_preservation, "off");
+        assert_eq!(settings.opus47_short_thinking_experiment, "off");
         assert_eq!(
             normalize_opus47_detection_profile("cc-max-like"),
             "cc_max_like"
@@ -769,6 +787,10 @@ mod tests {
         assert_eq!(
             normalize_opus47_signed_thinking_preservation("history-experiment"),
             "history_experiment"
+        );
+        assert_eq!(
+            normalize_opus47_short_thinking_experiment("adaptive-high"),
+            "adaptive_high"
         );
     }
 

@@ -120,6 +120,7 @@ pub struct RuntimeStatusResponse {
     pub opus47_clean_probe_mode: String,
     pub opus47_detection_profile: String,
     pub opus47_signed_thinking_preservation: String,
+    pub opus47_short_thinking_experiment: String,
     pub opus47_diagnostics_enabled: bool,
     pub opus47_raw_debug_enabled: bool,
     pub opus47_raw_debug_max_chars: usize,

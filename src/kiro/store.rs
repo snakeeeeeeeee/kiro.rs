@@ -12,7 +12,8 @@ use crate::kiro::settings::{
     CredentialPolicy, RuntimeSettings, SameAccountRetryRule, normalize_dynamic_proxy_protocol,
     normalize_dynamic_proxy_provider, normalize_opus47_antml_probe_compat,
     normalize_opus47_clean_probe_mode, normalize_opus47_detection_profile,
-    normalize_opus47_plain_stabilization_mode, normalize_opus47_signed_thinking_preservation,
+    normalize_opus47_plain_stabilization_mode, normalize_opus47_short_thinking_experiment,
+    normalize_opus47_signed_thinking_preservation,
 };
 use crate::model::config::Config;
 
@@ -460,6 +461,10 @@ fn runtime_settings_pairs(
             settings.opus47_signed_thinking_preservation.clone(),
         ),
         (
+            "opus47ShortThinkingExperiment",
+            settings.opus47_short_thinking_experiment.clone(),
+        ),
+        (
             "opus47DiagnosticsEnabled",
             settings.opus47_diagnostics_enabled.to_string(),
         ),
@@ -652,6 +657,10 @@ fn apply_runtime_setting(
         "opus47SignedThinkingPreservation" => {
             settings.opus47_signed_thinking_preservation =
                 normalize_opus47_signed_thinking_preservation(value)
+        }
+        "opus47ShortThinkingExperiment" => {
+            settings.opus47_short_thinking_experiment =
+                normalize_opus47_short_thinking_experiment(value)
         }
         "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
         "opus47RawDebugEnabled" => settings.opus47_raw_debug_enabled = parse_bool(key, value)?,
@@ -981,6 +990,7 @@ mod tests {
         updated.opus47_clean_probe_mode = "clean".to_string();
         updated.opus47_detection_profile = "cc_max_like".to_string();
         updated.opus47_signed_thinking_preservation = "cache_only".to_string();
+        updated.opus47_short_thinking_experiment = "adaptive_high".to_string();
         updated.opus47_diagnostics_enabled = false;
         updated.opus47_raw_debug_enabled = true;
         updated.opus47_raw_debug_max_chars = 12_345;
@@ -1005,6 +1015,7 @@ mod tests {
         assert_eq!(loaded.opus47_clean_probe_mode, "clean");
         assert_eq!(loaded.opus47_detection_profile, "cc_max_like");
         assert_eq!(loaded.opus47_signed_thinking_preservation, "cache_only");
+        assert_eq!(loaded.opus47_short_thinking_experiment, "adaptive_high");
         assert!(!loaded.opus47_diagnostics_enabled);
         assert!(loaded.opus47_raw_debug_enabled);
         assert_eq!(loaded.opus47_raw_debug_max_chars, 12_345);

@@ -63,6 +63,7 @@ export interface RuntimeStatusResponse {
   opus47CleanProbeMode: 'off' | 'clean'
   opus47DetectionProfile: 'normal' | 'cc_max_like' | 'clean_probe_debug'
   opus47SignedThinkingPreservation: 'off' | 'diagnose' | 'cache_only' | 'history_experiment'
+  opus47ShortThinkingExperiment: 'off' | 'adaptive_high'
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
@@ -255,6 +256,7 @@ export interface RuntimeSettings {
   opus47CleanProbeMode: 'off' | 'clean'
   opus47DetectionProfile: 'normal' | 'cc_max_like' | 'clean_probe_debug'
   opus47SignedThinkingPreservation: 'off' | 'diagnose' | 'cache_only' | 'history_experiment'
+  opus47ShortThinkingExperiment: 'off' | 'adaptive_high'
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number

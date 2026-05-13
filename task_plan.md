@@ -29,6 +29,8 @@ Current extension: tighten Opus 4.7 identity-probe compatibility by logging skip
 
 Current extension: implement gated Opus 4.7 signed-thinking history replay so real upstream `thinking+signature` blocks can be returned to Kiro as assistant `reasoningContent` during explicit `history_experiment` testing.
 
+Current extension: add Opus 4.7 signature-failure classification diagnostics plus a default-off short-request/PDF thinking-label experiment for cctest A/B runs.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -57,6 +59,7 @@ Current extension: implement gated Opus 4.7 signed-thinking history replay so re
 - [completed] Add identity-probe skip diagnostics and clear tool definitions for matched identity probes
 - [completed] Run local Docker Opus 4.7 probes and add identity visible-text sanitization for matched identity probes
 - [completed] Add gated signed-thinking history replay and validate true/false signature round trips locally
+- [completed] Add Opus 4.7 signature classification diagnostics and default-off short-request/PDF thinking-label experiment
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -84,6 +87,8 @@ Current extension: implement gated Opus 4.7 signed-thinking history replay so re
 - For matched `cc_max_like` identity probes, visible assistant text is sanitized as a final narrow fallback for `kiro/aws/amazon` leakage and wrong model-family words. This does not alter signed-thinking `thinking` or `signature` blocks and does not run for PDF, structured-output, tool, or ordinary requests.
 - For matched non-stream `cc_max_like` identity probes, visible assistant text is now normalized to the official Claude Code identity口径 after upstream response. This is intentionally narrower than global response rewriting and is based on stable endpoint behavior plus Anthropic's public Claude Code positioning.
 - Identity probe matching now combines known detector phrases with a bounded identity-intent heuristic, so wording variants such as product identity, developer/company, model id, underlying model, backend provider, running platform, and system prompt/internal configuration can trigger without relying on exact phrasing.
+- Remaining signature work should be diagnosed by classifying failures first. The new `opus47_signature_diagnostics.classification` distinguishes `signed_ok`, `no_client_thinking`, `client_hidden`, `upstream_no_reasoning`, `upstream_reasoning_no_signature`, and `upstream_signature_not_exposed`.
+- `opus47ShortThinkingExperiment=adaptive_high` is default-off and scoped to Opus 4.7 + `cc_max_like` + `history_experiment` + client-requested thinking + `max_tokens <= 1024` + PDF or short current text. It rewrites only the XML thinking directive from enabled/max length to adaptive/high; it does not add natural-language hidden instructions or fabricate signatures.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -104,3 +109,4 @@ Current extension: implement gated Opus 4.7 signed-thinking history replay so re
 | Prompt-only Claude Code identity constraint still produced `# Claude` or `I can't discuss that.` in local Docker probes | 1 | Added non-stream identity visible-text normalization for matched identity probes, while keeping stream chunks limited to keyword sanitization |
 | Exact identity phrase matching could miss detector wording variants | 1 | Added bounded identity-intent heuristics and negative tests for normal business modeling/authentication prompts |
 | Needed to verify identity compatibility text cannot be elicited as prompt leakage | 1 | Ran the existing multi-turn prompt leak probe plus direct system-prompt probes; outputs did not reveal the internal compatibility prefix or proxy/platform details |
+| Cargo test was invoked with multiple test-name filters | 1 | Re-ran with a single broader filter (`cargo test opus47`) and then full `cargo test -q` |
