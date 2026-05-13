@@ -622,9 +622,6 @@ impl SseStateManager {
                         "stop_sequence": null
                     },
                     "usage": {
-                        "input_tokens": _input_tokens,
-                        "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 0,
                         "output_tokens": output_tokens
                     }
                 }),
@@ -710,10 +707,7 @@ impl StreamContext {
         Self {
             state_manager: SseStateManager::new(),
             model: model.into(),
-            message_id: {
-                let u = Uuid::new_v4().to_string().replace('-', "");
-                format!("msg_01{}", &u[..14])
-            },
+            message_id: format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
             input_tokens,
             initial_usage: None,
             usage_shape: "anthropic".to_string(),
@@ -766,9 +760,7 @@ impl StreamContext {
             .unwrap_or_else(|| {
                 json!({
                     "input_tokens": self.input_tokens,
-                    "output_tokens": 1,
-                    "service_tier": "standard",
-                    "inference_geo": "global"
+                    "output_tokens": 1
                 })
             });
         json!({
@@ -1142,8 +1134,7 @@ impl StreamContext {
                 "index": index,
                 "content_block": {
                     "type": "thinking",
-                    "thinking": "",
-                    "signature": ""
+                    "thinking": ""
                 }
             }),
         );
@@ -2574,9 +2565,11 @@ mod tests {
             thinking_start.data["content_block"]["thinking"].as_str(),
             Some("")
         );
-        assert_eq!(
-            thinking_start.data["content_block"]["signature"].as_str(),
-            Some("")
+        assert!(
+            thinking_start.data["content_block"]
+                .get("signature")
+                .is_none(),
+            "signature must be sent via signature_delta, not as an empty field on block start"
         );
 
         let message_start_index = 0;

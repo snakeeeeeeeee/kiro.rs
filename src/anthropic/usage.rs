@@ -87,9 +87,7 @@ impl AnthropicUsage {
                     "input_tokens": self.input_tokens,
                     "cache_read_input_tokens": self.cache_read_input_tokens,
                     "cache_creation_input_tokens": self.cache_creation_input_tokens,
-                    "output_tokens": self.output_tokens,
-                    "service_tier": "standard",
-                    "inference_geo": "global"
+                    "output_tokens": self.output_tokens
                 })
             } else {
                 json!({
@@ -100,17 +98,13 @@ impl AnthropicUsage {
                         "ephemeral_5m_input_tokens": self.ephemeral_5m_input_tokens,
                         "ephemeral_1h_input_tokens": self.ephemeral_1h_input_tokens
                     },
-                    "output_tokens": self.output_tokens,
-                    "service_tier": "standard",
-                    "inference_geo": "global"
+                    "output_tokens": self.output_tokens
                 })
             }
         } else {
             json!({
                 "input_tokens": self.input_tokens,
-                "output_tokens": self.output_tokens,
-                "service_tier": "standard",
-                "inference_geo": "global"
+                "output_tokens": self.output_tokens
             })
         }
     }

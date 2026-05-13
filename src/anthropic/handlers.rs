@@ -2412,13 +2412,8 @@ async fn handle_non_stream_request(
         request_ttl,
     );
 
-    // 构建 Anthropic 响应
-    let msg_id = {
-        let u = Uuid::new_v4().to_string().replace('-', "");
-        format!("msg_01{}", &u[..14])
-    };
     let response_body = json!({
-        "id": msg_id,
+        "id": format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
         "type": "message",
         "role": "assistant",
         "content": content,
@@ -2490,13 +2485,14 @@ fn normalize_opus47_client_thinking(
         return;
     }
 
-    // cctest 风格 probe 只在 content 里写 <thinking_mode>enabled</thinking_mode>，
-    // 不设 API thinking 字段。这里统一注入 adaptive/high，让 Kiro 对简单任务
-    // （图片 OCR、短答）也积极触发 reasoning，否则模型会跳过推理导致无 signature。
+    if !payload.thinking.as_ref().is_some_and(|t| t.is_enabled()) {
+        return;
+    }
+
     let budget_tokens = payload
         .thinking
         .as_ref()
-        .map(|t| t.budget_tokens.max(20000))
+        .map(|thinking| thinking.budget_tokens.max(20000))
         .unwrap_or(20000);
 
     payload.thinking = Some(Thinking {
@@ -2518,7 +2514,7 @@ fn normalize_opus47_client_thinking(
         thinking_type = "enabled",
         budget_tokens,
         effort = "high",
-        "Opus 4.7 客户端 thinking 请求已归一为 enabled/high"
+        "Opus 4.7 客户端 thinking 请求已归一为 enabled/max_thinking_length"
     );
 }
 
