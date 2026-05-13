@@ -554,12 +554,12 @@ fn process_pdf_document_source(data: &str, name: &str) -> Option<ProcessedPdfDoc
         } else {
             String::new()
         };
+        let page_count_line = page_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         format!(
-            "[PDF Document \"{}\" — {} page(s)]\n{}{}",
-            name,
-            page_count.unwrap_or(0),
-            truncated,
-            truncation_note
+            "[PDF Document \"{}\"]\nPage count: {}\nExtracted text:\n{}\n[End PDF Document \"{}\"]{}",
+            name, page_count_line, truncated, name, truncation_note
         )
     };
 
@@ -688,8 +688,29 @@ fn estimate_base64_decoded_len(data: &str) -> usize {
 
 fn count_pdf_pages(bytes: &[u8]) -> Option<usize> {
     let text = String::from_utf8_lossy(bytes);
-    let count = text.matches("/Type /Page").count() + text.matches("/Type/Page").count();
+    let count = count_pdf_type_page_markers(&text);
     (count > 0).then_some(count)
+}
+
+fn count_pdf_type_page_markers(text: &str) -> usize {
+    let mut count = 0usize;
+    let mut rest = text;
+
+    while let Some(idx) = rest.find("/Type") {
+        rest = &rest[idx + "/Type".len()..];
+        let after_type = rest.trim_start();
+        if let Some(after_page) = after_type.strip_prefix("/Page") {
+            if after_page.chars().next().is_none_or(is_pdf_name_delimiter) {
+                count += 1;
+            }
+        }
+    }
+
+    count
+}
+
+fn is_pdf_name_delimiter(ch: char) -> bool {
+    ch.is_ascii_whitespace() || matches!(ch, '/' | '<' | '>' | '[' | ']' | '(' | ')' | '%')
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {
@@ -906,9 +927,17 @@ fn log_pdf_low_text_diagnostics(name: &str, bytes: &[u8], fallback: &PdfFallback
 
 fn maybe_dump_pdf_debug_file(name: &str, bytes: &[u8]) {
     let Ok(dir) = env::var("KIRO_RS_PDF_DEBUG_DIR") else {
+        tracing::warn!(
+            name = name,
+            "PDF debug 文件未写入：KIRO_RS_PDF_DEBUG_DIR 未设置"
+        );
         return;
     };
     if dir.trim().is_empty() {
+        tracing::warn!(
+            name = name,
+            "PDF debug 文件未写入：KIRO_RS_PDF_DEBUG_DIR 为空"
+        );
         return;
     }
     let dir = Path::new(&dir);
@@ -2296,6 +2325,64 @@ mod tests {
         assert!(
             current.content.contains("ASCIIHex flate invoice 456"),
             "ASCIIHex+Flate stream text should be visible: {}",
+            current.content
+        );
+    }
+
+    #[test]
+    fn test_pdf_fallback_extracts_cctest_broken_xref_text() {
+        let pdf = b"%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 150 50] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 38 >>
+stream
+BT /F1 14 Tf 10 20 Td (hvoyqsyz) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+0
+%%EOF";
+        let encoded = STANDARD.encode(pdf);
+        let req = minimal_request(serde_json::json!([
+            {"type": "text", "text": "What text is in the attached PDF?"},
+            {
+                "type": "document",
+                "title": "document.pdf",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": encoded
+                }
+            }
+        ]));
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let current = &state.current_message.user_input_message;
+
+        assert!(
+            current.content.contains("Page count: 1"),
+            "page count should not count /Pages as /Page: {}",
+            current.content
+        );
+        assert!(
+            current.content.contains("Extracted text:\nhvoyqsyz"),
+            "broken xref PDF text should be injected clearly: {}",
             current.content
         );
     }
