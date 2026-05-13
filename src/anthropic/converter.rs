@@ -311,7 +311,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     // 5. 处理最后一条消息作为 current_message（经过 prefill 预处理，末尾必为 user）
     let last_message = messages.last().unwrap();
     let processed_content = process_message_content(&last_message.content)?;
-    let text_content = processed_content.text;
+    let text_content = apply_current_message_thinking_prefix(req, processed_content.text);
     let images = processed_content.images;
     let tool_results = processed_content.tool_results;
     let pdf_debug = processed_content.pdf_debug;
@@ -1672,6 +1672,22 @@ fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
 }
 
+fn apply_current_message_thinking_prefix(req: &MessagesRequest, content: String) -> String {
+    let Some(prefix) = generate_thinking_prefix(req) else {
+        return content;
+    };
+
+    if has_thinking_tags(&content) {
+        return content;
+    }
+
+    if content.is_empty() {
+        prefix
+    } else {
+        format!("{}\n{}", prefix, content)
+    }
+}
+
 fn structured_output_hint(req: &MessagesRequest) -> Option<String> {
     let format = req
         .output_config
@@ -2008,6 +2024,28 @@ mod tests {
             response_format: None,
             metadata: None,
         }
+    }
+
+    #[test]
+    fn test_thinking_prefix_is_added_to_current_message() {
+        let mut req = minimal_request(serde_json::json!("answer briefly"));
+        req.model = "claude-opus-4-7".to_string();
+        req.thinking = Some(super::super::types::Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: 20000,
+        });
+        req.output_config = Some(super::super::types::OutputConfig {
+            effort: "high".to_string(),
+            format: None,
+        });
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let current = &state.current_message.user_input_message;
+
+        assert!(current.content.starts_with(
+            "<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>"
+        ));
+        assert!(current.content.contains("answer briefly"));
     }
 
     #[test]
