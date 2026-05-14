@@ -58,7 +58,7 @@ export interface RuntimeStatusResponse {
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
-  opus47RunMode: 'custom' | 'benchmark' | 'fast' | 'ultra_fast'
+  opus47RunMode: 'custom' | 'benchmark' | 'fast'
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47AntmlProbeCompat: 'off' | 'clarify'
   opus47CleanProbeMode: 'off' | 'clean'
@@ -256,7 +256,7 @@ export interface RuntimeSettings {
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
-  opus47RunMode: 'custom' | 'benchmark' | 'fast' | 'ultra_fast'
+  opus47RunMode: 'custom' | 'benchmark' | 'fast'
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47AntmlProbeCompat: 'off' | 'clarify'
   opus47CleanProbeMode: 'off' | 'clean'

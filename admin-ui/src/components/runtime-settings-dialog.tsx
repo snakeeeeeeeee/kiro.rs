@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -37,8 +37,6 @@ const numberFields: Array<{
   { key: 'tokenAutoRefreshIntervalSecs', label: 'Token 刷新扫描秒数', hint: '默认 300' },
   { key: 'tokenAutoRefreshWindowSecs', label: 'Token 提前刷新窗口秒数', hint: '默认 1800' },
   { key: 'sessionAffinityTtlSecs', label: '会话亲和 TTL 秒数', hint: '300-43200，默认 3600' },
-  { key: 'opus47RawDebugMaxChars', label: '4.7 原始日志长度', hint: '1000-200000，仅调试时使用' },
-  { key: 'promptDumpMaxBytes', label: 'Prompt Dump 单文件上限', hint: '10000-50000000，默认 2000000' },
   { key: 'virtualCacheUncachedInputTokens', label: '虚拟普通输入 Tokens', hint: '默认 1' },
   { key: 'virtualCacheMinInputTokens', label: '动态普通输入下限', hint: '建议 8' },
   { key: 'virtualCacheMaxInputTokens', label: '动态普通输入上限', hint: '建议 96' },
@@ -58,6 +56,8 @@ const numberFields: Array<{
   { key: 'dynamicProxyWorkerConcurrency', label: '动态代理并发数', hint: '建议 3' },
 ]
 
+type NumberSettingKey = (typeof numberFields)[number]['key'] | 'opus47RawDebugMaxChars' | 'promptDumpMaxBytes'
+
 export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDialogProps) {
   const { data, isLoading } = useRuntimeSettings()
   const setRuntimeSettings = useSetRuntimeSettings()
@@ -70,7 +70,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
   }, [data, open])
 
   const updateNumber = (
-    key: (typeof numberFields)[number]['key'],
+    key: NumberSettingKey,
     value: string,
   ) => {
     const next = Number(value)
@@ -187,226 +187,282 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               </select>
             </div>
 
-            <div className="space-y-2 md:col-span-2">
-              <label className="text-sm font-medium">Opus 4.7 运行模式</label>
-              <select
-                value={form.opus47RunMode}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' | 'ultra_fast' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="custom">自定义</option>
-                <option value="benchmark">跑分模式</option>
-                <option value="fast">极速模式</option>
-                <option value="ultra_fast">极快模式</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                跑分模式按 cctest/hvoy 兼容预设生效；极速模式降低 thinking 预算；极快模式禁用 Opus 4.7 thinking。诊断日志和 Prompt Dump 仍只由下方开关手动控制。
-              </p>
-            </div>
+            <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">Opus 4.7 兼容策略</h3>
+                <p className="text-xs text-muted-foreground">
+                  这些选项只影响 claude-opus-4-7。后续 Opus 4.6 和 Sonnet 4.6 会放到独立模型分区，Prompt Dump 仍在下方手动控制。
+                </p>
+              </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Opus 4.7 Plain 稳定模式</label>
-              <select
-                value={form.opus47PlainStabilizationMode}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47PlainStabilizationMode: event.target.value as 'off' | 'adaptive_low' | 'adaptive_high' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="off">关闭</option>
-                <option value="adaptive_low">Adaptive Low</option>
-                <option value="adaptive_high">Adaptive High</option>
-              </select>
-            </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-medium">运行模式</label>
+                  <select
+                    value={form.opus47RunMode}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="custom">自定义</option>
+                    <option value="benchmark">跑分模式</option>
+                    <option value="fast">极速模式</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    跑分模式使用 cctest/hvoy 兼容预设；极速模式关闭签名/身份等重开销、保留客户端 thinking，并启用 ANTML Clarify。
+                  </p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Opus 4.7 检测 Profile</label>
-              <select
-                value={form.opus47DetectionProfile}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47DetectionProfile: event.target.value as 'normal' | 'cc_max_like' | 'clean_probe_debug' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="normal">Normal</option>
-                <option value="cc_max_like">CC Max Like</option>
-                <option value="clean_probe_debug">Clean Probe Debug</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                CC Max Like 会统一使用聚合器模型列表、flat usage、native thinking，并关闭 Clean Probe。
-              </p>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">检测 Profile</label>
+                  <select
+                    value={form.opus47DetectionProfile}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47DetectionProfile: event.target.value as 'normal' | 'cc_max_like' | 'clean_probe_debug' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="cc_max_like">CC Max Like</option>
+                    <option value="clean_probe_debug">Clean Probe Debug</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    CC Max Like 会统一使用聚合器模型列表、flat usage、native thinking，并启用窄身份/ANTML 探针兼容。
+                  </p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Signed Thinking 保留</label>
-              <select
-                value={form.opus47SignedThinkingPreservation}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47SignedThinkingPreservation: event.target.value as 'off' | 'diagnose' | 'cache_only' | 'history_experiment' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="off">关闭</option>
-                <option value="diagnose">仅诊断</option>
-                <option value="cache_only">缓存真实签名</option>
-                <option value="history_experiment">历史回放实验</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                只观察或缓存上游真实 signature，不生成假签名。
-              </p>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">ANTML 探针兼容</label>
+                  <select
+                    value={form.opus47AntmlProbeCompat}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47AntmlProbeCompat: event.target.value as 'off' | 'clarify' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="clarify">Clarify</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    跑分模式、极速模式和 CC Max Like 会 effective 为 Clarify。
+                  </p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">短请求 Thinking 实验</label>
-              <select
-                value={form.opus47ShortThinkingExperiment}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47ShortThinkingExperiment: event.target.value as 'off' | 'adaptive_high' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="off">关闭</option>
-                <option value="adaptive_high">Adaptive High</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                默认关闭；仅用于 cc_max_like + history_experiment 下的短请求/PDF 签名 A/B。
-              </p>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Signed Thinking 保留</label>
+                  <select
+                    value={form.opus47SignedThinkingPreservation}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47SignedThinkingPreservation: event.target.value as 'off' | 'diagnose' | 'cache_only' | 'history_experiment' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="diagnose">仅诊断</option>
+                    <option value="cache_only">缓存真实签名</option>
+                    <option value="history_experiment">历史回放实验</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    只观察或缓存上游真实 signature，不生成假签名。
+                  </p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Opus 4.7 ANTML 探针兼容</label>
-              <select
-                value={form.opus47AntmlProbeCompat}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47AntmlProbeCompat: event.target.value as 'off' | 'clarify' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="off">关闭</option>
-                <option value="clarify">Clarify</option>
-              </select>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">短请求 Thinking 实验</label>
+                  <select
+                    value={form.opus47ShortThinkingExperiment}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47ShortThinkingExperiment: event.target.value as 'off' | 'adaptive_high' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="adaptive_high">Adaptive High</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    默认关闭；仅用于 cc_max_like + history_experiment 下的短请求/PDF 签名 A/B。
+                  </p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Opus 4.7 Clean Probe</label>
-              <select
-                value={form.opus47CleanProbeMode}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47CleanProbeMode: event.target.value as 'off' | 'clean' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="off">关闭</option>
-                <option value="clean">Clean</option>
-              </select>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Plain 稳定模式</label>
+                  <select
+                    value={form.opus47PlainStabilizationMode}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47PlainStabilizationMode: event.target.value as 'off' | 'adaptive_low' | 'adaptive_high' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="adaptive_low">Adaptive Low</option>
+                    <option value="adaptive_high">Adaptive High</option>
+                  </select>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Opus 4.7 诊断日志</label>
-              <select
-                value={form.opus47DiagnosticsEnabled ? 'enabled' : 'disabled'}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47DiagnosticsEnabled: event.target.value === 'enabled' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="enabled">启用</option>
-                <option value="disabled">关闭</option>
-              </select>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Clean Probe</label>
+                  <select
+                    value={form.opus47CleanProbeMode}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47CleanProbeMode: event.target.value as 'off' | 'clean' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="clean">Clean</option>
+                  </select>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Opus 4.7 原始调试日志</label>
-              <select
-                value={form.opus47RawDebugEnabled ? 'enabled' : 'disabled'}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47RawDebugEnabled: event.target.value === 'enabled' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="disabled">关闭</option>
-                <option value="enabled">启用</option>
-              </select>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">诊断日志</label>
+                  <select
+                    value={form.opus47DiagnosticsEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47DiagnosticsEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="enabled">启用</option>
+                    <option value="disabled">关闭</option>
+                  </select>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Prompt Dump</label>
-              <select
-                value={form.promptDumpEnabled ? 'enabled' : 'disabled'}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, promptDumpEnabled: event.target.value === 'enabled' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="disabled">关闭</option>
-                <option value="enabled">启用</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                会落盘用户 prompt、文档内容和上游响应，默认关闭。
-              </p>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">原始调试日志</label>
+                  <select
+                    value={form.opus47RawDebugEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus47RawDebugEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="disabled">关闭</option>
+                    <option value="enabled">启用</option>
+                  </select>
+                </div>
 
-            <div className="space-y-2 md:col-span-2">
-              <label className="text-sm font-medium">Prompt Dump 目录</label>
-              <Input
-                value={form.promptDumpDir}
-                onChange={event => setForm(prev => prev ? { ...prev, promptDumpDir: event.target.value } : prev)}
-              />
-              <p className="text-xs text-muted-foreground">容器默认 /app/config/prompt-dumps，本地可用 config/prompt-dumps。</p>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">原始日志长度</label>
+                  <Input
+                    type="number"
+                    min={1000}
+                    max={200000}
+                    value={form.opus47RawDebugMaxChars}
+                    onChange={event => updateNumber('opus47RawDebugMaxChars', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">1000-200000，仅调试时使用。</p>
+                </div>
+              </div>
+            </section>
 
-            <div className="space-y-2 md:col-span-2">
-              <label className="text-sm font-medium">Prompt Dump 模型</label>
-              <Input
-                value={form.promptDumpModels}
-                onChange={event => setForm(prev => prev ? { ...prev, promptDumpModels: event.target.value } : prev)}
-              />
-              <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-sonnet-4-6。</p>
-            </div>
+            <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">Prompt Dump</h3>
+                <p className="text-xs text-muted-foreground">
+                  手动落盘用户 prompt、文档内容和上游响应；不会被运行模式自动切换。
+                </p>
+              </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Usage 兼容形态</label>
-              <select
-                value={form.compatUsageShape}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, compatUsageShape: event.target.value as 'anthropic' | 'flat' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="anthropic">Anthropic 标准</option>
-                <option value="flat">Flat 四字段</option>
-              </select>
-            </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">启用状态</label>
+                  <select
+                    value={form.promptDumpEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, promptDumpEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="disabled">关闭</option>
+                    <option value="enabled">启用</option>
+                  </select>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Thinking 模型兼容</label>
-              <select
-                value={form.compatThinkingModel}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, compatThinkingModel: event.target.value as 'native' | 'plain_text' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="native">原生 thinking</option>
-                <option value="plain_text">归一 plain text</option>
-              </select>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">单文件上限</label>
+                  <Input
+                    type="number"
+                    min={10000}
+                    max={50000000}
+                    value={form.promptDumpMaxBytes}
+                    onChange={event => updateNumber('promptDumpMaxBytes', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">10000-50000000，默认 2000000。</p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">模型列表兼容</label>
-              <select
-                value={form.compatModelsShape}
-                onChange={event =>
-                  setForm(prev => prev ? { ...prev, compatModelsShape: event.target.value as 'anthropic' | 'aggregator' } : prev)
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="anthropic">Anthropic 风格</option>
-                <option value="aggregator">聚合器风格</option>
-              </select>
-            </div>
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-medium">目录</label>
+                  <Input
+                    value={form.promptDumpDir}
+                    onChange={event => setForm(prev => prev ? { ...prev, promptDumpDir: event.target.value } : prev)}
+                  />
+                  <p className="text-xs text-muted-foreground">容器默认 /app/config/prompt-dumps，本地可用 config/prompt-dumps。</p>
+                </div>
+
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-medium">模型</label>
+                  <Input
+                    value={form.promptDumpModels}
+                    onChange={event => setForm(prev => prev ? { ...prev, promptDumpModels: event.target.value } : prev)}
+                  />
+                  <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-sonnet-4-6。</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">通用兼容形态</h3>
+                <p className="text-xs text-muted-foreground">
+                  这些选项影响 usage、thinking 响应形态和模型列表形态；Opus 4.7 跑分模式可能覆盖 effective 值。
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Usage 兼容形态</label>
+                  <select
+                    value={form.compatUsageShape}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, compatUsageShape: event.target.value as 'anthropic' | 'flat' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="anthropic">Anthropic 标准</option>
+                    <option value="flat">Flat 四字段</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Thinking 模型兼容</label>
+                  <select
+                    value={form.compatThinkingModel}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, compatThinkingModel: event.target.value as 'native' | 'plain_text' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="native">原生 thinking</option>
+                    <option value="plain_text">归一 plain text</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">模型列表兼容</label>
+                  <select
+                    value={form.compatModelsShape}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, compatModelsShape: event.target.value as 'anthropic' | 'aggregator' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="anthropic">Anthropic 风格</option>
+                    <option value="aggregator">聚合器风格</option>
+                  </select>
+                </div>
+              </div>
+            </section>
 
             <div className="space-y-3 md:col-span-2">
               <div className="flex flex-wrap items-center justify-between gap-2">

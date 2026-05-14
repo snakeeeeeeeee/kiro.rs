@@ -211,7 +211,7 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `maxRetryAccounts` | number | `3` | 单个请求最多尝试的不同账号数，`1` 表示不换号 |
 | `modelCapacityCooldownMs` | number | `10000` | 所有尝试账号都遇到 `INSUFFICIENT_MODEL_CAPACITY` 后的模型级冷却时间 |
 | `sameAccountRetryRules` | array | 见示例 | 单号重试规则。命中规则时先用当前账号重试，耗尽后才进入账号冷却或换号 |
-| `opus47RunMode` | string | `custom` | Opus 4.7 运行模式：`custom` 保持细项配置；`benchmark` 使用跑分/探针兼容 effective 预设；`fast` 降低 thinking 预算；`ultra_fast` 禁用 Opus 4.7 thinking。不会自动切换诊断日志、Prompt Dump 或原始调试日志 |
+| `opus47RunMode` | string | `custom` | Opus 4.7 运行模式：`custom` 保持细项配置；`benchmark` 使用跑分/探针兼容 effective 预设；`fast` 关闭签名/身份等重开销、保留客户端 thinking 参数，并启用 ANTML clarify。不会自动切换诊断日志、Prompt Dump 或原始调试日志 |
 | `opus47PlainStabilizationMode` | string | `off` | Opus 4.7 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
 | `opus47AntmlProbeCompat` | string | `off` | Opus 4.7 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
 | `opus47CleanProbeMode` | string | `off` | Opus 4.7 clean probe 模式：`off` 或 `clean`。开启后减少本地合成提示、工具描述后缀和结构化输出历史污染，仅作用于 plain `claude-opus-4-7` |
