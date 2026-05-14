@@ -197,6 +197,54 @@ pub struct Config {
     #[serde(default = "default_opus47_raw_debug_max_chars")]
     pub opus47_raw_debug_max_chars: usize,
 
+    /// Opus 4.6 运行模式："custom"、"benchmark" 或 "fast"
+    #[serde(default = "default_opus46_run_mode")]
+    pub opus46_run_mode: String,
+
+    /// Opus 4.6 检测 profile："normal" 或 "cc_max_like"
+    #[serde(default = "default_opus46_detection_profile")]
+    pub opus46_detection_profile: String,
+
+    /// Opus 4.6 ANTML 探针兼容模式："off" 或 "clarify"
+    #[serde(default = "default_opus46_antml_probe_compat")]
+    pub opus46_antml_probe_compat: String,
+
+    /// 是否启用 Opus 4.6 响应形态诊断日志
+    #[serde(default = "default_opus46_diagnostics_enabled")]
+    pub opus46_diagnostics_enabled: bool,
+
+    /// 是否启用 Opus 4.6 原始请求/响应调试日志（会记录正文，默认关闭）
+    #[serde(default)]
+    pub opus46_raw_debug_enabled: bool,
+
+    /// Opus 4.6 原始调试日志单字段最大字符数
+    #[serde(default = "default_opus46_raw_debug_max_chars")]
+    pub opus46_raw_debug_max_chars: usize,
+
+    /// Sonnet 4.6 运行模式："custom"、"benchmark" 或 "fast"
+    #[serde(default = "default_sonnet46_run_mode")]
+    pub sonnet46_run_mode: String,
+
+    /// Sonnet 4.6 检测 profile："normal" 或 "cc_max_like"
+    #[serde(default = "default_sonnet46_detection_profile")]
+    pub sonnet46_detection_profile: String,
+
+    /// Sonnet 4.6 ANTML 探针兼容模式："off" 或 "clarify"
+    #[serde(default = "default_sonnet46_antml_probe_compat")]
+    pub sonnet46_antml_probe_compat: String,
+
+    /// 是否启用 Sonnet 4.6 响应形态诊断日志
+    #[serde(default = "default_sonnet46_diagnostics_enabled")]
+    pub sonnet46_diagnostics_enabled: bool,
+
+    /// 是否启用 Sonnet 4.6 原始请求/响应调试日志（会记录正文，默认关闭）
+    #[serde(default)]
+    pub sonnet46_raw_debug_enabled: bool,
+
+    /// Sonnet 4.6 原始调试日志单字段最大字符数
+    #[serde(default = "default_sonnet46_raw_debug_max_chars")]
+    pub sonnet46_raw_debug_max_chars: usize,
+
     /// 是否保存客户端请求、上游 prompt 和上游原始响应到文件（默认关闭）
     #[serde(default)]
     pub prompt_dump_enabled: bool,
@@ -512,6 +560,46 @@ fn default_opus47_raw_debug_max_chars() -> usize {
     20_000
 }
 
+fn default_opus46_run_mode() -> String {
+    "custom".to_string()
+}
+
+fn default_opus46_detection_profile() -> String {
+    "normal".to_string()
+}
+
+fn default_opus46_antml_probe_compat() -> String {
+    "off".to_string()
+}
+
+fn default_opus46_diagnostics_enabled() -> bool {
+    true
+}
+
+fn default_opus46_raw_debug_max_chars() -> usize {
+    20_000
+}
+
+fn default_sonnet46_run_mode() -> String {
+    "custom".to_string()
+}
+
+fn default_sonnet46_detection_profile() -> String {
+    "normal".to_string()
+}
+
+fn default_sonnet46_antml_probe_compat() -> String {
+    "off".to_string()
+}
+
+fn default_sonnet46_diagnostics_enabled() -> bool {
+    true
+}
+
+fn default_sonnet46_raw_debug_max_chars() -> usize {
+    20_000
+}
+
 fn default_prompt_dump_dir() -> String {
     "/app/config/prompt-dumps".to_string()
 }
@@ -712,6 +800,18 @@ impl Default for Config {
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
             opus47_raw_debug_enabled: false,
             opus47_raw_debug_max_chars: default_opus47_raw_debug_max_chars(),
+            opus46_run_mode: default_opus46_run_mode(),
+            opus46_detection_profile: default_opus46_detection_profile(),
+            opus46_antml_probe_compat: default_opus46_antml_probe_compat(),
+            opus46_diagnostics_enabled: default_opus46_diagnostics_enabled(),
+            opus46_raw_debug_enabled: false,
+            opus46_raw_debug_max_chars: default_opus46_raw_debug_max_chars(),
+            sonnet46_run_mode: default_sonnet46_run_mode(),
+            sonnet46_detection_profile: default_sonnet46_detection_profile(),
+            sonnet46_antml_probe_compat: default_sonnet46_antml_probe_compat(),
+            sonnet46_diagnostics_enabled: default_sonnet46_diagnostics_enabled(),
+            sonnet46_raw_debug_enabled: false,
+            sonnet46_raw_debug_max_chars: default_sonnet46_raw_debug_max_chars(),
             prompt_dump_enabled: false,
             prompt_dump_dir: default_prompt_dump_dir(),
             prompt_dump_max_bytes: default_prompt_dump_max_bytes(),

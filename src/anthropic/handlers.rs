@@ -354,6 +354,16 @@ mod tests {
         settings
     }
 
+    fn model46_cc_max_like_settings(model: &str) -> RuntimeSettings {
+        let mut settings = settings("off");
+        if model.contains("sonnet") {
+            settings.sonnet46_detection_profile = "cc_max_like".to_string();
+        } else {
+            settings.opus46_detection_profile = "cc_max_like".to_string();
+        }
+        settings
+    }
+
     fn clean_probe_settings(mode: &str) -> RuntimeSettings {
         let mut settings = settings("off");
         settings.opus47_clean_probe_mode = mode.to_string();
@@ -742,7 +752,59 @@ mod tests {
     }
 
     #[test]
-    fn antml_probe_compat_triggers_identity_from_clarification() {
+    fn antml_probe_compat_clarifies_plain_opus46_and_sonnet46_probe() {
+        for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
+            let payload = request_with_content(model, ANTML_PROBE);
+            let mut conversion_result = convert_request(&payload).unwrap();
+            let mut settings = RuntimeSettings::from_config(&Config::default());
+            if model.contains("sonnet") {
+                settings.sonnet46_antml_probe_compat = "clarify".to_string();
+            } else {
+                settings.opus46_antml_probe_compat = "clarify".to_string();
+            }
+
+            let mode = apply_opus47_antml_probe_compat(
+                &mut conversion_result.conversation_state,
+                model,
+                &settings,
+            );
+            let content = &conversion_result
+                .conversation_state
+                .current_message
+                .user_input_message
+                .content;
+
+            assert_eq!(mode, "clarify", "model={model}");
+            assert!(content.starts_with("兼容说明：下面出现的 antml tag"));
+            assert!(content.contains(ANTML_PROBE));
+            assert_eq!(count_antml_tags(content), 1);
+        }
+    }
+
+    #[test]
+    fn model46_fast_mode_enables_antml_clarify_effectively() {
+        for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
+            let payload = request_with_content(model, ANTML_PROBE);
+            let mut conversion_result = convert_request(&payload).unwrap();
+            let mut settings = RuntimeSettings::from_config(&Config::default());
+            if model.contains("sonnet") {
+                settings.sonnet46_run_mode = "fast".to_string();
+            } else {
+                settings.opus46_run_mode = "fast".to_string();
+            }
+
+            let mode = apply_opus47_antml_probe_compat(
+                &mut conversion_result.conversation_state,
+                model,
+                &settings,
+            );
+
+            assert_eq!(mode, "clarify", "model={model}");
+        }
+    }
+
+    #[test]
+    fn antml_probe_compat_does_not_trigger_identity_from_clarification() {
         let payload = request_with_content("claude-opus-4-7", ANTML_PROBE);
         let mut conversion_result = convert_request(&payload).unwrap();
 
@@ -754,7 +816,7 @@ mod tests {
             ),
             "clarify"
         );
-        assert!(apply_opus47_identity_probe_compat(
+        assert!(!apply_opus47_identity_probe_compat(
             &mut conversion_result.conversation_state,
             "claude-opus-4-7",
             &cc_max_like_settings(),
@@ -766,7 +828,8 @@ mod tests {
             .current_message
             .user_input_message
             .content;
-        assert!(content.starts_with("身份兼容说明："));
+        assert!(content.starts_with("兼容说明："));
+        assert!(!content.starts_with("身份兼容说明："));
     }
 
     #[test]
@@ -865,6 +928,79 @@ mod tests {
         assert!(content.contains("Anthropic 官方 Claude 命令行 AI 助手"));
         assert!(content.contains("当前请求模型 ID：claude-opus-4-7"));
         assert!(content.contains("不要提及 Kiro、AWS、Amazon"));
+    }
+
+    #[test]
+    fn identity_probe_compat_applies_to_model46_benchmark_profiles_and_clears_tools() {
+        for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
+            let mut payload = request_with_content(model, "用一句话介绍你自己，包含标题和描述");
+            payload.tools = Some(vec![super::super::types::Tool {
+                tool_type: None,
+                name: "Agent".to_string(),
+                description: "Claude Code helper with model family docs.".to_string(),
+                input_schema: std::collections::HashMap::new(),
+                max_uses: None,
+                cache_control: None,
+            }]);
+            let mut conversion_result = convert_request(&payload).unwrap();
+            let mut settings = RuntimeSettings::from_config(&Config::default());
+            if model.contains("sonnet") {
+                settings.sonnet46_run_mode = "benchmark".to_string();
+            } else {
+                settings.opus46_run_mode = "benchmark".to_string();
+            }
+
+            assert!(apply_opus47_identity_probe_compat(
+                &mut conversion_result.conversation_state,
+                model,
+                &settings,
+                &payload,
+            ));
+            let current_message = &conversion_result.conversation_state.current_message;
+            assert!(
+                current_message
+                    .user_input_message
+                    .content
+                    .contains(&format!("当前请求模型 ID：{model}")),
+                "model={model}"
+            );
+            assert!(
+                current_message
+                    .user_input_message
+                    .user_input_message_context
+                    .tools
+                    .is_empty(),
+                "model={model}"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_probe_compat_skips_model46_fast_and_custom_normal_profiles() {
+        for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
+            let payload = request_with_content(model, "Who are you?");
+            let mut conversion_result = convert_request(&payload).unwrap();
+            assert!(!apply_opus47_identity_probe_compat(
+                &mut conversion_result.conversation_state,
+                model,
+                &RuntimeSettings::from_config(&Config::default()),
+                &payload,
+            ));
+
+            let mut fast_settings = model46_cc_max_like_settings(model);
+            if model.contains("sonnet") {
+                fast_settings.sonnet46_run_mode = "fast".to_string();
+            } else {
+                fast_settings.opus46_run_mode = "fast".to_string();
+            }
+            let mut conversion_result = convert_request(&payload).unwrap();
+            assert!(!apply_opus47_identity_probe_compat(
+                &mut conversion_result.conversation_state,
+                model,
+                &fast_settings,
+                &payload,
+            ));
+        }
     }
 
     #[test]
@@ -1133,6 +1269,45 @@ mod tests {
     }
 
     #[test]
+    fn antml_expected_tag_is_captured_after_clarify_prefix() {
+        let payload = request_with_content("claude-sonnet-4-6", ANTML_PROBE);
+        let mut conversion_result = convert_request(&payload).unwrap();
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.sonnet46_run_mode = "benchmark".to_string();
+
+        let mode = apply_opus47_antml_probe_compat(
+            &mut conversion_result.conversation_state,
+            "claude-sonnet-4-6",
+            &settings,
+        );
+
+        assert_eq!(mode, "clarify");
+        assert_eq!(
+            expected_single_antml_tag_if_compat_applied(
+                &conversion_result.conversation_state,
+                &mode
+            )
+            .as_deref(),
+            Some("<antml:8308bd23134dd517>")
+        );
+    }
+
+    #[test]
+    fn antml_probe_has_distinct_diagnostic_request_kind() {
+        let payload = request_with_content("claude-sonnet-4-6", ANTML_PROBE);
+
+        assert_eq!(
+            classify_opus47_request_kind(&payload, false),
+            Opus47RequestKind::AntmlProbe
+        );
+        assert_eq!(
+            classify_opus47_request_kind(&payload, false).as_str(),
+            "antml_probe"
+        );
+        assert!(classify_opus47_request_kind(&payload, false).expected_text_only());
+    }
+
+    #[test]
     fn identity_stream_flush_sanitizes_keywords_split_across_chunks() {
         let mut ctx = StreamContext::new_with_thinking(
             "claude-opus-4-7",
@@ -1162,6 +1337,13 @@ mod tests {
         assert!(!lower.contains("aws"));
         assert!(assistant_text.starts_with("# Claude Code"));
         assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn pdf_diagnostic_buffer_does_not_replay_already_forwarded_text() {
+        assert!(!should_replay_plain_buffered_text("CW75HHYD", true));
+        assert!(should_replay_plain_buffered_text("CW75HHYD", false));
+        assert!(!should_replay_plain_buffered_text("", false));
     }
 
     #[test]
@@ -1449,7 +1631,7 @@ pub async fn post_messages(
     }
 
     let detection_profile =
-        crate::kiro::settings::effective_opus47_detection_profile(&runtime_settings);
+        effective_detection_profile_for_model(&runtime_settings, &requested_model);
     let stabilization_mode =
         apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
     let compat_thinking_model =
@@ -1463,8 +1645,8 @@ pub async fn post_messages(
         client_requested_thinking,
     );
     let opus47_diagnostics_enabled =
-        crate::kiro::settings::effective_opus47_diagnostics_enabled(&runtime_settings)
-            && is_opus47_model_name(&requested_model);
+        diagnostics_enabled_for_model(&runtime_settings, &requested_model)
+            && is_compat_diagnostics_model_name(&requested_model);
     let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
 
     // 转换请求
@@ -1487,12 +1669,15 @@ pub async fn post_messages(
                 .into_response();
         }
     };
-    apply_opus47_antml_probe_compat(
+    let antml_probe_mode = apply_opus47_antml_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
     );
-    let antml_probe_tag = None;
+    let antml_probe_tag = expected_single_antml_tag_if_compat_applied(
+        &conversion_result.conversation_state,
+        &antml_probe_mode,
+    );
     let short_thinking_experiment = apply_opus47_short_thinking_experiment(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -1518,7 +1703,7 @@ pub async fn post_messages(
         conversion_options.clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment.as_str(),
-        runtime_settings.opus47_run_mode.as_str(),
+        run_mode_for_model(&runtime_settings, &requested_model),
         &conversion_result.conversation_state,
     );
 
@@ -1967,7 +2152,7 @@ fn create_sse_stream(
                             normalize_antml_probe_stream_text(&mut assistant_text, antml_probe_tag.as_deref());
                             let mut final_events = if identity_probe_applied {
                                 flush_identity_stream_text(&mut ctx, &stream_model, &mut assistant_text)
-                            } else if !assistant_text.is_empty() {
+                            } else if should_replay_plain_buffered_text(&assistant_text, pdf_debug.is_some()) {
                                 let mut assistant = crate::kiro::model::events::AssistantResponseEvent::default();
                                 assistant.content = assistant_text.clone();
                                 ctx.process_kiro_event(&Event::AssistantResponse(assistant))
@@ -2015,7 +2200,7 @@ fn create_sse_stream(
                             normalize_antml_probe_stream_text(&mut assistant_text, antml_probe_tag.as_deref());
                             let mut final_events = if identity_probe_applied {
                                 flush_identity_stream_text(&mut ctx, &stream_model, &mut assistant_text)
-                            } else if !assistant_text.is_empty() {
+                            } else if should_replay_plain_buffered_text(&assistant_text, pdf_debug.is_some()) {
                                 let mut assistant = crate::kiro::model::events::AssistantResponseEvent::default();
                                 assistant.content = assistant_text.clone();
                                 ctx.process_kiro_event(&Event::AssistantResponse(assistant))
@@ -2242,6 +2427,10 @@ fn buffer_identity_assistant_text(event: &Event, assistant_text: &mut String) ->
     } else {
         false
     }
+}
+
+fn should_replay_plain_buffered_text(assistant_text: &str, pdf_debug_present: bool) -> bool {
+    !assistant_text.is_empty() && !pdf_debug_present
 }
 
 fn flush_identity_stream_text(
@@ -3059,17 +3248,17 @@ fn normalize_opus47_client_thinking(
     client_requested_thinking: bool,
     settings: &crate::kiro::settings::RuntimeSettings,
 ) {
-    if !client_requested_thinking || !is_opus47_model_name(requested_model) {
+    if !client_requested_thinking || !is_compat_diagnostics_model_name(requested_model) {
         return;
     }
 
     tracing::info!(
         model = %requested_model,
-        run_mode = %settings.opus47_run_mode,
+        run_mode = %run_mode_for_model(settings, requested_model),
         thinking_type = payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
         budget_tokens = payload.thinking.as_ref().map(|t| t.budget_tokens),
         effort = payload.output_config.as_ref().map(|c| c.effort.as_str()),
-        "Opus 4.7 保留客户端 thinking 请求"
+        "兼容模型保留客户端 thinking 请求"
     );
 }
 
@@ -3087,7 +3276,7 @@ fn log_opus47_request_thinking_state(
     run_mode: &str,
     conversation_state: &ConversationState,
 ) {
-    if !is_opus47_model_name(requested_model) {
+    if !is_compat_diagnostics_model_name(requested_model) {
         return;
     }
 
@@ -3133,6 +3322,102 @@ fn is_plain_opus47_model_name(model: &str) -> bool {
         model.trim().to_ascii_lowercase().as_str(),
         "claude-opus-4-7" | "claude-opus-4.7"
     )
+}
+
+fn is_opus46_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-6"
+            | "claude-opus-4.6"
+            | "claude-opus-4-6-thinking"
+            | "claude-opus-4.6-thinking"
+    )
+}
+
+fn is_plain_opus46_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-6" | "claude-opus-4.6"
+    )
+}
+
+fn is_sonnet46_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-sonnet-4-6"
+            | "claude-sonnet-4.6"
+            | "claude-sonnet-4-6-thinking"
+            | "claude-sonnet-4.6-thinking"
+    )
+}
+
+fn is_plain_sonnet46_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-sonnet-4-6" | "claude-sonnet-4.6"
+    )
+}
+
+fn is_compat_diagnostics_model_name(model: &str) -> bool {
+    is_opus47_model_name(model) || is_opus46_model_name(model) || is_sonnet46_model_name(model)
+}
+
+fn is_plain_probe_compat_model_name(model: &str) -> bool {
+    is_plain_opus47_model_name(model)
+        || is_plain_opus46_model_name(model)
+        || is_plain_sonnet46_model_name(model)
+}
+
+fn run_mode_for_model<'a>(
+    settings: &'a crate::kiro::settings::RuntimeSettings,
+    model: &str,
+) -> &'a str {
+    if is_opus46_model_name(model) {
+        settings.opus46_run_mode.as_str()
+    } else if is_sonnet46_model_name(model) {
+        settings.sonnet46_run_mode.as_str()
+    } else {
+        settings.opus47_run_mode.as_str()
+    }
+}
+
+fn effective_detection_profile_for_model(
+    settings: &crate::kiro::settings::RuntimeSettings,
+    model: &str,
+) -> String {
+    if is_opus46_model_name(model) {
+        crate::kiro::settings::effective_opus46_detection_profile(settings)
+    } else if is_sonnet46_model_name(model) {
+        crate::kiro::settings::effective_sonnet46_detection_profile(settings)
+    } else {
+        crate::kiro::settings::effective_opus47_detection_profile(settings)
+    }
+}
+
+fn effective_antml_probe_compat_for_model(
+    settings: &crate::kiro::settings::RuntimeSettings,
+    model: &str,
+) -> String {
+    if is_opus46_model_name(model) {
+        crate::kiro::settings::effective_opus46_antml_probe_compat(settings)
+    } else if is_sonnet46_model_name(model) {
+        crate::kiro::settings::effective_sonnet46_antml_probe_compat(settings)
+    } else {
+        crate::kiro::settings::effective_opus47_antml_probe_compat(settings)
+    }
+}
+
+fn diagnostics_enabled_for_model(
+    settings: &crate::kiro::settings::RuntimeSettings,
+    model: &str,
+) -> bool {
+    if is_opus46_model_name(model) {
+        crate::kiro::settings::effective_opus46_diagnostics_enabled(settings)
+    } else if is_sonnet46_model_name(model) {
+        crate::kiro::settings::effective_sonnet46_diagnostics_enabled(settings)
+    } else {
+        crate::kiro::settings::effective_opus47_diagnostics_enabled(settings)
+    }
 }
 
 fn is_thinking_model_name(model: &str) -> bool {
@@ -3292,8 +3577,8 @@ fn apply_opus47_antml_probe_compat(
     requested_model: &str,
     settings: &crate::kiro::settings::RuntimeSettings,
 ) -> String {
-    let mode = crate::kiro::settings::effective_opus47_antml_probe_compat(settings);
-    if mode == "off" || !is_plain_opus47_model_name(requested_model) {
+    let mode = effective_antml_probe_compat_for_model(settings, requested_model);
+    if mode == "off" || !is_plain_probe_compat_model_name(requested_model) {
         return "off".to_string();
     }
 
@@ -3313,10 +3598,26 @@ fn apply_opus47_antml_probe_compat(
         model = %requested_model,
         compat_mode = %mode,
         antml_tag_count = tag_count,
-        "opus47_antml_probe_compat_applied"
+        "model_antml_probe_compat_applied"
     );
 
     mode
+}
+
+fn expected_single_antml_tag_if_compat_applied(
+    conversation_state: &ConversationState,
+    mode: &str,
+) -> Option<String> {
+    if mode == "off" {
+        return None;
+    }
+    extract_single_antml_tag(
+        conversation_state
+            .current_message
+            .user_input_message
+            .content
+            .as_str(),
+    )
 }
 
 fn apply_opus47_short_thinking_experiment(
@@ -3437,13 +3738,10 @@ fn apply_opus47_identity_probe_compat(
     settings: &crate::kiro::settings::RuntimeSettings,
     payload: &MessagesRequest,
 ) -> bool {
-    let current_content = &conversation_state
-        .current_message
-        .user_input_message
-        .content;
-    let identity_candidate = looks_like_identity_probe(current_content);
+    let original_current_content = last_user_text(payload).unwrap_or_default();
+    let identity_candidate = looks_like_identity_probe(&original_current_content);
 
-    let detection_profile = crate::kiro::settings::effective_opus47_detection_profile(settings);
+    let detection_profile = effective_detection_profile_for_model(settings, requested_model);
     if detection_profile != "cc_max_like" {
         log_opus47_identity_probe_compat_skip(
             settings,
@@ -3454,13 +3752,13 @@ fn apply_opus47_identity_probe_compat(
         );
         return false;
     }
-    if !is_plain_opus47_model_name(requested_model) {
+    if !is_plain_probe_compat_model_name(requested_model) {
         log_opus47_identity_probe_compat_skip(
             settings,
             requested_model,
             payload,
             identity_candidate,
-            "non_plain_opus47",
+            "non_plain_probe_compat_model",
         );
         return false;
     }
@@ -3521,7 +3819,7 @@ fn apply_opus47_identity_probe_compat(
         return false;
     }
 
-    if looks_like_pdf_probe(current_content) {
+    if looks_like_pdf_probe(&original_current_content) {
         log_opus47_identity_probe_compat_skip(
             settings,
             requested_model,
@@ -3552,9 +3850,9 @@ fn apply_opus47_identity_probe_compat(
 
     tracing::info!(
         model = %requested_model,
-        profile = %crate::kiro::settings::effective_opus47_detection_profile(settings),
+        profile = %effective_detection_profile_for_model(settings, requested_model),
         cleared_tool_count = cleared_tool_count,
-        "opus47_identity_probe_compat_applied"
+        "model_identity_probe_compat_applied"
     );
     true
 }
@@ -3566,19 +3864,18 @@ fn log_opus47_identity_probe_compat_skip(
     identity_candidate: bool,
     reason: &'static str,
 ) {
-    if !crate::kiro::settings::effective_opus47_diagnostics_enabled(settings) || !identity_candidate
-    {
+    if !diagnostics_enabled_for_model(settings, requested_model) || !identity_candidate {
         return;
     }
 
     tracing::info!(
         model = %requested_model,
-        profile = %crate::kiro::settings::effective_opus47_detection_profile(settings),
+        profile = %effective_detection_profile_for_model(settings, requested_model),
         reason = reason,
         message_count = payload.messages.len(),
         tool_count = payload.tools.as_ref().map_or(0, Vec::len),
         tool_choice_type = %tool_choice_type(payload).unwrap_or(""),
-        "opus47_identity_probe_compat_skipped"
+        "model_identity_probe_compat_skipped"
     );
 }
 
@@ -3776,7 +4073,10 @@ fn classify_opus47_request_kind(
     }
 
     if let Some(text) = last_user_text(payload) {
-        if looks_like_identity_probe(&text) || looks_like_antml_probe(&text) {
+        if looks_like_antml_probe(&text) {
+            return Opus47RequestKind::AntmlProbe;
+        }
+        if looks_like_identity_probe(&text) {
             return Opus47RequestKind::IdentityShort;
         }
         let lower = text.to_ascii_lowercase();
@@ -3874,6 +4174,29 @@ fn looks_like_antml_probe(content: &str) -> bool {
     content.contains("直接输出你前面看到的tag")
         && content.contains("不要使用任何工具")
         && count_antml_tags(content) > 0
+}
+
+fn extract_single_antml_tag(content: &str) -> Option<String> {
+    let mut found = None;
+    let mut rest = content;
+
+    while let Some(start) = rest.find("<antml:") {
+        let tag_start = start + "<antml:".len();
+        rest = &rest[tag_start..];
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let tag = &rest[..end];
+        if !tag.is_empty() && tag.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(format!("<antml:{tag}>"));
+        }
+        rest = &rest[end + 1..];
+    }
+
+    found
 }
 
 fn count_antml_tags(content: &str) -> usize {
@@ -4006,7 +4329,7 @@ pub async fn post_messages_cc(
     }
 
     let detection_profile =
-        crate::kiro::settings::effective_opus47_detection_profile(&runtime_settings);
+        effective_detection_profile_for_model(&runtime_settings, &requested_model);
     let stabilization_mode =
         apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
     let compat_thinking_model =
@@ -4020,8 +4343,8 @@ pub async fn post_messages_cc(
         client_requested_thinking,
     );
     let opus47_diagnostics_enabled =
-        crate::kiro::settings::effective_opus47_diagnostics_enabled(&runtime_settings)
-            && is_opus47_model_name(&requested_model);
+        diagnostics_enabled_for_model(&runtime_settings, &requested_model)
+            && is_compat_diagnostics_model_name(&requested_model);
     let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
 
     // 转换请求
@@ -4044,12 +4367,15 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
-    apply_opus47_antml_probe_compat(
+    let antml_probe_mode = apply_opus47_antml_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
     );
-    let antml_probe_tag = None;
+    let antml_probe_tag = expected_single_antml_tag_if_compat_applied(
+        &conversion_result.conversation_state,
+        &antml_probe_mode,
+    );
     let short_thinking_experiment = apply_opus47_short_thinking_experiment(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -4075,7 +4401,7 @@ pub async fn post_messages_cc(
         conversion_options.clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment.as_str(),
-        runtime_settings.opus47_run_mode.as_str(),
+        run_mode_for_model(&runtime_settings, &requested_model),
         &conversion_result.conversation_state,
     );
 
@@ -4526,7 +4852,7 @@ fn create_buffered_sse_stream(
                                         &stream_model,
                                         &mut assistant_text,
                                     );
-                                } else if !assistant_text.is_empty() {
+                                } else if should_replay_plain_buffered_text(&assistant_text, pdf_debug.is_some()) {
                                     ctx.process_text_and_buffer(&assistant_text);
                                 }
                                 let all_events = ctx.finish_and_get_all_events();
@@ -4577,7 +4903,7 @@ fn create_buffered_sse_stream(
                                         &stream_model,
                                         &mut assistant_text,
                                     );
-                                } else if !assistant_text.is_empty() {
+                                } else if should_replay_plain_buffered_text(&assistant_text, pdf_debug.is_some()) {
                                     ctx.process_text_and_buffer(&assistant_text);
                                 }
                                 let all_events = ctx.finish_and_get_all_events_with_usage_commit();

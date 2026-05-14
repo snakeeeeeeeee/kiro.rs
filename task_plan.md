@@ -35,6 +35,8 @@ Current extension: treat short exact-answer text-only signatures as expected ups
 
 Current extension: add an Opus 4.7 run mode switch with `custom`, `benchmark`, and `fast` effective presets while keeping Prompt Dump and raw debug as manual controls.
 
+Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibility settings, fix PDF exact streaming duplicate output, and verify with local checks plus Docker where credentials allow.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -67,6 +69,7 @@ Current extension: add an Opus 4.7 run mode switch with `custom`, `benchmark`, a
 - [completed] Fix cctest behavior regressions from ANTML/identity probe cross-contamination
 - [completed] Add request-kind signature diagnostics and Prompt Dump runtime/Admin support
 - [completed] Add Opus 4.7 run modes for benchmark scoring vs low-latency daily use without mutating manual dump settings
+- [completed] Implement Opus 4.6/Sonnet 4.6 compatibility settings, generalized probe helpers, PDF duplicate-output fix, and Docker verification
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -101,6 +104,10 @@ Current extension: add an Opus 4.7 run mode switch with `custom`, `benchmark`, a
 - Short exact/PDF/OCR/identity `upstream_no_reasoning` signature diagnostics are classified as expected text-only upstream behavior. Reasoning-like `upstream_no_reasoning`, upstream reasoning without signature, and upstream signature not exposed remain warning-level diagnostics.
 - Prompt Dump is default-off because it stores sensitive prompt, document/base64, upstream request, upstream raw response, and client response data. It is runtime/Admin configurable and defaults to dumping only `claude-opus-4-6`, `claude-opus-4-7`, and `claude-sonnet-4-6`.
 - Opus 4.7 run mode is an effective-request preset, not a stored-settings rewrite. `custom` preserves existing granular behavior; `benchmark` favors cctest/hvoy compatibility; `fast` lowers thinking work and disables detector diagnostics/compat extras. Prompt Dump and raw debug remain explicit manual settings.
+- Opus 4.6 and Sonnet 4.6 now have separate runtime/Admin compatibility groups. Their `benchmark` mode applies the scoring-oriented effective profile; `fast` keeps client thinking/tools/history/tokens/effort intact and only enables ANTML clarify; `custom` follows the granular fields.
+- Opus 4.6/Sonnet 4.6 identity compatibility is gated to `benchmark` or `custom + cc_max_like`; normal Claude Code/tool workflows should not have tools stripped unless the request matches the detector-style identity probe.
+- PDF exact streaming diagnostics must not reuse the same assistant text buffer for replay. PDF diagnostic text is observed for logs only; already-forwarded stream text is not replayed at stream end.
+- ANTML probe diagnostics use a distinct `request_kind="antml_probe"` so later signature/behavior logs are not confused with identity probes.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -122,3 +129,5 @@ Current extension: add an Opus 4.7 run mode switch with `custom`, `benchmark`, a
 | Exact identity phrase matching could miss detector wording variants | 1 | Added bounded identity-intent heuristics and negative tests for normal business modeling/authentication prompts |
 | Needed to verify identity compatibility text cannot be elicited as prompt leakage | 1 | Ran the existing multi-turn prompt leak probe plus direct system-prompt probes; outputs did not reveal the internal compatibility prefix or proxy/platform details |
 | Cargo test was invoked with multiple test-name filters | 1 | Re-ran with a single broader filter (`cargo test opus47`) and then full `cargo test -q` |
+| Docker verification helper tried to parse the same Admin PUT response twice | 1 | Reworked the helper to consume the PUT body once and confirm settings with a separate GET |
+| ANTML diagnostics were labeled `identity_short` after behavior was already correct | 1 | Added `Opus47RequestKind::AntmlProbe` and a regression test so logs show `request_kind="antml_probe"` |

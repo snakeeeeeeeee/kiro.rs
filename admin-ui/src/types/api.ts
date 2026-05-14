@@ -68,6 +68,18 @@ export interface RuntimeStatusResponse {
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
+  opus46RunMode: 'custom' | 'benchmark' | 'fast'
+  opus46DetectionProfile: 'normal' | 'cc_max_like'
+  opus46AntmlProbeCompat: 'off' | 'clarify'
+  opus46DiagnosticsEnabled: boolean
+  opus46RawDebugEnabled: boolean
+  opus46RawDebugMaxChars: number
+  sonnet46RunMode: 'custom' | 'benchmark' | 'fast'
+  sonnet46DetectionProfile: 'normal' | 'cc_max_like'
+  sonnet46AntmlProbeCompat: 'off' | 'clarify'
+  sonnet46DiagnosticsEnabled: boolean
+  sonnet46RawDebugEnabled: boolean
+  sonnet46RawDebugMaxChars: number
   promptDumpEnabled: boolean
   promptDumpDir: string
   promptDumpMaxBytes: number
@@ -266,6 +278,18 @@ export interface RuntimeSettings {
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
+  opus46RunMode: 'custom' | 'benchmark' | 'fast'
+  opus46DetectionProfile: 'normal' | 'cc_max_like'
+  opus46AntmlProbeCompat: 'off' | 'clarify'
+  opus46DiagnosticsEnabled: boolean
+  opus46RawDebugEnabled: boolean
+  opus46RawDebugMaxChars: number
+  sonnet46RunMode: 'custom' | 'benchmark' | 'fast'
+  sonnet46DetectionProfile: 'normal' | 'cc_max_like'
+  sonnet46AntmlProbeCompat: 'off' | 'clarify'
+  sonnet46DiagnosticsEnabled: boolean
+  sonnet46RawDebugEnabled: boolean
+  sonnet46RawDebugMaxChars: number
   promptDumpEnabled: boolean
   promptDumpDir: string
   promptDumpMaxBytes: number

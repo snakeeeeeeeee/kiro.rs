@@ -432,14 +432,34 @@ fn truncate_for_raw_debug(value: &str, max_chars: usize) -> (String, bool) {
     (result, truncated)
 }
 
-fn is_opus47_raw_debug_model(model: &str) -> bool {
-    matches!(
-        model.trim().to_ascii_lowercase().as_str(),
+fn raw_debug_config_for_model(
+    settings: &crate::kiro::settings::RuntimeSettings,
+    model: &str,
+) -> (bool, usize) {
+    match model.trim().to_ascii_lowercase().as_str() {
         "claude-opus-4-7"
-            | "claude-opus-4.7"
-            | "claude-opus-4-7-thinking"
-            | "claude-opus-4.7-thinking"
-    )
+        | "claude-opus-4.7"
+        | "claude-opus-4-7-thinking"
+        | "claude-opus-4.7-thinking" => (
+            settings.opus47_raw_debug_enabled,
+            settings.opus47_raw_debug_max_chars,
+        ),
+        "claude-opus-4-6"
+        | "claude-opus-4.6"
+        | "claude-opus-4-6-thinking"
+        | "claude-opus-4.6-thinking" => (
+            settings.opus46_raw_debug_enabled,
+            settings.opus46_raw_debug_max_chars,
+        ),
+        "claude-sonnet-4-6"
+        | "claude-sonnet-4.6"
+        | "claude-sonnet-4-6-thinking"
+        | "claude-sonnet-4.6-thinking" => (
+            settings.sonnet46_raw_debug_enabled,
+            settings.sonnet46_raw_debug_max_chars,
+        ),
+        _ => (false, settings.opus47_raw_debug_max_chars),
+    }
 }
 
 fn log_kiro_raw_request(
@@ -1017,9 +1037,8 @@ impl KiroProvider {
             if let Some(dump) = prompt_dump.as_ref() {
                 dump.write_text("upstream_request.json", &body);
             }
-            let raw_debug_enabled =
-                settings.opus47_raw_debug_enabled && is_opus47_raw_debug_model(&model_for_metrics);
-            let raw_debug_max_chars = settings.opus47_raw_debug_max_chars;
+            let (raw_debug_enabled, raw_debug_max_chars) =
+                raw_debug_config_for_model(&settings, &model_for_metrics);
             let raw_request_id = raw_debug_enabled.then(|| Uuid::new_v4().to_string());
             if let Some(raw_request_id) = raw_request_id.as_deref() {
                 log_kiro_raw_request(

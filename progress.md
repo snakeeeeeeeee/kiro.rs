@@ -1,6 +1,8 @@
 # Progress
 
 ## Session Log
+- Started implementing the approved Opus 4.6 / Sonnet 4.6 compatibility plan. Initial code read confirmed no source edits existed yet; untracked `scripts/prompt_leak_conversation_probe.py` and `tmp/` are treated as user artifacts and will not be touched.
+- Found the PDF exact duplicate-output bug in both streaming paths: `assistant_text` is populated for PDF diagnostics while the same assistant events are already forwarded, then stream finalization replays `assistant_text` as a synthetic assistant response. Fix will split PDF diagnostics text from buffered identity/ANTML text.
 - Started implementing Opus 4.7 run mode presets. Goal: `custom` keeps existing knobs, `benchmark` applies current scoring-friendly effective behavior, `fast` prioritizes latency, and Prompt Dump remains independently controlled by its manual runtime setting.
 - Implemented runtime/config/Admin field `opus47RunMode` with values `custom`, `benchmark`, and `fast`. Fast mode caps Opus 4.7 top-level/content thinking to low/4096 and disables effective diagnostics/signed-thinking/probe extras; benchmark mode forces the scoring-oriented effective profile without changing Prompt Dump.
 - Widened the default-off Opus 4.7 short thinking experiment after cctest logs showed short/PDF probes with `max_tokens=10240`, above the previous `<=1024` guard. The adaptive-high rewrite now applies up to `max_tokens <= 16384` and short text `<=2048` chars, still only under `cc_max_like + history_experiment + client-requested thinking`.
@@ -408,3 +410,28 @@
 - `cargo test -q`: passed, 305 tests.
 - `pnpm --dir admin-ui build`: passed.
 - `git diff --check`: passed.
+
+## Completed: Opus 4.6 / Sonnet 4.6 Compatibility
+- Added separate runtime/config/Admin/UI compatibility groups for `claude-opus-4-6` and `claude-sonnet-4-6`: run mode, detection profile, ANTML probe compatibility, diagnostics, raw debug, and raw debug max chars.
+- Implemented effective `benchmark`, `fast`, and `custom` semantics for both model families without auto-enabling Prompt Dump. `fast` preserves client thinking/tools/history/tokens/effort and only enables ANTML clarify; `benchmark` applies the scoring-oriented effective profile.
+- Generalized the Opus 4.7 probe helpers for 4.6/Sonnet 4.6 while preserving 4.7 behavior and the real-signature-only rule.
+- Fixed PDF exact streaming duplicate output by separating PDF diagnostic buffering from client replay buffering.
+- Gated identity probe compatibility for 4.6/Sonnet 4.6 to `benchmark` or `custom + cc_max_like`, and verified matched identity probes clear tool schemas while ordinary fast/custom-normal requests do not.
+- Fixed ANTML tag handling so `<antml:hex>` is preserved/restored for a single probe tag and does not trigger identity normalization from the clarification prefix.
+- Split ANTML diagnostics into `request_kind="antml_probe"` for clearer future log analysis.
+- Updated README and Admin UI layout so Opus 4.7, Opus 4.6, Sonnet 4.6, and Prompt Dump controls are grouped separately.
+
+## Latest Validation: Opus 4.6 / Sonnet 4.6 Compatibility
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- `cargo test antml`: passed, 11 tests.
+- `cargo test`: passed, 319 tests.
+- `pnpm --dir admin-ui exec tsc --noEmit`: passed.
+- `pnpm --dir admin-ui build`: passed.
+- `git diff --check`: passed.
+- `docker compose -f docker-compose-prod.yml -f docker-compose-prod.build.yml build`: passed; final image `kiro-rs:prod` built successfully.
+- Docker health checks on `kiro-rs-verify`: `/healthz` 200 and `/readyz` 200.
+- Docker Admin runtime update: `opus46RunMode=benchmark`, `sonnet46RunMode=benchmark`, `promptDumpEnabled=false`.
+- Real Docker smoke for both `claude-opus-4-6` and `claude-sonnet-4-6`: identity probe returned text only with no `tool_use`; ANTML returned full `<antml:8308bd23134dd517>` and did not start with the identity template; PDF exact returned the eight-character PDF text exactly once in both non-stream and stream paths.
+- Docker logs confirmed `model_identity_probe_compat_applied`, `model_antml_probe_compat_applied`, PDF diagnostics, and `request_kind="antml_probe"` for ANTML diagnostics.
+- Stopped the temporary `kiro-rs-verify` container after verification.

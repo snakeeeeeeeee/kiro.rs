@@ -10,10 +10,12 @@ use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::{
     CredentialPolicy, RuntimeSettings, SameAccountRetryRule, normalize_dynamic_proxy_protocol,
-    normalize_dynamic_proxy_provider, normalize_opus47_antml_probe_compat,
+    normalize_dynamic_proxy_provider, normalize_model46_detection_profile,
+    normalize_opus46_run_mode, normalize_opus47_antml_probe_compat,
     normalize_opus47_clean_probe_mode, normalize_opus47_detection_profile,
     normalize_opus47_plain_stabilization_mode, normalize_opus47_run_mode,
     normalize_opus47_short_thinking_experiment, normalize_opus47_signed_thinking_preservation,
+    normalize_sonnet46_run_mode,
 };
 use crate::model::config::Config;
 
@@ -477,6 +479,48 @@ fn runtime_settings_pairs(
             "opus47RawDebugMaxChars",
             settings.opus47_raw_debug_max_chars.to_string(),
         ),
+        ("opus46RunMode", settings.opus46_run_mode.clone()),
+        (
+            "opus46DetectionProfile",
+            settings.opus46_detection_profile.clone(),
+        ),
+        (
+            "opus46AntmlProbeCompat",
+            settings.opus46_antml_probe_compat.clone(),
+        ),
+        (
+            "opus46DiagnosticsEnabled",
+            settings.opus46_diagnostics_enabled.to_string(),
+        ),
+        (
+            "opus46RawDebugEnabled",
+            settings.opus46_raw_debug_enabled.to_string(),
+        ),
+        (
+            "opus46RawDebugMaxChars",
+            settings.opus46_raw_debug_max_chars.to_string(),
+        ),
+        ("sonnet46RunMode", settings.sonnet46_run_mode.clone()),
+        (
+            "sonnet46DetectionProfile",
+            settings.sonnet46_detection_profile.clone(),
+        ),
+        (
+            "sonnet46AntmlProbeCompat",
+            settings.sonnet46_antml_probe_compat.clone(),
+        ),
+        (
+            "sonnet46DiagnosticsEnabled",
+            settings.sonnet46_diagnostics_enabled.to_string(),
+        ),
+        (
+            "sonnet46RawDebugEnabled",
+            settings.sonnet46_raw_debug_enabled.to_string(),
+        ),
+        (
+            "sonnet46RawDebugMaxChars",
+            settings.sonnet46_raw_debug_max_chars.to_string(),
+        ),
         (
             "promptDumpEnabled",
             settings.prompt_dump_enabled.to_string(),
@@ -677,6 +721,30 @@ fn apply_runtime_setting(
         "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
         "opus47RawDebugEnabled" => settings.opus47_raw_debug_enabled = parse_bool(key, value)?,
         "opus47RawDebugMaxChars" => settings.opus47_raw_debug_max_chars = parse_usize(key, value)?,
+        "opus46RunMode" => settings.opus46_run_mode = normalize_opus46_run_mode(value),
+        "opus46DetectionProfile" => {
+            settings.opus46_detection_profile = normalize_model46_detection_profile(value)
+        }
+        "opus46AntmlProbeCompat" => {
+            settings.opus46_antml_probe_compat = normalize_opus47_antml_probe_compat(value)
+        }
+        "opus46DiagnosticsEnabled" => settings.opus46_diagnostics_enabled = parse_bool(key, value)?,
+        "opus46RawDebugEnabled" => settings.opus46_raw_debug_enabled = parse_bool(key, value)?,
+        "opus46RawDebugMaxChars" => settings.opus46_raw_debug_max_chars = parse_usize(key, value)?,
+        "sonnet46RunMode" => settings.sonnet46_run_mode = normalize_sonnet46_run_mode(value),
+        "sonnet46DetectionProfile" => {
+            settings.sonnet46_detection_profile = normalize_model46_detection_profile(value)
+        }
+        "sonnet46AntmlProbeCompat" => {
+            settings.sonnet46_antml_probe_compat = normalize_opus47_antml_probe_compat(value)
+        }
+        "sonnet46DiagnosticsEnabled" => {
+            settings.sonnet46_diagnostics_enabled = parse_bool(key, value)?
+        }
+        "sonnet46RawDebugEnabled" => settings.sonnet46_raw_debug_enabled = parse_bool(key, value)?,
+        "sonnet46RawDebugMaxChars" => {
+            settings.sonnet46_raw_debug_max_chars = parse_usize(key, value)?
+        }
         "promptDumpEnabled" => settings.prompt_dump_enabled = parse_bool(key, value)?,
         "promptDumpDir" => {
             settings.prompt_dump_dir = crate::kiro::settings::normalize_prompt_dump_dir(value)
@@ -1015,6 +1083,18 @@ mod tests {
         updated.opus47_diagnostics_enabled = false;
         updated.opus47_raw_debug_enabled = true;
         updated.opus47_raw_debug_max_chars = 12_345;
+        updated.opus46_run_mode = "benchmark".to_string();
+        updated.opus46_detection_profile = "cc_max_like".to_string();
+        updated.opus46_antml_probe_compat = "clarify".to_string();
+        updated.opus46_diagnostics_enabled = false;
+        updated.opus46_raw_debug_enabled = true;
+        updated.opus46_raw_debug_max_chars = 23_456;
+        updated.sonnet46_run_mode = "fast".to_string();
+        updated.sonnet46_detection_profile = "cc_max_like".to_string();
+        updated.sonnet46_antml_probe_compat = "clarify".to_string();
+        updated.sonnet46_diagnostics_enabled = false;
+        updated.sonnet46_raw_debug_enabled = true;
+        updated.sonnet46_raw_debug_max_chars = 34_567;
         updated.prompt_dump_enabled = true;
         updated.prompt_dump_dir = "/tmp/kiro-prompt-dumps".to_string();
         updated.prompt_dump_max_bytes = 12_345;
@@ -1045,6 +1125,18 @@ mod tests {
         assert!(!loaded.opus47_diagnostics_enabled);
         assert!(loaded.opus47_raw_debug_enabled);
         assert_eq!(loaded.opus47_raw_debug_max_chars, 12_345);
+        assert_eq!(loaded.opus46_run_mode, "benchmark");
+        assert_eq!(loaded.opus46_detection_profile, "cc_max_like");
+        assert_eq!(loaded.opus46_antml_probe_compat, "clarify");
+        assert!(!loaded.opus46_diagnostics_enabled);
+        assert!(loaded.opus46_raw_debug_enabled);
+        assert_eq!(loaded.opus46_raw_debug_max_chars, 23_456);
+        assert_eq!(loaded.sonnet46_run_mode, "fast");
+        assert_eq!(loaded.sonnet46_detection_profile, "cc_max_like");
+        assert_eq!(loaded.sonnet46_antml_probe_compat, "clarify");
+        assert!(!loaded.sonnet46_diagnostics_enabled);
+        assert!(loaded.sonnet46_raw_debug_enabled);
+        assert_eq!(loaded.sonnet46_raw_debug_max_chars, 34_567);
         assert!(loaded.prompt_dump_enabled);
         assert_eq!(loaded.prompt_dump_dir, "/tmp/kiro-prompt-dumps");
         assert_eq!(loaded.prompt_dump_max_bytes, 12_345);

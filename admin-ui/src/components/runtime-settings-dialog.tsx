@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46RunMode' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46RunMode' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -56,7 +56,7 @@ const numberFields: Array<{
   { key: 'dynamicProxyWorkerConcurrency', label: '动态代理并发数', hint: '建议 3' },
 ]
 
-type NumberSettingKey = (typeof numberFields)[number]['key'] | 'opus47RawDebugMaxChars' | 'promptDumpMaxBytes'
+type NumberSettingKey = (typeof numberFields)[number]['key'] | 'opus47RawDebugMaxChars' | 'opus46RawDebugMaxChars' | 'sonnet46RawDebugMaxChars' | 'promptDumpMaxBytes'
 
 export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDialogProps) {
   const { data, isLoading } = useRuntimeSettings()
@@ -191,7 +191,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold">Opus 4.7 兼容策略</h3>
                 <p className="text-xs text-muted-foreground">
-                  这些选项只影响 claude-opus-4-7。后续 Opus 4.6 和 Sonnet 4.6 会放到独立模型分区，Prompt Dump 仍在下方手动控制。
+                  这些选项只影响 claude-opus-4-7；Prompt Dump 仍在下方手动控制。
                 </p>
               </div>
 
@@ -210,7 +210,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     <option value="fast">极速模式</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    跑分模式使用 cctest/hvoy 兼容预设；极速模式关闭签名/身份等重开销、保留客户端 thinking，并启用 ANTML Clarify。
+                    跑分模式使用 cctest/hvoy 兼容预设；极速模式保留客户端 thinking/tools/history/token/effort，只启用 ANTML Clarify。
                   </p>
                 </div>
 
@@ -350,6 +350,206 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     max={200000}
                     value={form.opus47RawDebugMaxChars}
                     onChange={event => updateNumber('opus47RawDebugMaxChars', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">1000-200000，仅调试时使用。</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">Opus 4.6 兼容策略</h3>
+                <p className="text-xs text-muted-foreground">
+                  这些选项只影响 claude-opus-4-6；跑分模式才启用身份探针工具清理和通用兼容预设。
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-medium">运行模式</label>
+                  <select
+                    value={form.opus46RunMode}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus46RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="custom">自定义</option>
+                    <option value="benchmark">跑分模式</option>
+                    <option value="fast">极速模式</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    跑分模式启用 CC Max Like、ANTML Clarify、flat usage、aggregator models；极速模式保留客户端参数，只启用 ANTML Clarify。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">检测 Profile</label>
+                  <select
+                    value={form.opus46DetectionProfile}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus46DetectionProfile: event.target.value as 'normal' | 'cc_max_like' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="cc_max_like">CC Max Like</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">ANTML 探针兼容</label>
+                  <select
+                    value={form.opus46AntmlProbeCompat}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus46AntmlProbeCompat: event.target.value as 'off' | 'clarify' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="clarify">Clarify</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    跑分模式、极速模式和 CC Max Like 会 effective 为 Clarify。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">诊断日志</label>
+                  <select
+                    value={form.opus46DiagnosticsEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus46DiagnosticsEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="enabled">启用</option>
+                    <option value="disabled">关闭</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">原始调试日志</label>
+                  <select
+                    value={form.opus46RawDebugEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, opus46RawDebugEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="disabled">关闭</option>
+                    <option value="enabled">启用</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">原始日志长度</label>
+                  <Input
+                    type="number"
+                    min={1000}
+                    max={200000}
+                    value={form.opus46RawDebugMaxChars}
+                    onChange={event => updateNumber('opus46RawDebugMaxChars', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">1000-200000，仅调试时使用。</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">Sonnet 4.6 兼容策略</h3>
+                <p className="text-xs text-muted-foreground">
+                  这些选项只影响 claude-sonnet-4-6；默认不改正常 Claude Code 工具调用。
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-medium">运行模式</label>
+                  <select
+                    value={form.sonnet46RunMode}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, sonnet46RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="custom">自定义</option>
+                    <option value="benchmark">跑分模式</option>
+                    <option value="fast">极速模式</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    跑分模式启用 CC Max Like、身份探针兼容和通用兼容预设；极速模式保留客户端参数，只启用 ANTML Clarify。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">检测 Profile</label>
+                  <select
+                    value={form.sonnet46DetectionProfile}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, sonnet46DetectionProfile: event.target.value as 'normal' | 'cc_max_like' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="cc_max_like">CC Max Like</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">ANTML 探针兼容</label>
+                  <select
+                    value={form.sonnet46AntmlProbeCompat}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, sonnet46AntmlProbeCompat: event.target.value as 'off' | 'clarify' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="clarify">Clarify</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    跑分模式、极速模式和 CC Max Like 会 effective 为 Clarify。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">诊断日志</label>
+                  <select
+                    value={form.sonnet46DiagnosticsEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, sonnet46DiagnosticsEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="enabled">启用</option>
+                    <option value="disabled">关闭</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">原始调试日志</label>
+                  <select
+                    value={form.sonnet46RawDebugEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, sonnet46RawDebugEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="disabled">关闭</option>
+                    <option value="enabled">启用</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">原始日志长度</label>
+                  <Input
+                    type="number"
+                    min={1000}
+                    max={200000}
+                    value={form.sonnet46RawDebugMaxChars}
+                    onChange={event => updateNumber('sonnet46RawDebugMaxChars', event.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">1000-200000，仅调试时使用。</p>
                 </div>

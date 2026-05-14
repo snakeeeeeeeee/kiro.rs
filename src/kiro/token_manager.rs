@@ -634,6 +634,30 @@ pub struct ManagerSnapshot {
     pub opus47_raw_debug_enabled: bool,
     /// Opus 4.7 原始调试日志单字段最大字符数
     pub opus47_raw_debug_max_chars: usize,
+    /// Opus 4.6 运行模式
+    pub opus46_run_mode: String,
+    /// Opus 4.6 检测 profile
+    pub opus46_detection_profile: String,
+    /// Opus 4.6 ANTML 探针兼容模式
+    pub opus46_antml_probe_compat: String,
+    /// Opus 4.6 诊断日志开关
+    pub opus46_diagnostics_enabled: bool,
+    /// Opus 4.6 原始请求/响应调试日志开关
+    pub opus46_raw_debug_enabled: bool,
+    /// Opus 4.6 原始调试日志单字段最大字符数
+    pub opus46_raw_debug_max_chars: usize,
+    /// Sonnet 4.6 运行模式
+    pub sonnet46_run_mode: String,
+    /// Sonnet 4.6 检测 profile
+    pub sonnet46_detection_profile: String,
+    /// Sonnet 4.6 ANTML 探针兼容模式
+    pub sonnet46_antml_probe_compat: String,
+    /// Sonnet 4.6 诊断日志开关
+    pub sonnet46_diagnostics_enabled: bool,
+    /// Sonnet 4.6 原始请求/响应调试日志开关
+    pub sonnet46_raw_debug_enabled: bool,
+    /// Sonnet 4.6 原始调试日志单字段最大字符数
+    pub sonnet46_raw_debug_max_chars: usize,
     /// Prompt dump 文件落盘开关
     pub prompt_dump_enabled: bool,
     /// Prompt dump 目录
@@ -2294,6 +2318,18 @@ impl MultiTokenManager {
             opus47_diagnostics_enabled: settings.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: settings.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: settings.opus47_raw_debug_max_chars,
+            opus46_run_mode: settings.opus46_run_mode,
+            opus46_detection_profile: settings.opus46_detection_profile,
+            opus46_antml_probe_compat: settings.opus46_antml_probe_compat,
+            opus46_diagnostics_enabled: settings.opus46_diagnostics_enabled,
+            opus46_raw_debug_enabled: settings.opus46_raw_debug_enabled,
+            opus46_raw_debug_max_chars: settings.opus46_raw_debug_max_chars,
+            sonnet46_run_mode: settings.sonnet46_run_mode,
+            sonnet46_detection_profile: settings.sonnet46_detection_profile,
+            sonnet46_antml_probe_compat: settings.sonnet46_antml_probe_compat,
+            sonnet46_diagnostics_enabled: settings.sonnet46_diagnostics_enabled,
+            sonnet46_raw_debug_enabled: settings.sonnet46_raw_debug_enabled,
+            sonnet46_raw_debug_max_chars: settings.sonnet46_raw_debug_max_chars,
             prompt_dump_enabled: settings.prompt_dump_enabled,
             prompt_dump_dir: settings.prompt_dump_dir,
             prompt_dump_max_bytes: settings.prompt_dump_max_bytes,

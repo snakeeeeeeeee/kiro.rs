@@ -211,15 +211,28 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `maxRetryAccounts` | number | `3` | 单个请求最多尝试的不同账号数，`1` 表示不换号 |
 | `modelCapacityCooldownMs` | number | `10000` | 所有尝试账号都遇到 `INSUFFICIENT_MODEL_CAPACITY` 后的模型级冷却时间 |
 | `sameAccountRetryRules` | array | 见示例 | 单号重试规则。命中规则时先用当前账号重试，耗尽后才进入账号冷却或换号 |
-| `opus47RunMode` | string | `custom` | Opus 4.7 运行模式：`custom` 保持细项配置；`benchmark` 使用跑分/探针兼容 effective 预设；`fast` 关闭签名/身份等重开销、保留客户端 thinking 参数，并启用 ANTML clarify。不会自动切换诊断日志、Prompt Dump 或原始调试日志 |
+| `opus47RunMode` | string | `custom` | Opus 4.7 运行模式：`custom` 保持细项配置；`benchmark` 使用跑分/探针兼容 effective 预设；`fast` 保留客户端 thinking/tools/history/token/effort，不限制客户端参数，并启用 ANTML clarify。不会自动切换诊断日志、Prompt Dump 或原始调试日志 |
 | `opus47PlainStabilizationMode` | string | `off` | Opus 4.7 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
 | `opus47AntmlProbeCompat` | string | `off` | Opus 4.7 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
 | `opus47CleanProbeMode` | string | `off` | Opus 4.7 clean probe 模式：`off` 或 `clean`。开启后减少本地合成提示、工具描述后缀和结构化输出历史污染，仅作用于 plain `claude-opus-4-7` |
 | `opus47DetectionProfile` | string | `normal` | Opus 4.7 检测 profile：`normal`、`cc_max_like` 或 `clean_probe_debug`。`cc_max_like` 会统一应用聚合器模型列表、flat usage、native thinking、关闭 Clean Probe，并启用窄身份/ANTML 探针兼容 |
 | `opus47SignedThinkingPreservation` | string | `off` | Opus 4.7 signed-thinking 实验：`off`、`diagnose`、`cache_only` 或 `history_experiment`。当前只观察/缓存上游真实 signature，不伪造 signature |
+| `opus47ShortThinkingExperiment` | string | `off` | Opus 4.7 短请求/PDF thinking 标签 A/B：`off` 或 `adaptive_high`，仅在 `cc_max_like + history_experiment` 下生效 |
 | `opus47DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.7 响应形态诊断日志，包括 reasoning/signature 是否由上游出现并暴露给客户端 |
 | `opus47RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.7 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
 | `opus47RawDebugMaxChars` | number | `20000` | Opus 4.7 原始调试日志单字段最大字符数 |
+| `opus46RunMode` | string | `custom` | Opus 4.6 运行模式：`custom` 保持细项配置；`benchmark` 使用 `cc_max_like`、ANTML clarify、身份探针兼容、flat usage、aggregator models、native thinking；`fast` 保留客户端参数，仅启用 ANTML clarify |
+| `opus46DetectionProfile` | string | `normal` | Opus 4.6 检测 profile：`normal` 或 `cc_max_like`。`cc_max_like` 启用窄身份/ANTML 探针兼容，并让通用兼容形态 effective 为跑分预设 |
+| `opus46AntmlProbeCompat` | string | `off` | Opus 4.6 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
+| `opus46DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.6 响应形态诊断日志 |
+| `opus46RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.6 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
+| `opus46RawDebugMaxChars` | number | `20000` | Opus 4.6 原始调试日志单字段最大字符数 |
+| `sonnet46RunMode` | string | `custom` | Sonnet 4.6 运行模式：`custom` 保持细项配置；`benchmark` 使用 `cc_max_like`、ANTML clarify、身份探针兼容、flat usage、aggregator models、native thinking；`fast` 保留客户端参数，仅启用 ANTML clarify |
+| `sonnet46DetectionProfile` | string | `normal` | Sonnet 4.6 检测 profile：`normal` 或 `cc_max_like`。`cc_max_like` 启用窄身份/ANTML 探针兼容，并让通用兼容形态 effective 为跑分预设 |
+| `sonnet46AntmlProbeCompat` | string | `off` | Sonnet 4.6 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
+| `sonnet46DiagnosticsEnabled` | boolean | `true` | 是否启用 Sonnet 4.6 响应形态诊断日志 |
+| `sonnet46RawDebugEnabled` | boolean | `false` | 是否启用 Sonnet 4.6 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
+| `sonnet46RawDebugMaxChars` | number | `20000` | Sonnet 4.6 原始调试日志单字段最大字符数 |
 | `shutdownDrainTimeoutSecs` | number | `60` | 收到关闭信号后等待已有请求结束的最长时间 |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
@@ -274,9 +287,22 @@ docker compose -f docker-compose-dev.yml up -d --build
    "opus47CleanProbeMode": "off",
    "opus47DetectionProfile": "normal",
    "opus47SignedThinkingPreservation": "off",
+   "opus47ShortThinkingExperiment": "off",
    "opus47DiagnosticsEnabled": true,
    "opus47RawDebugEnabled": false,
    "opus47RawDebugMaxChars": 20000,
+   "opus46RunMode": "custom",
+   "opus46DetectionProfile": "normal",
+   "opus46AntmlProbeCompat": "off",
+   "opus46DiagnosticsEnabled": true,
+   "opus46RawDebugEnabled": false,
+   "opus46RawDebugMaxChars": 20000,
+   "sonnet46RunMode": "custom",
+   "sonnet46DetectionProfile": "normal",
+   "sonnet46AntmlProbeCompat": "off",
+   "sonnet46DiagnosticsEnabled": true,
+   "sonnet46RawDebugEnabled": false,
+   "sonnet46RawDebugMaxChars": 20000,
    "shutdownDrainTimeoutSecs": 60,
    "extractThinking": true
 }
