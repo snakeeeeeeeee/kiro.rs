@@ -391,3 +391,6 @@
 - `cargo test -q`: passed, 305 tests.
 - `pnpm --dir admin-ui build`: passed.
 - `git diff --check`: passed.
+- Analyzed latest prompt dump under `tmp/prompt-dumps`; confirmed the ANTML tag probe client prompt was clean, but upstream request was polluted by the identity compatibility prefix after ANTML clarification.
+- Fixed ANTML/identity cross-contamination by matching identity probes against the original latest user text, skipping ANTML probes, and enabling existing ANTML visible-text normalization by carrying the single expected tag through request handling.
+- Validation after the fix: `cargo test antml -- --nocapture`, `cargo test identity -- --nocapture`, `cargo fmt -- --check`, `cargo check`, `cargo test -q`, and `cargo build --release --no-default-features` all passed.
