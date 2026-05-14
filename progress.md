@@ -1,6 +1,11 @@
 # Progress
 
 ## Session Log
+- Investigated a new cctest 0% run where all categories failed and the platform concluded the endpoint was non-Claude.
+- Compared the latest logs with the earlier 78% run and found the early ANTML probes no longer had `identity_probe_applied=true` / `cleared_tool_count=28`; this was caused by the intentional fix that made identity detection inspect the original user text instead of ANTML clarification text.
+- Added direct tool-schema clearing inside `apply_opus47_antml_probe_compat` so matched ANTML probes still avoid Claude Code/Kiro tool contamination without re-triggering identity normalization.
+- Added a unit assertion that ANTML clarify keeps the single visible tag and clears tools.
+- Validation for this hotfix: `cargo fmt -- --check`, `cargo test antml -- --nocapture`, `cargo test identity -- --nocapture`, `cargo check`, `cargo test -q`, and `git diff --check` passed.
 - Resumed from an existing implementation handoff.
 - Reviewed `/Users/zhangyu/Desktop/详细日志.txt` for the latest Opus 4.7 cctest/hvoy run.
 - Found that Opus routing was correct, but identity diagnostics saw `sonnet` in visible assistant text and the short identity probe did not show `identity_probe_applied=true` in the supplied log.
