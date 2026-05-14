@@ -1101,7 +1101,8 @@ mod tests {
             tag,
         );
 
-        assert_eq!(normalized, tag);
+        assert!(normalized.contains("`<antml:8308bd23134dd517>`"));
+        assert!(normalized.contains("问题 2"));
     }
 
     #[test]
@@ -2510,7 +2511,7 @@ fn normalize_antml_probe_stream_text(text: &mut String, expected_tag: Option<&st
 
 fn normalize_antml_probe_visible_text(text: &str, expected_tag: &str) -> String {
     if text.contains(expected_tag) {
-        return expected_tag.to_string();
+        return text.to_string();
     }
 
     let Some(hex) = expected_tag
@@ -2524,7 +2525,7 @@ fn normalize_antml_probe_visible_text(text: &str, expected_tag: &str) -> String 
         return text.to_string();
     }
 
-    expected_tag.to_string()
+    text.replacen(&bare_tag, expected_tag, 1)
 }
 
 fn preview_log_text(text: &str, max_chars: usize) -> String {
