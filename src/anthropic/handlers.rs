@@ -316,7 +316,7 @@ fn aggregator_models() -> Vec<Model> {
 mod tests {
     use super::*;
     use crate::anthropic::converter::convert_request;
-    use crate::anthropic::types::Message;
+    use crate::anthropic::types::{Message, StructuredOutputFormat};
     use crate::kiro::model::events::{
         AssistantResponseEvent, Event, ReasoningContentEvent, ToolUseEvent,
     };
@@ -586,6 +586,138 @@ mod tests {
             payload.output_config.as_ref().map(|c| c.effort.as_str()),
             Some("low")
         );
+    }
+
+    #[test]
+    fn opus47_ultra_fast_mode_disables_top_level_and_content_thinking() {
+        let mut payload = request_with_content(
+            "claude-opus-4-7",
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length><thinking_effort>high</thinking_effort>\n请尽快回答",
+        );
+        payload.thinking = Some(Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: 20000,
+        });
+        payload.output_config = Some(OutputConfig {
+            effort: "high".to_string(),
+            format: None,
+        });
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_run_mode = "ultra_fast".to_string();
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+
+        normalize_opus47_client_thinking(
+            &mut payload,
+            "claude-opus-4-7",
+            client_requested_thinking,
+            &settings,
+        );
+
+        let content = last_user_text(&payload).unwrap();
+        assert!(payload.thinking.is_none());
+        assert!(content.contains("<thinking_mode>disabled</thinking_mode>"));
+        assert!(!content.contains("<max_thinking_length>"));
+        assert!(!content.contains("<thinking_effort>"));
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-7",
+            &payload,
+            &crate::kiro::settings::effective_compat_thinking_model(&settings),
+            client_requested_thinking
+        ));
+    }
+
+    #[test]
+    fn opus47_ultra_fast_mode_preserves_structured_output_format() {
+        let mut payload = request_with_content(
+            "claude-opus-4-7",
+            "<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>\nReturn JSON.",
+        );
+        payload.thinking = Some(Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: 20000,
+        });
+        payload.output_config = Some(OutputConfig {
+            effort: "high".to_string(),
+            format: Some(StructuredOutputFormat {
+                format_type: "json_object".to_string(),
+                name: None,
+                schema: None,
+                json_schema: None,
+                strict: None,
+            }),
+        });
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_run_mode = "ultra_fast".to_string();
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+
+        normalize_opus47_client_thinking(
+            &mut payload,
+            "claude-opus-4-7",
+            client_requested_thinking,
+            &settings,
+        );
+
+        assert!(payload.thinking.is_none());
+        assert!(payload.output_config.is_none());
+        assert_eq!(
+            payload
+                .response_format
+                .as_ref()
+                .map(|format| format.format_type.as_str()),
+            Some("json_object")
+        );
+        let state = convert_request(&payload).unwrap().conversation_state;
+        let Some(crate::kiro::model::requests::conversation::Message::User(user_msg)) =
+            state.history.first()
+        else {
+            panic!("structured output hint should be injected into history");
+        };
+        assert!(
+            user_msg
+                .user_input_message
+                .content
+                .contains("Respond with valid JSON only")
+        );
+    }
+
+    #[test]
+    fn opus47_ultra_fast_mode_disables_array_content_thinking() {
+        let mut payload = request("claude-opus-4-7");
+        payload.messages[0].content = serde_json::json!([
+            {
+                "type": "text",
+                "text": "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n请尽快回答"
+            }
+        ]);
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_run_mode = "ultra_fast".to_string();
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+
+        normalize_opus47_client_thinking(
+            &mut payload,
+            "claude-opus-4-7",
+            client_requested_thinking,
+            &settings,
+        );
+
+        let content = last_user_text(&payload).unwrap();
+        assert!(content.contains("<thinking_mode>disabled</thinking_mode>"));
+        assert!(!content.contains("<max_thinking_length>"));
+    }
+
+    #[test]
+    fn opus47_thinking_ultra_fast_mode_skips_alias_thinking_override() {
+        let mut payload = request("claude-opus-4-7-thinking");
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_run_mode = "ultra_fast".to_string();
+
+        override_thinking_from_model_name(&mut payload, &settings);
+
+        assert!(payload.thinking.is_none());
+        assert!(payload.output_config.is_none());
     }
 
     #[test]
@@ -3003,6 +3135,17 @@ fn override_thinking_from_model_name(
             || model_lower.contains("4-7")
             || model_lower.contains("4.7"));
 
+    let ultra_fast_opus47 =
+        settings.opus47_run_mode == "ultra_fast" && is_opus47_model_name(&payload.model);
+    if ultra_fast_opus47 {
+        tracing::info!(
+            model = %payload.model,
+            run_mode = %settings.opus47_run_mode,
+            "模型名包含 thinking 后缀，但 Opus 4.7 极快模式跳过 thinking 覆写"
+        );
+        return;
+    }
+
     let thinking_type = if is_opus_adaptive {
         "adaptive"
     } else {
@@ -3053,6 +3196,24 @@ fn normalize_opus47_client_thinking(
     settings: &crate::kiro::settings::RuntimeSettings,
 ) {
     if !client_requested_thinking || !is_opus47_model_name(requested_model) {
+        return;
+    }
+
+    if settings.opus47_run_mode == "ultra_fast" {
+        let content_disabled = apply_opus47_ultra_fast_content_thinking_limits(payload);
+        let top_level_removed = payload.thinking.take().is_some();
+        let output_effort_removed = remove_output_config_effort_preserving_format(payload);
+
+        if top_level_removed || content_disabled || output_effort_removed {
+            tracing::info!(
+                model = %requested_model,
+                run_mode = %settings.opus47_run_mode,
+                top_level_removed,
+                content_disabled,
+                output_effort_removed,
+                "Opus 4.7 极快模式已禁用客户端 thinking 请求"
+            );
+        }
         return;
     }
 
@@ -3133,6 +3294,17 @@ fn normalize_opus47_client_thinking(
     );
 }
 
+fn remove_output_config_effort_preserving_format(payload: &mut MessagesRequest) -> bool {
+    let Some(config) = payload.output_config.take() else {
+        return false;
+    };
+    let had_effort = !config.effort.is_empty();
+    if payload.response_format.is_none() {
+        payload.response_format = config.format;
+    }
+    had_effort
+}
+
 fn apply_opus47_fast_content_thinking_limits(payload: &mut MessagesRequest) -> bool {
     let mut changed = false;
     for message in &mut payload.messages {
@@ -3179,6 +3351,79 @@ fn limit_opus47_fast_thinking_directives(input: &str) -> String {
         &OPUS47_FAST_THINKING_BUDGET_TOKENS.to_string(),
     );
     replace_xml_tag_value_case_insensitive(&limited, "thinking_effort", "low")
+}
+
+fn apply_opus47_ultra_fast_content_thinking_limits(payload: &mut MessagesRequest) -> bool {
+    let mut changed = false;
+    for message in &mut payload.messages {
+        changed |= apply_opus47_ultra_fast_content_value_limits(&mut message.content);
+    }
+    changed
+}
+
+fn apply_opus47_ultra_fast_content_value_limits(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            let next = disable_opus47_thinking_directives(text);
+            if next != *text {
+                *text = next;
+                true
+            } else {
+                false
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                if let Some(obj) = item.as_object_mut() {
+                    let Some(text) = obj.get("text").and_then(|text| text.as_str()) else {
+                        continue;
+                    };
+                    let next = disable_opus47_thinking_directives(text);
+                    if next != text {
+                        obj.insert("text".to_string(), serde_json::Value::String(next));
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn disable_opus47_thinking_directives(input: &str) -> String {
+    let disabled = replace_xml_tag_value_case_insensitive(input, "thinking_mode", "disabled");
+    let without_budget = remove_xml_tag_case_insensitive(&disabled, "max_thinking_length");
+    remove_xml_tag_case_insensitive(&without_budget, "thinking_effort")
+}
+
+fn remove_xml_tag_case_insensitive(input: &str, tag: &str) -> String {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let lower = input.to_ascii_lowercase();
+    let mut search_from = 0;
+    let mut output = String::with_capacity(input.len());
+    let mut changed = false;
+
+    while let Some(start_rel) = lower[search_from..].find(&open) {
+        let start = search_from + start_rel;
+        let after_open = start + open.len();
+        let Some(end_rel) = lower[after_open..].find(&close) else {
+            break;
+        };
+        let after_close = after_open + end_rel + close.len();
+        output.push_str(&input[search_from..start]);
+        search_from = after_close;
+        changed = true;
+    }
+
+    if !changed {
+        return input.to_string();
+    }
+
+    output.push_str(&input[search_from..]);
+    output
 }
 
 fn replace_xml_tag_value_case_insensitive(input: &str, tag: &str, replacement: &str) -> String {

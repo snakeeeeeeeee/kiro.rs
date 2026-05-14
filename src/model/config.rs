@@ -157,7 +157,7 @@ pub struct Config {
     #[serde(default = "default_session_affinity_ttl_secs")]
     pub session_affinity_ttl_secs: u64,
 
-    /// Opus 4.7 运行模式："custom"、"benchmark" 或 "fast"
+    /// Opus 4.7 运行模式："custom"、"benchmark"、"fast" 或 "ultra_fast"
     #[serde(default = "default_opus47_run_mode")]
     pub opus47_run_mode: String,
 

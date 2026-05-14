@@ -192,16 +192,17 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               <select
                 value={form.opus47RunMode}
                 onChange={event =>
-                  setForm(prev => prev ? { ...prev, opus47RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
+                  setForm(prev => prev ? { ...prev, opus47RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' | 'ultra_fast' } : prev)
                 }
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
               >
                 <option value="custom">自定义</option>
                 <option value="benchmark">跑分模式</option>
                 <option value="fast">极速模式</option>
+                <option value="ultra_fast">极快模式</option>
               </select>
               <p className="text-xs text-muted-foreground">
-                跑分模式按 cctest/hvoy 兼容预设生效；极速模式降低 Opus 4.7 thinking 和探针诊断开销。Prompt Dump 仍只由下方开关手动控制。
+                跑分模式按 cctest/hvoy 兼容预设生效；极速模式降低 thinking 预算；极快模式禁用 Opus 4.7 thinking。诊断日志和 Prompt Dump 仍只由下方开关手动控制。
               </p>
             </div>
 
