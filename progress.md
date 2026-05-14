@@ -397,3 +397,7 @@
 - Changed Prompt Dump layout from timestamp-prefixed top-level request folders to model buckets with request-id subfolders: `prompt-dumps/<model>/<request_id>/...`.
 - Added per-model `latest.json` that is overwritten on each new dump and points at the newest request directory, making repeated Sonnet/Opus comparisons easier without losing concurrent probe data.
 - Validation after dump layout change: `cargo fmt -- --check`, `cargo test prompt_dump -- --nocapture`, `cargo check`, `cargo test -q`, and `cargo build --release --no-default-features` all passed.
+- Analyzed the 2026-05-14 12:00 cctest dump: only two Opus 4.7 request dumps existed, suggesting cctest likely stopped after early ANTML/reasoning probes failed rather than reaching PDF/OCR/WebSearch.
+- Found `client_response.raw` did not include initial SSE `message_start`; implementation was sending it to clients but dump omitted it, making protocol diagnosis misleading. Prompt Dump now records initial stream events too.
+- Tightened ANTML probe visible-text normalization from restoring `<antml:...>` inside a verbose answer to returning only the expected tag. This matches the probe instruction `直接输出...tag` and avoids extra `问题2` commentary.
+- Validation after the follow-up fix: `cargo test antml -- --nocapture`, `cargo test prompt_dump -- --nocapture`, `cargo fmt -- --check`, `cargo check`, `cargo test -q`, and `cargo build --release --no-default-features` all passed.

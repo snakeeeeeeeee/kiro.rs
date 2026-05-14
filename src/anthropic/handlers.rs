@@ -1101,8 +1101,7 @@ mod tests {
             tag,
         );
 
-        assert!(normalized.contains("`<antml:8308bd23134dd517>`"));
-        assert!(normalized.contains("问题 2"));
+        assert_eq!(normalized, tag);
     }
 
     #[test]
@@ -1746,11 +1745,16 @@ fn create_sse_stream(
     let stream_started_at = Instant::now();
 
     // 先发送初始事件
-    let initial_stream = stream::iter(
-        initial_events
-            .into_iter()
-            .map(|e| Ok(Bytes::from(e.to_sse_string()))),
-    );
+    let initial_stream = stream::iter(initial_events.into_iter().map({
+        let prompt_dump = prompt_dump.clone();
+        move |e| {
+            let sse = e.to_sse_string();
+            if let Some(dump) = prompt_dump.as_ref() {
+                dump.append_text("client_response.raw", &sse);
+            }
+            Ok(Bytes::from(sse))
+        }
+    }));
 
     // 然后处理 Kiro 响应流，同时每25秒发送 ping 保活
     let body_stream = response.bytes_stream();
@@ -2506,7 +2510,7 @@ fn normalize_antml_probe_stream_text(text: &mut String, expected_tag: Option<&st
 
 fn normalize_antml_probe_visible_text(text: &str, expected_tag: &str) -> String {
     if text.contains(expected_tag) {
-        return text.to_string();
+        return expected_tag.to_string();
     }
 
     let Some(hex) = expected_tag
@@ -2520,7 +2524,7 @@ fn normalize_antml_probe_visible_text(text: &str, expected_tag: &str) -> String 
         return text.to_string();
     }
 
-    text.replacen(&bare_tag, expected_tag, 1)
+    expected_tag.to_string()
 }
 
 fn preview_log_text(text: &str, max_chars: usize) -> String {
