@@ -632,6 +632,14 @@ pub struct ManagerSnapshot {
     pub opus47_raw_debug_enabled: bool,
     /// Opus 4.7 原始调试日志单字段最大字符数
     pub opus47_raw_debug_max_chars: usize,
+    /// Prompt dump 文件落盘开关
+    pub prompt_dump_enabled: bool,
+    /// Prompt dump 目录
+    pub prompt_dump_dir: String,
+    /// Prompt dump 单文件最大字节数
+    pub prompt_dump_max_bytes: usize,
+    /// Prompt dump 模型 allowlist
+    pub prompt_dump_models: String,
     /// usage 字段兼容形态
     pub compat_usage_shape: String,
     /// thinking 模型响应兼容策略
@@ -2283,6 +2291,10 @@ impl MultiTokenManager {
             opus47_diagnostics_enabled: settings.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: settings.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: settings.opus47_raw_debug_max_chars,
+            prompt_dump_enabled: settings.prompt_dump_enabled,
+            prompt_dump_dir: settings.prompt_dump_dir,
+            prompt_dump_max_bytes: settings.prompt_dump_max_bytes,
+            prompt_dump_models: settings.prompt_dump_models,
             compat_usage_shape: settings.compat_usage_shape,
             compat_thinking_model: settings.compat_thinking_model,
             compat_models_shape: settings.compat_models_shape,

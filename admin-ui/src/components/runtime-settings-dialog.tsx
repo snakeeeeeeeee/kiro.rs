@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -38,6 +38,7 @@ const numberFields: Array<{
   { key: 'tokenAutoRefreshWindowSecs', label: 'Token 提前刷新窗口秒数', hint: '默认 1800' },
   { key: 'sessionAffinityTtlSecs', label: '会话亲和 TTL 秒数', hint: '300-43200，默认 3600' },
   { key: 'opus47RawDebugMaxChars', label: '4.7 原始日志长度', hint: '1000-200000，仅调试时使用' },
+  { key: 'promptDumpMaxBytes', label: 'Prompt Dump 单文件上限', hint: '10000-50000000，默认 2000000' },
   { key: 'virtualCacheUncachedInputTokens', label: '虚拟普通输入 Tokens', hint: '默认 1' },
   { key: 'virtualCacheMinInputTokens', label: '动态普通输入下限', hint: '建议 8' },
   { key: 'virtualCacheMaxInputTokens', label: '动态普通输入上限', hint: '建议 96' },
@@ -309,6 +310,41 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="disabled">关闭</option>
                 <option value="enabled">启用</option>
               </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Prompt Dump</label>
+              <select
+                value={form.promptDumpEnabled ? 'enabled' : 'disabled'}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, promptDumpEnabled: event.target.value === 'enabled' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="disabled">关闭</option>
+                <option value="enabled">启用</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                会落盘用户 prompt、文档内容和上游响应，默认关闭。
+              </p>
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-sm font-medium">Prompt Dump 目录</label>
+              <Input
+                value={form.promptDumpDir}
+                onChange={event => setForm(prev => prev ? { ...prev, promptDumpDir: event.target.value } : prev)}
+              />
+              <p className="text-xs text-muted-foreground">容器默认 /app/config/prompt-dumps，本地可用 config/prompt-dumps。</p>
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-sm font-medium">Prompt Dump 模型</label>
+              <Input
+                value={form.promptDumpModels}
+                onChange={event => setForm(prev => prev ? { ...prev, promptDumpModels: event.target.value } : prev)}
+              />
+              <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-sonnet-4-6。</p>
             </div>
 
             <div className="space-y-2">

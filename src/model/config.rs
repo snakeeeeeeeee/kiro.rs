@@ -193,6 +193,22 @@ pub struct Config {
     #[serde(default = "default_opus47_raw_debug_max_chars")]
     pub opus47_raw_debug_max_chars: usize,
 
+    /// 是否保存客户端请求、上游 prompt 和上游原始响应到文件（默认关闭）
+    #[serde(default)]
+    pub prompt_dump_enabled: bool,
+
+    /// Prompt dump 目录
+    #[serde(default = "default_prompt_dump_dir")]
+    pub prompt_dump_dir: String,
+
+    /// Prompt dump 单文件最大字节数
+    #[serde(default = "default_prompt_dump_max_bytes")]
+    pub prompt_dump_max_bytes: usize,
+
+    /// Prompt dump 模型 allowlist，逗号分隔
+    #[serde(default = "default_prompt_dump_models")]
+    pub prompt_dump_models: String,
+
     /// 兼容 usage 字段形态："anthropic" 或 "flat"
     #[serde(default = "default_compat_usage_shape")]
     pub compat_usage_shape: String,
@@ -488,6 +504,18 @@ fn default_opus47_raw_debug_max_chars() -> usize {
     20_000
 }
 
+fn default_prompt_dump_dir() -> String {
+    "/app/config/prompt-dumps".to_string()
+}
+
+fn default_prompt_dump_max_bytes() -> usize {
+    2_000_000
+}
+
+fn default_prompt_dump_models() -> String {
+    "claude-opus-4-6,claude-opus-4-7,claude-sonnet-4-6".to_string()
+}
+
 fn default_compat_usage_shape() -> String {
     "anthropic".to_string()
 }
@@ -675,6 +703,10 @@ impl Default for Config {
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
             opus47_raw_debug_enabled: false,
             opus47_raw_debug_max_chars: default_opus47_raw_debug_max_chars(),
+            prompt_dump_enabled: false,
+            prompt_dump_dir: default_prompt_dump_dir(),
+            prompt_dump_max_bytes: default_prompt_dump_max_bytes(),
+            prompt_dump_models: default_prompt_dump_models(),
             compat_usage_shape: default_compat_usage_shape(),
             compat_thinking_model: default_compat_thinking_model(),
             compat_models_shape: default_compat_models_shape(),

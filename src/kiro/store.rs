@@ -476,6 +476,16 @@ fn runtime_settings_pairs(
             "opus47RawDebugMaxChars",
             settings.opus47_raw_debug_max_chars.to_string(),
         ),
+        (
+            "promptDumpEnabled",
+            settings.prompt_dump_enabled.to_string(),
+        ),
+        ("promptDumpDir", settings.prompt_dump_dir.clone()),
+        (
+            "promptDumpMaxBytes",
+            settings.prompt_dump_max_bytes.to_string(),
+        ),
+        ("promptDumpModels", settings.prompt_dump_models.clone()),
         ("compatUsageShape", settings.compat_usage_shape.clone()),
         (
             "compatThinkingModel",
@@ -665,6 +675,14 @@ fn apply_runtime_setting(
         "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
         "opus47RawDebugEnabled" => settings.opus47_raw_debug_enabled = parse_bool(key, value)?,
         "opus47RawDebugMaxChars" => settings.opus47_raw_debug_max_chars = parse_usize(key, value)?,
+        "promptDumpEnabled" => settings.prompt_dump_enabled = parse_bool(key, value)?,
+        "promptDumpDir" => {
+            settings.prompt_dump_dir = crate::kiro::settings::normalize_prompt_dump_dir(value)
+        }
+        "promptDumpMaxBytes" => settings.prompt_dump_max_bytes = parse_usize(key, value)?,
+        "promptDumpModels" => {
+            settings.prompt_dump_models = crate::kiro::settings::normalize_prompt_dump_models(value)
+        }
         "compatUsageShape" => {
             settings.compat_usage_shape = crate::kiro::settings::normalize_compat_usage_shape(value)
         }
@@ -994,6 +1012,10 @@ mod tests {
         updated.opus47_diagnostics_enabled = false;
         updated.opus47_raw_debug_enabled = true;
         updated.opus47_raw_debug_max_chars = 12_345;
+        updated.prompt_dump_enabled = true;
+        updated.prompt_dump_dir = "/tmp/kiro-prompt-dumps".to_string();
+        updated.prompt_dump_max_bytes = 12_345;
+        updated.prompt_dump_models = "claude-opus-4-7,claude-sonnet-4-6".to_string();
         updated.load_balancing_mode = "balanced".to_string();
         updated.dynamic_proxy_enabled = true;
         updated.dynamic_proxy_host = "proxy.example.com".to_string();
@@ -1019,6 +1041,13 @@ mod tests {
         assert!(!loaded.opus47_diagnostics_enabled);
         assert!(loaded.opus47_raw_debug_enabled);
         assert_eq!(loaded.opus47_raw_debug_max_chars, 12_345);
+        assert!(loaded.prompt_dump_enabled);
+        assert_eq!(loaded.prompt_dump_dir, "/tmp/kiro-prompt-dumps");
+        assert_eq!(loaded.prompt_dump_max_bytes, 12_345);
+        assert_eq!(
+            loaded.prompt_dump_models,
+            "claude-opus-4-7,claude-sonnet-4-6"
+        );
         assert_eq!(loaded.load_balancing_mode, "balanced");
         assert!(loaded.dynamic_proxy_enabled);
         assert_eq!(loaded.dynamic_proxy_host, "proxy.example.com");

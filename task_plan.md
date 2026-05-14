@@ -31,6 +31,8 @@ Current extension: implement gated Opus 4.7 signed-thinking history replay so re
 
 Current extension: add Opus 4.7 signature-failure classification diagnostics plus a default-off short-request/PDF thinking-label experiment for cctest A/B runs.
 
+Current extension: treat short exact-answer text-only signatures as expected upstream behavior and add default-off prompt/request/response dump support for Claude 4.6/4.7/Sonnet 4.6 debugging.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -61,6 +63,7 @@ Current extension: add Opus 4.7 signature-failure classification diagnostics plu
 - [completed] Add gated signed-thinking history replay and validate true/false signature round trips locally
 - [completed] Add Opus 4.7 signature classification diagnostics and default-off short-request/PDF thinking-label experiment
 - [completed] Fix cctest behavior regressions from ANTML/identity probe cross-contamination
+- [completed] Add request-kind signature diagnostics and Prompt Dump runtime/Admin support
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -89,9 +92,11 @@ Current extension: add Opus 4.7 signature-failure classification diagnostics plu
 - For matched non-stream `cc_max_like` identity probes, visible assistant text is now normalized to the official Claude Code identity口径 after upstream response. This is intentionally narrower than global response rewriting and is based on stable endpoint behavior plus Anthropic's public Claude Code positioning.
 - Identity probe matching now combines known detector phrases with a bounded identity-intent heuristic, so wording variants such as product identity, developer/company, model id, underlying model, backend provider, running platform, and system prompt/internal configuration can trigger without relying on exact phrasing.
 - Remaining signature work should be diagnosed by classifying failures first. The new `opus47_signature_diagnostics.classification` distinguishes `signed_ok`, `no_client_thinking`, `client_hidden`, `upstream_no_reasoning`, `upstream_reasoning_no_signature`, and `upstream_signature_not_exposed`.
-- `opus47ShortThinkingExperiment=adaptive_high` is default-off and scoped to Opus 4.7 + `cc_max_like` + `history_experiment` + client-requested thinking + `max_tokens <= 16384` + PDF or short current text. It rewrites only the XML thinking directive from enabled/max length to adaptive/high; it does not add natural-language hidden instructions or fabricate signatures.
+- `opus47ShortThinkingExperiment` is default-off and scoped to Opus 4.7 + `cc_max_like` + `history_experiment` + client-requested thinking + `max_tokens <= 16384` + PDF or short current text. `adaptive_high` rewrites only the XML thinking directive from enabled/max length to adaptive/high. It does not fabricate signatures.
 - Identity probe compatibility must be evaluated against the original current user text, not text after other compatibility prefixes are prepended. This prevents ANTML/PDF/other probe clarifications from accidentally triggering identity normalization.
 - ANTML probe visible-text normalization is allowed only for a single extracted `<antml:hex>` probe tag and only restores an upstream answer of `<hex>` to `<antml:hex>`; it does not synthesize unrelated answers or alter reasoning/signature blocks.
+- Short exact/PDF/OCR/identity `upstream_no_reasoning` signature diagnostics are classified as expected text-only upstream behavior. Reasoning-like `upstream_no_reasoning`, upstream reasoning without signature, and upstream signature not exposed remain warning-level diagnostics.
+- Prompt Dump is default-off because it stores sensitive prompt, document/base64, upstream request, upstream raw response, and client response data. It is runtime/Admin configurable and defaults to dumping only `claude-opus-4-6`, `claude-opus-4-7`, and `claude-sonnet-4-6`.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

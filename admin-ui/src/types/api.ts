@@ -67,6 +67,10 @@ export interface RuntimeStatusResponse {
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
+  promptDumpEnabled: boolean
+  promptDumpDir: string
+  promptDumpMaxBytes: number
+  promptDumpModels: string
   compatUsageShape: 'anthropic' | 'flat'
   compatThinkingModel: 'native' | 'plain_text'
   compatModelsShape: 'anthropic' | 'aggregator'
@@ -260,6 +264,10 @@ export interface RuntimeSettings {
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
+  promptDumpEnabled: boolean
+  promptDumpDir: string
+  promptDumpMaxBytes: number
+  promptDumpModels: string
   compatUsageShape: 'anthropic' | 'flat'
   compatThinkingModel: 'native' | 'plain_text'
   compatModelsShape: 'anthropic' | 'aggregator'

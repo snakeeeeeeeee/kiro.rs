@@ -23,6 +23,7 @@ use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownManager;
 use crate::kiro::parser::frame::Frame;
+use crate::kiro::prompt_dump::{PromptDump, PromptDumpMetaUpdate};
 use crate::kiro::settings::{SameAccountRetryRule, matching_same_account_retry_rule};
 use crate::kiro::token_manager::{CredentialLease, MultiTokenManager};
 use crate::metrics::{MetricsRecorder, RequestTimingSample, UpstreamOutcome, duration_ms};
@@ -63,6 +64,7 @@ pub struct LeasedResponse {
     raw_request_id: Option<String>,
     raw_debug_enabled: bool,
     raw_debug_max_chars: usize,
+    prompt_dump: Option<PromptDump>,
     lease: Option<CredentialLease>,
     timing: Option<ResponseTimingGuard>,
 }
@@ -211,6 +213,7 @@ impl LeasedResponse {
         raw_request_id: Option<String>,
         raw_debug_enabled: bool,
         raw_debug_max_chars: usize,
+        prompt_dump: Option<PromptDump>,
         lease: CredentialLease,
         timing: Option<ResponseTimingGuard>,
     ) -> Self {
@@ -221,6 +224,7 @@ impl LeasedResponse {
             raw_request_id,
             raw_debug_enabled,
             raw_debug_max_chars,
+            prompt_dump,
             lease: Some(lease),
             timing,
         }
@@ -252,6 +256,12 @@ impl LeasedResponse {
             .take()
             .expect("LeasedResponse body already taken");
         let result = response.bytes().await;
+        if let (Ok(bytes), Some(dump)) = (&result, self.prompt_dump.as_ref()) {
+            dump.write_text(
+                "upstream_response.raw",
+                &String::from_utf8_lossy(bytes.as_ref()),
+            );
+        }
         if let Some(timing) = self.timing.as_mut() {
             timing.finish(if result.is_ok() {
                 UpstreamOutcome::Success
@@ -268,6 +278,9 @@ impl LeasedResponse {
             .take()
             .expect("LeasedResponse body already taken");
         let result = response.text().await;
+        if let (Ok(text), Some(dump)) = (&result, self.prompt_dump.as_ref()) {
+            dump.write_text("upstream_response.raw", text);
+        }
         if let Some(timing) = self.timing.as_mut() {
             timing.finish(if result.is_ok() {
                 UpstreamOutcome::Success
@@ -636,32 +649,36 @@ impl KiroProvider {
     /// 支持多凭据故障转移（见 [`Self::call_api_with_retry`]）
     #[allow(dead_code)]
     pub async fn call_api(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, false, None, 0).await
+        self.call_api_with_retry(request_body, false, None, 0, None)
+            .await
     }
 
-    pub async fn call_api_with_session(
+    pub async fn call_api_with_session_and_dump(
         &self,
         request_body: &str,
         session_id: Option<&str>,
         queue_ms: u64,
+        prompt_dump: Option<PromptDump>,
     ) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, false, session_id, queue_ms)
+        self.call_api_with_retry(request_body, false, session_id, queue_ms, prompt_dump)
             .await
     }
 
     /// 发送流式 API 请求
     #[allow(dead_code)]
     pub async fn call_api_stream(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, true, None, 0).await
+        self.call_api_with_retry(request_body, true, None, 0, None)
+            .await
     }
 
-    pub async fn call_api_stream_with_session(
+    pub async fn call_api_stream_with_session_and_dump(
         &self,
         request_body: &str,
         session_id: Option<&str>,
         queue_ms: u64,
+        prompt_dump: Option<PromptDump>,
     ) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, true, session_id, queue_ms)
+        self.call_api_with_retry(request_body, true, session_id, queue_ms, prompt_dump)
             .await
     }
 
@@ -771,6 +788,7 @@ impl KiroProvider {
                     None,
                     false,
                     0,
+                    None,
                     ctx.lease,
                     None,
                 ));
@@ -870,6 +888,7 @@ impl KiroProvider {
         is_stream: bool,
         session_id: Option<&str>,
         queue_ms: u64,
+        prompt_dump: Option<PromptDump>,
     ) -> anyhow::Result<LeasedResponse> {
         let total_started_at = Instant::now();
         let total_credentials = self.token_manager.total_count();
@@ -995,6 +1014,9 @@ impl KiroProvider {
 
             let url = endpoint.api_url(&rctx);
             let body = endpoint.transform_api_body(request_body, &rctx);
+            if let Some(dump) = prompt_dump.as_ref() {
+                dump.write_text("upstream_request.json", &body);
+            }
             let raw_debug_enabled =
                 settings.opus47_raw_debug_enabled && is_opus47_raw_debug_model(&model_for_metrics);
             let raw_debug_max_chars = settings.opus47_raw_debug_max_chars;
@@ -1120,6 +1142,7 @@ impl KiroProvider {
                     raw_request_id,
                     raw_debug_enabled,
                     raw_debug_max_chars,
+                    prompt_dump.clone(),
                     ctx.lease,
                     Some(timing),
                 ));
@@ -1128,6 +1151,22 @@ impl KiroProvider {
             // 失败响应：读取 body 用于日志/错误信息
             let body_started_at = Instant::now();
             let body = response.text().await.unwrap_or_default();
+            if let Some(dump) = prompt_dump.as_ref() {
+                dump.write_text("upstream_response.raw", &body);
+                dump.update_meta(PromptDumpMetaUpdate {
+                    route: "/v1/messages".to_string(),
+                    model: model_for_metrics.clone(),
+                    stream: is_stream,
+                    credential_id: Some(ctx.id),
+                    attempts: Some(http_attempts),
+                    status: Some(status.as_u16()),
+                    duration_ms: Some(duration_ms(total_started_at.elapsed())),
+                    signature_classification: None,
+                    request_kind: None,
+                    expected_text_only: None,
+                    truncated: false,
+                });
+            }
             upstream_ms_total =
                 upstream_ms_total.saturating_add(duration_ms(body_started_at.elapsed()));
             let upstream_error = UpstreamErrorInfo {

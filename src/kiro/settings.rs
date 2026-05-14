@@ -51,6 +51,10 @@ pub struct RuntimeSettings {
     pub opus47_diagnostics_enabled: bool,
     pub opus47_raw_debug_enabled: bool,
     pub opus47_raw_debug_max_chars: usize,
+    pub prompt_dump_enabled: bool,
+    pub prompt_dump_dir: String,
+    pub prompt_dump_max_bytes: usize,
+    pub prompt_dump_models: String,
     pub compat_usage_shape: String,
     pub compat_thinking_model: String,
     pub compat_models_shape: String,
@@ -135,6 +139,10 @@ impl RuntimeSettings {
             opus47_diagnostics_enabled: config.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: config.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: config.opus47_raw_debug_max_chars.clamp(1_000, 200_000),
+            prompt_dump_enabled: config.prompt_dump_enabled,
+            prompt_dump_dir: normalize_prompt_dump_dir(&config.prompt_dump_dir),
+            prompt_dump_max_bytes: config.prompt_dump_max_bytes.clamp(10_000, 50_000_000),
+            prompt_dump_models: normalize_prompt_dump_models(&config.prompt_dump_models),
             compat_usage_shape: normalize_compat_usage_shape(&config.compat_usage_shape),
             compat_thinking_model: normalize_compat_thinking_model(&config.compat_thinking_model),
             compat_models_shape: normalize_compat_models_shape(&config.compat_models_shape),
@@ -256,6 +264,12 @@ impl RuntimeSettings {
         }
         if !(1_000..=200_000).contains(&self.opus47_raw_debug_max_chars) {
             anyhow::bail!("opus47RawDebugMaxChars 必须在 1000..200000 范围内");
+        }
+        if self.prompt_dump_dir.trim().is_empty() {
+            anyhow::bail!("promptDumpDir 不能为空");
+        }
+        if !(10_000..=50_000_000).contains(&self.prompt_dump_max_bytes) {
+            anyhow::bail!("promptDumpMaxBytes 必须在 10000..50000000 范围内");
         }
         if self.compat_thinking_model != "native" && self.compat_thinking_model != "plain_text" {
             anyhow::bail!("compatThinkingModel 必须是 'native' 或 'plain_text'");
@@ -460,6 +474,28 @@ pub fn normalize_opus47_short_thinking_experiment(mode: &str) -> String {
     match mode.trim().to_ascii_lowercase().as_str() {
         "adaptive_high" | "adaptive-high" => "adaptive_high".to_string(),
         _ => "off".to_string(),
+    }
+}
+
+pub fn normalize_prompt_dump_dir(dir: &str) -> String {
+    let trimmed = dir.trim();
+    if trimmed.is_empty() {
+        "/app/config/prompt-dumps".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn normalize_prompt_dump_models(models: &str) -> String {
+    let normalized: Vec<String> = models
+        .split(',')
+        .map(|model| model.trim().to_ascii_lowercase())
+        .filter(|model| !model.is_empty())
+        .collect();
+    if normalized.is_empty() {
+        "claude-opus-4-6,claude-opus-4-7,claude-sonnet-4-6".to_string()
+    } else {
+        normalized.join(",")
     }
 }
 
@@ -776,6 +812,13 @@ mod tests {
         assert_eq!(settings.opus47_detection_profile, "normal");
         assert_eq!(settings.opus47_signed_thinking_preservation, "off");
         assert_eq!(settings.opus47_short_thinking_experiment, "off");
+        assert!(!settings.prompt_dump_enabled);
+        assert_eq!(settings.prompt_dump_dir, "/app/config/prompt-dumps");
+        assert_eq!(settings.prompt_dump_max_bytes, 2_000_000);
+        assert_eq!(
+            settings.prompt_dump_models,
+            "claude-opus-4-6,claude-opus-4-7,claude-sonnet-4-6"
+        );
         assert_eq!(
             normalize_opus47_detection_profile("cc-max-like"),
             "cc_max_like"
@@ -792,6 +835,23 @@ mod tests {
             normalize_opus47_short_thinking_experiment("adaptive-high"),
             "adaptive_high"
         );
+        assert_eq!(
+            normalize_prompt_dump_models(" Claude-Opus-4-7, claude-sonnet-4-6 "),
+            "claude-opus-4-7,claude-sonnet-4-6"
+        );
+    }
+
+    #[test]
+    fn prompt_dump_settings_validate_range() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.prompt_dump_max_bytes = 9_999;
+        assert!(settings.validate().is_err());
+
+        settings.prompt_dump_max_bytes = 50_000_001;
+        assert!(settings.validate().is_err());
+
+        settings.prompt_dump_max_bytes = 10_000;
+        assert!(settings.validate().is_ok());
     }
 
     #[test]

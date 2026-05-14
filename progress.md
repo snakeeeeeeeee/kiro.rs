@@ -2,6 +2,10 @@
 
 ## Session Log
 - Widened the default-off Opus 4.7 short thinking experiment after cctest logs showed short/PDF probes with `max_tokens=10240`, above the previous `<=1024` guard. The adaptive-high rewrite now applies up to `max_tokens <= 16384` and short text `<=2048` chars, still only under `cc_max_like + history_experiment + client-requested thinking`.
+- Tested a local Docker-only `adaptive_high_verify_hint` variant that prepended an internal verification hint for short/PDF probes. It triggered correctly, but real `/v1/messages` requests still returned `assistant_response` only with `classification="upstream_no_reasoning"`; PDF output also showed duplication risk, so the variant was removed and the local runtime was restored to `opus47ShortThinkingExperiment=off`.
+- Compared against `tmp/stable_opus47.env`: normal no-thinking requests and XML thinking directives succeeded, but returned only `text` with no thinking/signature; official top-level Anthropic `thinking` requests returned HTTP 500 on both stream and non-stream attempts.
+- Re-tested after the user switched `tmp/stable_opus47.env` to the max20 endpoint. Official top-level thinking now works for complex reasoning and stream responses include `signature_delta`, but short exact output, PDF extracted-text exact output, and forced internal verification prompts still return text-only with no thinking/signature.
+- Replayed all `tmp/cctest_probes` against the max20 stable endpoint with retry handling. Both as-is XML probes and official top-level `thinking` probes signed only 3/7 cases: logic reasoning, websearch-like prompt, and multiturn base. Identity/ANTML, short identity, image OCR, and PDF exact text remained text-only with no thinking/signature.
 - Resumed from an existing implementation handoff.
 - Reviewed `/Users/zhangyu/Desktop/详细日志.txt` for the latest Opus 4.7 cctest/hvoy run.
 - Found that Opus routing was correct, but identity diagnostics saw `sonnet` in visible assistant text and the short identity probe did not show `identity_probe_applied=true` in the supplied log.
@@ -370,3 +374,20 @@
 - `cargo fmt -- --check`: passed.
 - `git diff --check`: passed.
 - `cargo test -q`: passed, 301 tests.
+
+## Completed: Prompt Dump and Expected Text-Only Signatures
+- Added `promptDumpEnabled`, `promptDumpDir`, `promptDumpMaxBytes`, and `promptDumpModels` runtime settings with SQLite persistence, Admin API/status exposure, and Admin UI controls.
+- Added `src/kiro/prompt_dump.rs` to create per-request dump directories, write size-limited files, append stream/client data, and update `meta.json` with status, timing, signature classification, request kind, and truncation details.
+- Wired `/v1/messages` and `/cc/v1/messages` to dump `client_request.json`, provider-transformed `upstream_request.json`, upstream raw/decoded response, and client response when enabled. Stream upstream dumps use decoded frame JSONL; non-stream dumps use full upstream body.
+- Added request-kind signature diagnostics so short exact, PDF exact, image/OCR, and identity-short `upstream_no_reasoning` are treated as expected text-only behavior instead of local signature loss. Reasoning-like unsigned cases still warn.
+- Kept the no-fake-signature rule unchanged: signatures are only observed, cached, preserved, or exposed when they are real upstream signatures.
+
+## Latest Validation: Prompt Dump and Expected Text-Only Signatures
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- `cargo test prompt_dump -- --nocapture`: passed, 4 tests.
+- `cargo test runtime_settings_round_trip -- --nocapture`: passed.
+- `cargo test opus47 -- --nocapture`: passed, 18 tests.
+- `cargo test -q`: passed, 305 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `git diff --check`: passed.

@@ -12,6 +12,36 @@ use crate::kiro::model::events::Event;
 use super::signed_thinking::{SignedThinkingCache, SignedThinkingMode};
 use super::usage::{AnthropicUsage, PendingVirtualUsage, VirtualCacheUsageManager};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opus47RequestKind {
+    ReasoningLike,
+    ShortExact,
+    PdfExact,
+    ImageOcr,
+    IdentityShort,
+    Other,
+}
+
+impl Opus47RequestKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReasoningLike => "reasoning_like",
+            Self::ShortExact => "short_exact",
+            Self::PdfExact => "pdf_exact",
+            Self::ImageOcr => "image_ocr",
+            Self::IdentityShort => "identity_short",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn expected_text_only(&self) -> bool {
+        matches!(
+            self,
+            Self::ShortExact | Self::PdfExact | Self::ImageOcr | Self::IdentityShort
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Opus47Diagnostics {
     pub enabled: bool,
@@ -23,6 +53,7 @@ pub struct Opus47Diagnostics {
     pub stabilization_mode: String,
     pub client_requested_thinking: bool,
     pub client_thinking_enabled: bool,
+    pub request_kind: Opus47RequestKind,
     pub assistant_response_count: usize,
     pub reasoning_content_count: usize,
     pub tool_use_count: usize,
@@ -45,6 +76,7 @@ impl Opus47Diagnostics {
             stabilization_mode: "off".to_string(),
             client_requested_thinking: false,
             client_thinking_enabled: false,
+            request_kind: Opus47RequestKind::Other,
             assistant_response_count: 0,
             reasoning_content_count: 0,
             tool_use_count: 0,
@@ -66,6 +98,7 @@ impl Opus47Diagnostics {
         stabilization_mode: impl Into<String>,
         client_requested_thinking: bool,
         client_thinking_enabled: bool,
+        request_kind: Opus47RequestKind,
     ) -> Self {
         Self {
             enabled,
@@ -77,6 +110,7 @@ impl Opus47Diagnostics {
             stabilization_mode: stabilization_mode.into(),
             client_requested_thinking,
             client_thinking_enabled,
+            request_kind,
             assistant_response_count: 0,
             reasoning_content_count: 0,
             tool_use_count: 0,
@@ -128,6 +162,22 @@ impl Opus47Diagnostics {
 
     pub fn first_event_type(&self) -> &str {
         self.first_event_type.as_deref().unwrap_or("none")
+    }
+
+    pub fn attempts(&self) -> usize {
+        self.attempts
+    }
+
+    pub fn signature_exposed_to_client(&self) -> bool {
+        self.signature_exposed_to_client
+    }
+
+    pub fn request_kind(&self) -> &'static str {
+        self.request_kind.as_str()
+    }
+
+    pub fn expected_text_only(&self) -> bool {
+        self.request_kind.expected_text_only()
     }
 
     pub fn mark_signature_exposed_to_client(&mut self) {

@@ -6,6 +6,7 @@ use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::conversation::ConversationState;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
+use crate::kiro::prompt_dump::{PromptDump, PromptDumpMetaUpdate};
 use crate::kiro::provider::ProviderRateLimitError;
 use crate::runtime::GlobalRequestPermit;
 use crate::token;
@@ -29,7 +30,9 @@ use super::converter::{
 };
 use super::middleware::AppState;
 use super::signed_thinking::{SignedThinkingCache, SignedThinkingMode};
-use super::stream::{BufferedStreamContext, Opus47Diagnostics, SseEvent, StreamContext};
+use super::stream::{
+    BufferedStreamContext, Opus47Diagnostics, Opus47RequestKind, SseEvent, StreamContext,
+};
 use super::types::{
     CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
     OutputConfig, Thinking,
@@ -1132,6 +1135,7 @@ mod tests {
             "adaptive_low",
             false,
             false,
+            Opus47RequestKind::Other,
         ));
 
         let events = ctx.process_kiro_event(&Event::ReasoningContent(ReasoningContentEvent {
@@ -1162,6 +1166,7 @@ mod tests {
             "off",
             false,
             false,
+            Opus47RequestKind::Other,
         );
         let mut assistant = AssistantResponseEvent::default();
         assistant.content = "hello".to_string();
@@ -1191,6 +1196,7 @@ mod tests {
             "off",
             false,
             false,
+            Opus47RequestKind::Other,
         );
         assert_eq!(
             diagnostics.signature_classification(false),
@@ -1321,6 +1327,14 @@ pub async fn post_messages(
     };
 
     let requested_model = payload.model.clone();
+    let route = "/v1/messages";
+    let prompt_dump = PromptDump::maybe_create(
+        &provider.token_manager().runtime_settings(),
+        route,
+        &requested_model,
+        payload.stream,
+        &payload,
+    );
     let client_requested_thinking =
         client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
@@ -1467,6 +1481,8 @@ pub async fn post_messages(
     let session_affinity_key = conversion_result.session_affinity_key;
     let tool_name_map = conversion_result.tool_name_map;
     let pdf_debug = conversion_result.pdf_debug;
+    let request_kind = classify_opus47_request_kind(&payload, pdf_debug.is_some());
+    let route = "/v1/messages";
 
     let _permit = match state
         .runtime_limiter
@@ -1504,6 +1520,9 @@ pub async fn post_messages(
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
+            request_kind,
+            route,
+            prompt_dump.clone(),
             _permit,
         )
         .await
@@ -1536,6 +1555,9 @@ pub async fn post_messages(
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
+            request_kind,
+            route,
+            prompt_dump.clone(),
             _permit,
         )
         .await
@@ -1566,11 +1588,19 @@ async fn handle_stream_request(
     usage_manager: Arc<VirtualCacheUsageManager>,
     request_ttl: CacheTtl,
     pdf_debug: Option<PdfDebugInfo>,
+    request_kind: Opus47RequestKind,
+    route: &'static str,
+    prompt_dump: Option<PromptDump>,
     permit: GlobalRequestPermit,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider
-        .call_api_stream_with_session(request_body, session_id, permit.queue_ms())
+        .call_api_stream_with_session_and_dump(
+            request_body,
+            session_id,
+            permit.queue_ms(),
+            prompt_dump.clone(),
+        )
         .await
     {
         Ok(resp) => resp,
@@ -1611,6 +1641,7 @@ async fn handle_stream_request(
         stabilization_mode,
         client_requested_thinking,
         client_thinking_enabled,
+        request_kind,
     ));
     ctx.set_signed_thinking_cache(
         Some(signed_thinking_cache),
@@ -1631,6 +1662,8 @@ async fn handle_stream_request(
         pdf_debug,
         identity_probe_applied,
         antml_probe_tag,
+        route,
+        prompt_dump,
         permit,
     );
 
@@ -1660,6 +1693,8 @@ fn create_sse_stream(
     pdf_debug: Option<PdfDebugInfo>,
     identity_probe_applied: bool,
     antml_probe_tag: Option<String>,
+    route: &'static str,
+    prompt_dump: Option<PromptDump>,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
@@ -1700,6 +1735,8 @@ fn create_sse_stream(
             pdf_debug,
             identity_probe_applied,
             antml_probe_tag,
+            route,
+            prompt_dump,
             String::new(),
         ),
         |(
@@ -1722,6 +1759,8 @@ fn create_sse_stream(
             pdf_debug,
             identity_probe_applied,
             antml_probe_tag,
+            route,
+            prompt_dump,
             mut assistant_text,
         )| async move {
             if finished {
@@ -1764,6 +1803,19 @@ fn create_sse_stream(
                                                 raw_frame_index,
                                                 &frame,
                                                 raw_debug_max_chars,
+                                            );
+                                        }
+                                        if let Some(dump) = prompt_dump.as_ref() {
+                                            dump.append_json_line(
+                                                "upstream_response.raw",
+                                                &json!({
+                                                    "frame_index": raw_frame_index,
+                                                    "message_type": frame.message_type(),
+                                                    "event_type": frame.event_type(),
+                                                    "exception_type": frame.headers.exception_type(),
+                                                    "error_code": frame.headers.error_code(),
+                                                    "payload": frame.payload_as_str(),
+                                                }),
                                             );
                                         }
                                         if let Ok(event) = Event::from_frame(frame) {
@@ -1824,10 +1876,16 @@ fn create_sse_stream(
                             // 转换为 SSE 字节流
                             let bytes: Vec<Result<Bytes, Infallible>> = events
                                 .into_iter()
-                                .map(|e| Ok(Bytes::from(e.to_sse_string())))
+                                .map(|e| {
+                                    let sse = e.to_sse_string();
+                                    if let Some(dump) = prompt_dump.as_ref() {
+                                        dump.append_text("client_response.raw", &sse);
+                                    }
+                                    Ok(Bytes::from(sse))
+                                })
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, route, prompt_dump, assistant_text)))
                         }
                         Some(Err(e)) => {
                             tracing::error!("读取响应流失败: {}", e);
@@ -1851,11 +1909,32 @@ fn create_sse_stream(
                             if let Some(pdf_debug) = pdf_debug.as_ref() {
                                 log_pdf_response_diagnostics(pdf_debug, &assistant_text);
                             }
+                            if let Some(dump) = prompt_dump.as_ref() {
+                                dump.update_meta(PromptDumpMetaUpdate {
+                                    route: route.to_string(),
+                                    model: stream_model.clone(),
+                                    stream: true,
+                                    credential_id: Some(credential_id),
+                                    attempts: Some(ctx.opus47_diagnostics().attempts()),
+                                    status: Some(200),
+                                    duration_ms: Some(crate::metrics::duration_ms(stream_started_at.elapsed())),
+                                    signature_classification: Some(ctx.opus47_diagnostics().signature_classification(ctx.opus47_diagnostics().signature_exposed_to_client()).to_string()),
+                                    request_kind: Some(ctx.opus47_diagnostics().request_kind().to_string()),
+                                    expected_text_only: Some(ctx.opus47_diagnostics().expected_text_only()),
+                                    truncated: false,
+                                });
+                            }
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
-                                .map(|e| Ok(Bytes::from(e.to_sse_string())))
+                                .map(|e| {
+                                    let sse = e.to_sse_string();
+                                    if let Some(dump) = prompt_dump.as_ref() {
+                                        dump.append_text("client_response.raw", &sse);
+                                    }
+                                    Ok(Bytes::from(sse))
+                                })
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, route, prompt_dump, assistant_text)))
                         }
                         None => {
                             // 流结束，发送最终事件
@@ -1878,11 +1957,32 @@ fn create_sse_stream(
                             if let Some(pdf_debug) = pdf_debug.as_ref() {
                                 log_pdf_response_diagnostics(pdf_debug, &assistant_text);
                             }
+                            if let Some(dump) = prompt_dump.as_ref() {
+                                dump.update_meta(PromptDumpMetaUpdate {
+                                    route: route.to_string(),
+                                    model: stream_model.clone(),
+                                    stream: true,
+                                    credential_id: Some(credential_id),
+                                    attempts: Some(ctx.opus47_diagnostics().attempts()),
+                                    status: Some(200),
+                                    duration_ms: Some(crate::metrics::duration_ms(stream_started_at.elapsed())),
+                                    signature_classification: Some(ctx.opus47_diagnostics().signature_classification(ctx.opus47_diagnostics().signature_exposed_to_client()).to_string()),
+                                    request_kind: Some(ctx.opus47_diagnostics().request_kind().to_string()),
+                                    expected_text_only: Some(ctx.opus47_diagnostics().expected_text_only()),
+                                    truncated: false,
+                                });
+                            }
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
-                                .map(|e| Ok(Bytes::from(e.to_sse_string())))
+                                .map(|e| {
+                                    let sse = e.to_sse_string();
+                                    if let Some(dump) = prompt_dump.as_ref() {
+                                        dump.append_text("client_response.raw", &sse);
+                                    }
+                                    Ok(Bytes::from(sse))
+                                })
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, route, prompt_dump, assistant_text)))
                         }
                     }
                 }
@@ -1890,7 +1990,10 @@ fn create_sse_stream(
                 _ = ping_interval.tick() => {
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
+                    if let Some(dump) = prompt_dump.as_ref() {
+                        dump.append_text("client_response.raw", "event: ping\ndata: {\"type\": \"ping\"}\n\n");
+                    }
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, route, prompt_dump, assistant_text)))
                 }
             }
         },
@@ -1920,6 +2023,8 @@ fn log_opus47_stream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: In
         tool_use_count = diagnostics.tool_use_count,
         signature_seen = diagnostics.signature_seen,
         signature_exposed_to_client = diagnostics.signature_exposed_to_client,
+        request_kind = diagnostics.request_kind(),
+        expected_text_only = diagnostics.expected_text_only(),
         visible_text_chars = diagnostics.visible_text_chars,
         hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
         first_event_type = diagnostics.first_event_type(),
@@ -1949,6 +2054,8 @@ fn log_opus47_nonstream_diagnostics(diagnostics: &Opus47Diagnostics, started_at:
         tool_use_count = diagnostics.tool_use_count,
         signature_seen = diagnostics.signature_seen,
         signature_exposed_to_client = diagnostics.signature_exposed_to_client,
+        request_kind = diagnostics.request_kind(),
+        expected_text_only = diagnostics.expected_text_only(),
         visible_text_chars = diagnostics.visible_text_chars,
         hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
         first_event_type = diagnostics.first_event_type(),
@@ -1965,6 +2072,33 @@ fn log_opus47_signature_diagnostics(
     if !diagnostics.enabled {
         return;
     }
+    let classification = diagnostics.signature_classification(signature_exposed_to_client);
+    let expected_text_only =
+        diagnostics.expected_text_only() && classification == "upstream_no_reasoning";
+
+    if expected_text_only {
+        tracing::info!(
+            target: "kiro_rs::metrics",
+            model = %diagnostics.model,
+            detection_profile = %diagnostics.detection_profile,
+            signed_thinking_mode = %diagnostics.signed_thinking_mode,
+            credential_id = diagnostics.credential_id,
+            attempts = diagnostics.attempts,
+            client_requested_thinking = diagnostics.client_requested_thinking,
+            client_thinking_enabled = diagnostics.client_thinking_enabled,
+            reasoning_content_count = diagnostics.reasoning_content_count,
+            signature_seen = diagnostics.signature_seen,
+            signature_exposed_to_client,
+            classification,
+            request_kind = diagnostics.request_kind(),
+            expected_text_only,
+            hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
+            visible_text_chars = diagnostics.visible_text_chars,
+            first_event_type = diagnostics.first_event_type(),
+            "opus47_signature_diagnostics"
+        );
+        return;
+    }
 
     tracing::warn!(
         target: "kiro_rs::metrics",
@@ -1978,7 +2112,9 @@ fn log_opus47_signature_diagnostics(
         reasoning_content_count = diagnostics.reasoning_content_count,
         signature_seen = diagnostics.signature_seen,
         signature_exposed_to_client,
-        classification = diagnostics.signature_classification(signature_exposed_to_client),
+        classification,
+        request_kind = diagnostics.request_kind(),
+        expected_text_only,
         hidden_reasoning_chars = diagnostics.hidden_reasoning_chars,
         visible_text_chars = diagnostics.visible_text_chars,
         first_event_type = diagnostics.first_event_type(),
@@ -2439,12 +2575,20 @@ async fn handle_non_stream_request(
     usage_manager: Arc<VirtualCacheUsageManager>,
     request_ttl: CacheTtl,
     pdf_debug: Option<PdfDebugInfo>,
+    request_kind: Opus47RequestKind,
+    route: &'static str,
+    prompt_dump: Option<PromptDump>,
     _permit: GlobalRequestPermit,
 ) -> Response {
     let request_started_at = Instant::now();
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider
-        .call_api_with_session(request_body, session_id, _permit.queue_ms())
+        .call_api_with_session_and_dump(
+            request_body,
+            session_id,
+            _permit.queue_ms(),
+            prompt_dump.clone(),
+        )
         .await
     {
         Ok(resp) => resp,
@@ -2466,6 +2610,7 @@ async fn handle_non_stream_request(
         stabilization_mode,
         client_requested_thinking,
         client_thinking_enabled,
+        request_kind,
     );
 
     // 读取响应体
@@ -2490,6 +2635,12 @@ async fn handle_non_stream_request(
             credential_id,
             &body_bytes,
             raw_debug_max_chars,
+        );
+    }
+    if let Some(dump) = prompt_dump.as_ref() {
+        dump.write_text(
+            "upstream_response.raw",
+            &String::from_utf8_lossy(body_bytes.as_ref()),
         );
     }
 
@@ -2731,6 +2882,27 @@ async fn handle_non_stream_request(
     }
     if identity_probe_applied {
         log_identity_fingerprint_diagnostics(&opus47_diagnostics, &text_content);
+    }
+
+    if let Some(dump) = prompt_dump.as_ref() {
+        dump.write_json("client_response.raw", &response_body);
+        dump.update_meta(PromptDumpMetaUpdate {
+            route: route.to_string(),
+            model: model.to_string(),
+            stream: false,
+            credential_id: Some(credential_id),
+            attempts: Some(attempts),
+            status: Some(200),
+            duration_ms: Some(crate::metrics::duration_ms(request_started_at.elapsed())),
+            signature_classification: Some(
+                opus47_diagnostics
+                    .signature_classification(opus47_diagnostics.signature_exposed_to_client())
+                    .to_string(),
+            ),
+            request_kind: Some(opus47_diagnostics.request_kind().to_string()),
+            expected_text_only: Some(opus47_diagnostics.expected_text_only()),
+            truncated: false,
+        });
     }
 
     (StatusCode::OK, Json(response_body)).into_response()
@@ -3497,6 +3669,123 @@ fn looks_like_pdf_probe(content: &str) -> bool {
     lower.contains("pdf") || lower.contains("document.pdf")
 }
 
+fn classify_opus47_request_kind(
+    payload: &MessagesRequest,
+    is_pdf_request: bool,
+) -> Opus47RequestKind {
+    if is_pdf_request
+        || payload
+            .messages
+            .iter()
+            .any(|message| content_has_document_pdf(&message.content))
+        || last_user_text(payload).is_some_and(|text| looks_like_pdf_probe(&text))
+    {
+        return Opus47RequestKind::PdfExact;
+    }
+
+    if payload
+        .messages
+        .iter()
+        .any(|message| content_has_image(&message.content))
+    {
+        return Opus47RequestKind::ImageOcr;
+    }
+
+    if let Some(text) = last_user_text(payload) {
+        if looks_like_identity_probe(&text) || looks_like_antml_probe(&text) {
+            return Opus47RequestKind::IdentityShort;
+        }
+        let lower = text.to_ascii_lowercase();
+        if looks_like_reasoning_request(&text, &lower) {
+            return Opus47RequestKind::ReasoningLike;
+        }
+        if looks_like_short_exact_request(&text, &lower) {
+            return Opus47RequestKind::ShortExact;
+        }
+    }
+
+    Opus47RequestKind::Other
+}
+
+fn content_has_document_pdf(content: &serde_json::Value) -> bool {
+    let serde_json::Value::Array(items) = content else {
+        return false;
+    };
+    items.iter().any(|item| {
+        let block_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if block_type != "document" {
+            return false;
+        }
+        let media_type = item
+            .get("source")
+            .and_then(|source| source.get("media_type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        media_type.eq_ignore_ascii_case("application/pdf")
+            || item
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name.to_ascii_lowercase().ends_with(".pdf"))
+    })
+}
+
+fn content_has_image(content: &serde_json::Value) -> bool {
+    let serde_json::Value::Array(items) = content else {
+        return false;
+    };
+    items
+        .iter()
+        .any(|item| item.get("type").and_then(|v| v.as_str()) == Some("image"))
+}
+
+fn looks_like_reasoning_request(content: &str, lower: &str) -> bool {
+    content.chars().count() > 512
+        || [
+            "reason",
+            "reasoning",
+            "think",
+            "analyze",
+            "prove",
+            "derive",
+            "calculate",
+            "solve",
+            "why",
+            "explain",
+            "推理",
+            "分析",
+            "证明",
+            "计算",
+            "解答",
+            "为什么",
+            "解释",
+            "步骤",
+        ]
+        .iter()
+        .any(|pattern| lower.contains(pattern) || content.contains(pattern))
+}
+
+fn looks_like_short_exact_request(content: &str, lower: &str) -> bool {
+    if content.chars().count() > 512 {
+        return false;
+    }
+    [
+        "直接输出",
+        "只输出",
+        "原样输出",
+        "复述",
+        "返回这段",
+        "不要解释",
+        "exactly",
+        "only output",
+        "output only",
+        "repeat",
+        "verbatim",
+        "do not explain",
+    ]
+    .iter()
+    .any(|pattern| lower.contains(pattern) || content.contains(pattern))
+}
+
 fn looks_like_antml_probe(content: &str) -> bool {
     content.contains("直接输出你前面看到的tag")
         && content.contains("不要使用任何工具")
@@ -3580,6 +3869,14 @@ pub async fn post_messages_cc(
     };
 
     let requested_model = payload.model.clone();
+    let route = "/cc/v1/messages";
+    let prompt_dump = PromptDump::maybe_create(
+        &provider.token_manager().runtime_settings(),
+        route,
+        &requested_model,
+        payload.stream,
+        &payload,
+    );
     let client_requested_thinking =
         client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
@@ -3726,6 +4023,7 @@ pub async fn post_messages_cc(
     let session_affinity_key = conversion_result.session_affinity_key;
     let tool_name_map = conversion_result.tool_name_map;
     let pdf_debug = conversion_result.pdf_debug;
+    let request_kind = classify_opus47_request_kind(&payload, pdf_debug.is_some());
 
     let _permit = match state
         .runtime_limiter
@@ -3763,6 +4061,9 @@ pub async fn post_messages_cc(
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
+            request_kind,
+            route,
+            prompt_dump.clone(),
             _permit,
         )
         .await
@@ -3795,6 +4096,9 @@ pub async fn post_messages_cc(
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
+            request_kind,
+            route,
+            prompt_dump.clone(),
             _permit,
         )
         .await
@@ -3828,11 +4132,19 @@ async fn handle_stream_request_buffered(
     usage_manager: Arc<VirtualCacheUsageManager>,
     request_ttl: CacheTtl,
     pdf_debug: Option<PdfDebugInfo>,
+    request_kind: Opus47RequestKind,
+    route: &'static str,
+    prompt_dump: Option<PromptDump>,
     permit: GlobalRequestPermit,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider
-        .call_api_stream_with_session(request_body, session_id, permit.queue_ms())
+        .call_api_stream_with_session_and_dump(
+            request_body,
+            session_id,
+            permit.queue_ms(),
+            prompt_dump.clone(),
+        )
         .await
     {
         Ok(resp) => resp,
@@ -3862,6 +4174,7 @@ async fn handle_stream_request_buffered(
         stabilization_mode,
         client_requested_thinking,
         client_thinking_enabled,
+        request_kind,
     ));
     ctx.set_signed_thinking_cache(
         Some(signed_thinking_cache),
@@ -3897,6 +4210,8 @@ async fn handle_stream_request_buffered(
         pdf_debug,
         identity_probe_applied,
         antml_probe_tag,
+        route,
+        prompt_dump,
         permit,
     );
 
@@ -3923,6 +4238,8 @@ fn create_buffered_sse_stream(
     pdf_debug: Option<PdfDebugInfo>,
     identity_probe_applied: bool,
     antml_probe_tag: Option<String>,
+    route: &'static str,
+    prompt_dump: Option<PromptDump>,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
@@ -3954,6 +4271,8 @@ fn create_buffered_sse_stream(
             pdf_debug,
             identity_probe_applied,
             antml_probe_tag,
+            route,
+            prompt_dump,
             String::new(),
         ),
         |(
@@ -3976,6 +4295,8 @@ fn create_buffered_sse_stream(
             pdf_debug,
             identity_probe_applied,
             antml_probe_tag,
+            route,
+            prompt_dump,
             mut assistant_text,
         )| async move {
             if finished {
@@ -3992,7 +4313,10 @@ fn create_buffered_sse_stream(
                     _ = ping_interval.tick() => {
                         tracing::trace!("发送 ping 保活事件（缓冲模式）");
                         let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)));
+                        if let Some(dump) = prompt_dump.as_ref() {
+                            dump.append_text("client_response.raw", "event: ping\ndata: {\"type\": \"ping\"}\n\n");
+                        }
+                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, route, prompt_dump, assistant_text)));
                     }
 
                     // 然后处理数据流
@@ -4028,6 +4352,19 @@ fn create_buffered_sse_stream(
                                                     raw_frame_index,
                                                     &frame,
                                                     raw_debug_max_chars,
+                                                );
+                                            }
+                                            if let Some(dump) = prompt_dump.as_ref() {
+                                                dump.append_json_line(
+                                                    "upstream_response.raw",
+                                                    &json!({
+                                                        "frame_index": raw_frame_index,
+                                                        "message_type": frame.message_type(),
+                                                        "event_type": frame.event_type(),
+                                                        "exception_type": frame.headers.exception_type(),
+                                                        "error_code": frame.headers.error_code(),
+                                                        "payload": frame.payload_as_str(),
+                                                    }),
                                                 );
                                             }
                                             if let Ok(event) = Event::from_frame(frame) {
@@ -4114,9 +4451,30 @@ fn create_buffered_sse_stream(
                                 }
                                 let bytes: Vec<Result<Bytes, Infallible>> = all_events
                                     .into_iter()
-                                    .map(|e| Ok(Bytes::from(e.to_sse_string())))
+                                    .map(|e| {
+                                        let sse = e.to_sse_string();
+                                        if let Some(dump) = prompt_dump.as_ref() {
+                                            dump.append_text("client_response.raw", &sse);
+                                        }
+                                        Ok(Bytes::from(sse))
+                                    })
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)));
+                                if let Some(dump) = prompt_dump.as_ref() {
+                                    dump.update_meta(PromptDumpMetaUpdate {
+                                        route: route.to_string(),
+                                        model: stream_model.clone(),
+                                        stream: true,
+                                        credential_id: Some(credential_id),
+                                        attempts: Some(ctx.opus47_diagnostics().attempts()),
+                                        status: Some(200),
+                                        duration_ms: Some(crate::metrics::duration_ms(stream_started_at.elapsed())),
+                                        signature_classification: Some(ctx.opus47_diagnostics().signature_classification(ctx.opus47_diagnostics().signature_exposed_to_client()).to_string()),
+                                        request_kind: Some(ctx.opus47_diagnostics().request_kind().to_string()),
+                                        expected_text_only: Some(ctx.opus47_diagnostics().expected_text_only()),
+                                        truncated: false,
+                                    });
+                                }
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, route, prompt_dump, assistant_text)));
                             }
                             None => {
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
@@ -4144,9 +4502,30 @@ fn create_buffered_sse_stream(
                                 }
                                 let bytes: Vec<Result<Bytes, Infallible>> = all_events
                                     .into_iter()
-                                    .map(|e| Ok(Bytes::from(e.to_sse_string())))
+                                    .map(|e| {
+                                        let sse = e.to_sse_string();
+                                        if let Some(dump) = prompt_dump.as_ref() {
+                                            dump.append_text("client_response.raw", &sse);
+                                        }
+                                        Ok(Bytes::from(sse))
+                                    })
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)));
+                                if let Some(dump) = prompt_dump.as_ref() {
+                                    dump.update_meta(PromptDumpMetaUpdate {
+                                        route: route.to_string(),
+                                        model: stream_model.clone(),
+                                        stream: true,
+                                        credential_id: Some(credential_id),
+                                        attempts: Some(ctx.opus47_diagnostics().attempts()),
+                                        status: Some(200),
+                                        duration_ms: Some(crate::metrics::duration_ms(stream_started_at.elapsed())),
+                                        signature_classification: Some(ctx.opus47_diagnostics().signature_classification(ctx.opus47_diagnostics().signature_exposed_to_client()).to_string()),
+                                        request_kind: Some(ctx.opus47_diagnostics().request_kind().to_string()),
+                                        expected_text_only: Some(ctx.opus47_diagnostics().expected_text_only()),
+                                        truncated: false,
+                                    });
+                                }
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, route, prompt_dump, assistant_text)));
                             }
                         }
                     }
