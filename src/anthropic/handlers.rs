@@ -31,8 +31,8 @@ use super::middleware::AppState;
 use super::signed_thinking::{SignedThinkingCache, SignedThinkingMode};
 use super::stream::{BufferedStreamContext, Opus47Diagnostics, SseEvent, StreamContext};
 use super::types::{
-    CountTokensRequest, CountTokensResponse, ErrorResponse, Message, MessagesRequest, Model,
-    ModelsResponse, OutputConfig, Thinking,
+    CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
+    OutputConfig, Thinking,
 };
 use super::usage::{
     AnthropicUsage, CacheTtl, VirtualCacheUsageManager, VirtualUsageInput,
@@ -673,9 +673,8 @@ mod tests {
     }
 
     #[test]
-    fn antml_probe_compat_does_not_trigger_identity_from_clarification() {
+    fn antml_probe_compat_triggers_identity_from_clarification() {
         let payload = request_with_content("claude-opus-4-7", ANTML_PROBE);
-        let original = latest_user_message_text(&payload);
         let mut conversion_result = convert_request(&payload).unwrap();
 
         assert_eq!(
@@ -686,12 +685,11 @@ mod tests {
             ),
             "clarify"
         );
-        assert!(!apply_opus47_identity_probe_compat(
+        assert!(apply_opus47_identity_probe_compat(
             &mut conversion_result.conversation_state,
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
-            original.as_deref(),
         ));
 
         let content = &conversion_result
@@ -699,7 +697,7 @@ mod tests {
             .current_message
             .user_input_message
             .content;
-        assert!(!content.starts_with("身份兼容说明："));
+        assert!(content.starts_with("身份兼容说明："));
     }
 
     #[test]
@@ -786,7 +784,6 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
-            None,
         );
         let content = &conversion_result
             .conversation_state
@@ -814,7 +811,6 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
-            None,
         ));
         assert!(
             conversion_result
@@ -845,7 +841,6 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
-            None,
         ));
         assert!(
             conversion_result
@@ -879,7 +874,6 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
-            None,
         ));
         let current_message = &conversion_result.conversation_state.current_message;
         assert!(
@@ -932,7 +926,6 @@ mod tests {
             "claude-opus-4-7",
             &settings("off"),
             &payload,
-            None,
         ));
 
         payload.response_format = Some(super::super::types::StructuredOutputFormat {
@@ -948,7 +941,6 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
-            None,
         ));
 
         let pdf_payload =
@@ -959,7 +951,6 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &pdf_payload,
-            None,
         ));
     }
 
@@ -977,7 +968,6 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
-            None,
         ));
     }
 
@@ -1409,15 +1399,12 @@ pub async fn post_messages(
                 .into_response();
         }
     };
-    let original_current_user_content = latest_user_message_text(&payload);
     apply_opus47_antml_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
     );
-    let antml_probe_tag = original_current_user_content
-        .as_deref()
-        .and_then(extract_single_antml_tag);
+    let antml_probe_tag = None;
     let short_thinking_experiment = apply_opus47_short_thinking_experiment(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -1431,7 +1418,6 @@ pub async fn post_messages(
         &requested_model,
         &runtime_settings,
         &payload,
-        original_current_user_content.as_deref(),
     );
     log_opus47_request_thinking_state(
         &requested_model,
@@ -3193,14 +3179,12 @@ fn apply_opus47_identity_probe_compat(
     requested_model: &str,
     settings: &crate::kiro::settings::RuntimeSettings,
     payload: &MessagesRequest,
-    original_current_user_content: Option<&str>,
 ) -> bool {
     let current_content = &conversation_state
         .current_message
         .user_input_message
         .content;
-    let identity_probe_content = original_current_user_content.unwrap_or(current_content);
-    let identity_candidate = looks_like_identity_probe(identity_probe_content);
+    let identity_candidate = looks_like_identity_probe(current_content);
 
     let detection_profile = crate::kiro::settings::normalize_opus47_detection_profile(
         &settings.opus47_detection_profile,
@@ -3282,7 +3266,7 @@ fn apply_opus47_identity_probe_compat(
         return false;
     }
 
-    if looks_like_pdf_probe(identity_probe_content) {
+    if looks_like_pdf_probe(current_content) {
         log_opus47_identity_probe_compat_skip(
             settings,
             requested_model,
@@ -3355,37 +3339,6 @@ fn tool_choice_type(payload: &MessagesRequest) -> Option<&str> {
         .as_ref()
         .and_then(|choice| choice.get("type"))
         .and_then(|value| value.as_str())
-}
-
-fn latest_user_message_text(payload: &MessagesRequest) -> Option<String> {
-    payload
-        .messages
-        .iter()
-        .rfind(|message| message.role == "user")
-        .and_then(message_text_content)
-}
-
-fn message_text_content(message: &Message) -> Option<String> {
-    if let Some(text) = message.content.as_str() {
-        return Some(text.to_string());
-    }
-
-    let blocks = message.content.as_array()?;
-    let mut text = String::new();
-    for block in blocks {
-        if block
-            .get("type")
-            .and_then(|value| value.as_str())
-            .is_some_and(|block_type| block_type == "text")
-        {
-            if let Some(block_text) = block.get("text").and_then(|value| value.as_str()) {
-                text.push_str(block_text);
-                text.push('\n');
-            }
-        }
-    }
-
-    (!text.is_empty()).then_some(text)
 }
 
 fn current_message_has_tool_results(conversation_state: &ConversationState) -> bool {
@@ -3569,32 +3522,6 @@ fn count_antml_tags(content: &str) -> usize {
     count
 }
 
-fn extract_single_antml_tag(content: &str) -> Option<String> {
-    let mut tags = Vec::new();
-    let mut rest = content;
-
-    while let Some(start) = rest.find("<antml:") {
-        rest = &rest[start..];
-        let Some(end) = rest.find('>') else {
-            break;
-        };
-        let tag = &rest[..=end];
-        if tag
-            .strip_prefix("<antml:")
-            .and_then(|inner| inner.strip_suffix('>'))
-            .is_some_and(|inner| !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            tags.push(tag.to_string());
-        }
-        rest = &rest[end + 1..];
-    }
-
-    match tags.as_slice() {
-        [tag] => Some(tag.clone()),
-        _ => None,
-    }
-}
-
 /// POST /v1/messages/count_tokens
 ///
 /// 计算消息的 token 数量
@@ -3731,15 +3658,12 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
-    let original_current_user_content = latest_user_message_text(&payload);
     apply_opus47_antml_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
     );
-    let antml_probe_tag = original_current_user_content
-        .as_deref()
-        .and_then(extract_single_antml_tag);
+    let antml_probe_tag = None;
     let short_thinking_experiment = apply_opus47_short_thinking_experiment(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -3753,7 +3677,6 @@ pub async fn post_messages_cc(
         &requested_model,
         &runtime_settings,
         &payload,
-        original_current_user_content.as_deref(),
     );
     log_opus47_request_thinking_state(
         &requested_model,
