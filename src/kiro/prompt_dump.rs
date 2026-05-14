@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -18,6 +18,9 @@ pub struct PromptDump {
 #[derive(Debug)]
 struct PromptDumpInner {
     request_id: String,
+    created_at: DateTime<Utc>,
+    model: String,
+    model_dir: PathBuf,
     dir: PathBuf,
     max_bytes: usize,
 }
@@ -60,10 +63,10 @@ impl PromptDump {
         }
 
         let request_id = Uuid::new_v4().to_string();
+        let created_at = Utc::now();
         let safe_model = sanitize_path_segment(model);
-        let stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-        let dir =
-            Path::new(&settings.prompt_dump_dir).join(format!("{stamp}-{request_id}-{safe_model}"));
+        let model_dir = Path::new(&settings.prompt_dump_dir).join(safe_model);
+        let dir = model_dir.join(&request_id);
         if let Err(err) = fs::create_dir_all(&dir) {
             tracing::warn!(error = %err, path = %dir.display(), "prompt_dump_create_dir_failed");
             return None;
@@ -72,6 +75,9 @@ impl PromptDump {
         let dump = Self {
             inner: Arc::new(PromptDumpInner {
                 request_id,
+                created_at,
+                model: model.to_string(),
+                model_dir,
                 dir,
                 max_bytes: settings.prompt_dump_max_bytes,
             }),
@@ -81,13 +87,14 @@ impl PromptDump {
             "meta.json",
             &json!({
                 "request_id": dump.request_id(),
-                "created_at": Utc::now().to_rfc3339(),
+                "created_at": dump.inner.created_at.to_rfc3339(),
                 "route": route,
                 "model": model,
                 "stream": stream,
                 "truncated": false
             }),
         );
+        dump.update_latest(route, stream);
         Some(dump)
     }
 
@@ -98,6 +105,11 @@ impl PromptDump {
     #[cfg(test)]
     pub fn dir(&self) -> &Path {
         &self.inner.dir
+    }
+
+    #[cfg(test)]
+    pub fn model_dir(&self) -> &Path {
+        &self.inner.model_dir
     }
 
     pub fn write_json(&self, filename: &str, value: &impl Serialize) {
@@ -254,6 +266,28 @@ impl PromptDump {
             let _ = fs::write(path, bytes);
         }
     }
+
+    fn update_latest(&self, route: &str, stream: bool) {
+        let latest_path = self.inner.model_dir.join("latest.json");
+        let latest = json!({
+            "request_id": self.request_id(),
+            "created_at": self.inner.created_at.to_rfc3339(),
+            "route": route,
+            "model": self.inner.model,
+            "stream": stream,
+            "dir": self.inner.dir.to_string_lossy()
+        });
+        if let Ok(bytes) = serde_json::to_vec_pretty(&latest) {
+            if let Err(err) = fs::write(&latest_path, bytes) {
+                tracing::warn!(
+                    error = %err,
+                    path = %latest_path.display(),
+                    request_id = self.request_id(),
+                    "prompt_dump_latest_write_failed"
+                );
+            }
+        }
+    }
 }
 
 pub fn prompt_dump_model_allowed(models: &str, model: &str) -> bool {
@@ -306,6 +340,41 @@ mod tests {
             &json!({"ok": true}),
         );
         assert!(dump.is_none());
+    }
+
+    #[test]
+    fn dump_uses_model_bucket_and_latest_pointer() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        let dir = std::env::temp_dir().join(format!("kiro-prompt-dump-test-{}", Uuid::new_v4()));
+        settings.prompt_dump_enabled = true;
+        settings.prompt_dump_dir = dir.to_string_lossy().to_string();
+        settings.prompt_dump_models = "*".to_string();
+        let dump = PromptDump::maybe_create(
+            &settings,
+            "/v1/messages",
+            "claude/op us:4.7",
+            true,
+            &json!({"ok": true}),
+        )
+        .unwrap();
+
+        assert_eq!(dump.model_dir(), dir.join("claude_op_us_4_7"));
+        assert!(dump.dir().starts_with(dump.model_dir()));
+        assert!(dump.dir().join("client_request.json").exists());
+
+        let latest = fs::read_to_string(dump.model_dir().join("latest.json")).unwrap();
+        assert!(latest.contains(dump.request_id()));
+        assert!(latest.contains("\"model\": \"claude/op us:4.7\""));
+        assert!(
+            !dump
+                .dir()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("2026")
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

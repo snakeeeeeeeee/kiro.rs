@@ -394,3 +394,6 @@
 - Analyzed latest prompt dump under `tmp/prompt-dumps`; confirmed the ANTML tag probe client prompt was clean, but upstream request was polluted by the identity compatibility prefix after ANTML clarification.
 - Fixed ANTML/identity cross-contamination by matching identity probes against the original latest user text, skipping ANTML probes, and enabling existing ANTML visible-text normalization by carrying the single expected tag through request handling.
 - Validation after the fix: `cargo test antml -- --nocapture`, `cargo test identity -- --nocapture`, `cargo fmt -- --check`, `cargo check`, `cargo test -q`, and `cargo build --release --no-default-features` all passed.
+- Changed Prompt Dump layout from timestamp-prefixed top-level request folders to model buckets with request-id subfolders: `prompt-dumps/<model>/<request_id>/...`.
+- Added per-model `latest.json` that is overwritten on each new dump and points at the newest request directory, making repeated Sonnet/Opus comparisons easier without losing concurrent probe data.
+- Validation after dump layout change: `cargo fmt -- --check`, `cargo test prompt_dump -- --nocapture`, `cargo check`, `cargo test -q`, and `cargo build --release --no-default-features` all passed.
