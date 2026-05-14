@@ -115,6 +115,7 @@ pub struct RuntimeStatusResponse {
     pub token_auto_refresh_interval_secs: u64,
     pub token_auto_refresh_window_secs: u64,
     pub session_affinity_ttl_secs: u64,
+    pub opus47_run_mode: String,
     pub opus47_plain_stabilization_mode: String,
     pub opus47_antml_probe_compat: String,
     pub opus47_clean_probe_mode: String,

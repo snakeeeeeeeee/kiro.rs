@@ -157,6 +157,10 @@ pub struct Config {
     #[serde(default = "default_session_affinity_ttl_secs")]
     pub session_affinity_ttl_secs: u64,
 
+    /// Opus 4.7 运行模式："custom"、"benchmark" 或 "fast"
+    #[serde(default = "default_opus47_run_mode")]
+    pub opus47_run_mode: String,
+
     /// Opus 4.7 plain 稳定模式："off"、"adaptive_low" 或 "adaptive_high"
     #[serde(default = "default_opus47_plain_stabilization_mode")]
     pub opus47_plain_stabilization_mode: String,
@@ -472,6 +476,10 @@ fn default_session_affinity_ttl_secs() -> u64 {
     3_600
 }
 
+fn default_opus47_run_mode() -> String {
+    "custom".to_string()
+}
+
 fn default_opus47_plain_stabilization_mode() -> String {
     "off".to_string()
 }
@@ -694,6 +702,7 @@ impl Default for Config {
             token_auto_refresh_interval_secs: default_token_auto_refresh_interval_secs(),
             token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),
             session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
+            opus47_run_mode: default_opus47_run_mode(),
             opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
             opus47_antml_probe_compat: default_opus47_antml_probe_compat(),
             opus47_clean_probe_mode: default_opus47_clean_probe_mode(),

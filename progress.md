@@ -1,6 +1,8 @@
 # Progress
 
 ## Session Log
+- Started implementing Opus 4.7 run mode presets. Goal: `custom` keeps existing knobs, `benchmark` applies current scoring-friendly effective behavior, `fast` prioritizes latency, and Prompt Dump remains independently controlled by its manual runtime setting.
+- Implemented runtime/config/Admin field `opus47RunMode` with values `custom`, `benchmark`, and `fast`. Fast mode caps Opus 4.7 top-level/content thinking to low/4096 and disables effective diagnostics/signed-thinking/probe extras; benchmark mode forces the scoring-oriented effective profile without changing Prompt Dump.
 - Widened the default-off Opus 4.7 short thinking experiment after cctest logs showed short/PDF probes with `max_tokens=10240`, above the previous `<=1024` guard. The adaptive-high rewrite now applies up to `max_tokens <= 16384` and short text `<=2048` chars, still only under `cc_max_like + history_experiment + client-requested thinking`.
 - Tested a local Docker-only `adaptive_high_verify_hint` variant that prepended an internal verification hint for short/PDF probes. It triggered correctly, but real `/v1/messages` requests still returned `assistant_response` only with `classification="upstream_no_reasoning"`; PDF output also showed duplication risk, so the variant was removed and the local runtime was restored to `opus47ShortThinkingExperiment=off`.
 - Compared against `tmp/stable_opus47.env`: normal no-thinking requests and XML thinking directives succeeded, but returned only `text` with no thinking/signature; official top-level Anthropic `thinking` requests returned HTTP 500 on both stream and non-stream attempts.
@@ -358,6 +360,21 @@
 - `cargo test runtime_settings_round_trip -- --nocapture`: passed.
 - `cargo test -q`: passed, 298 tests.
 - `pnpm --dir admin-ui build`: passed.
+
+## Completed: Opus 4.7 Run Mode Presets
+- Added `opus47RunMode` to config, runtime settings, SQLite persistence, Admin runtime status/settings, and Admin UI.
+- `custom` preserves existing granular settings; `benchmark` applies effective `cc_max_like`, `history_experiment`, ANTML clarify, flat usage, native thinking, and aggregator model-list behavior; `fast` applies effective normal/off choices and caps Opus 4.7 thinking work for faster responses.
+- Prompt Dump and raw debug remain manual controls and are not toggled by run mode.
+
+## Latest Validation: Opus 4.7 Run Mode Presets
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- `cargo test opus47`: passed, 21 tests.
+- `cargo test runtime_settings_round_trip`: passed.
+- `cargo test`: passed, 310 tests.
+- `pnpm --dir admin-ui exec tsc --noEmit`: passed.
+- `pnpm --dir admin-ui build`: passed.
+- `git diff --check`: passed.
 
 
 ## Completed: CCTest Behavior ANTML/Identity Fix

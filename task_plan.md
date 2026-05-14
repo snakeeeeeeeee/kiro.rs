@@ -33,6 +33,8 @@ Current extension: add Opus 4.7 signature-failure classification diagnostics plu
 
 Current extension: treat short exact-answer text-only signatures as expected upstream behavior and add default-off prompt/request/response dump support for Claude 4.6/4.7/Sonnet 4.6 debugging.
 
+Current extension: add an Opus 4.7 run mode switch with `custom`, `benchmark`, and `fast` effective presets while keeping Prompt Dump and raw debug as manual controls.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -64,6 +66,7 @@ Current extension: treat short exact-answer text-only signatures as expected ups
 - [completed] Add Opus 4.7 signature classification diagnostics and default-off short-request/PDF thinking-label experiment
 - [completed] Fix cctest behavior regressions from ANTML/identity probe cross-contamination
 - [completed] Add request-kind signature diagnostics and Prompt Dump runtime/Admin support
+- [completed] Add Opus 4.7 run modes for benchmark scoring vs low-latency daily use without mutating manual dump settings
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -97,6 +100,7 @@ Current extension: treat short exact-answer text-only signatures as expected ups
 - ANTML probe visible-text normalization is allowed only for a single extracted `<antml:hex>` probe tag and only restores an upstream answer of `<hex>` to `<antml:hex>`; it does not synthesize unrelated answers or alter reasoning/signature blocks.
 - Short exact/PDF/OCR/identity `upstream_no_reasoning` signature diagnostics are classified as expected text-only upstream behavior. Reasoning-like `upstream_no_reasoning`, upstream reasoning without signature, and upstream signature not exposed remain warning-level diagnostics.
 - Prompt Dump is default-off because it stores sensitive prompt, document/base64, upstream request, upstream raw response, and client response data. It is runtime/Admin configurable and defaults to dumping only `claude-opus-4-6`, `claude-opus-4-7`, and `claude-sonnet-4-6`.
+- Opus 4.7 run mode is an effective-request preset, not a stored-settings rewrite. `custom` preserves existing granular behavior; `benchmark` favors cctest/hvoy compatibility; `fast` lowers thinking work and disables detector diagnostics/compat extras. Prompt Dump and raw debug remain explicit manual settings.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

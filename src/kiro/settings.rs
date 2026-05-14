@@ -42,6 +42,7 @@ pub struct RuntimeSettings {
     pub token_auto_refresh_interval_secs: u64,
     pub token_auto_refresh_window_secs: u64,
     pub session_affinity_ttl_secs: u64,
+    pub opus47_run_mode: String,
     pub opus47_plain_stabilization_mode: String,
     pub opus47_antml_probe_compat: String,
     pub opus47_clean_probe_mode: String,
@@ -118,6 +119,7 @@ impl RuntimeSettings {
             token_auto_refresh_interval_secs: config.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: config.token_auto_refresh_window_secs,
             session_affinity_ttl_secs: config.session_affinity_ttl_secs,
+            opus47_run_mode: normalize_opus47_run_mode(&config.opus47_run_mode),
             opus47_plain_stabilization_mode: normalize_opus47_plain_stabilization_mode(
                 &config.opus47_plain_stabilization_mode,
             ),
@@ -222,6 +224,12 @@ impl RuntimeSettings {
         }
         if !(300..=43_200).contains(&self.session_affinity_ttl_secs) {
             anyhow::bail!("sessionAffinityTtlSecs 必须在 300..43200 范围内");
+        }
+        if !matches!(
+            self.opus47_run_mode.as_str(),
+            "custom" | "benchmark" | "fast"
+        ) {
+            anyhow::bail!("opus47RunMode 必须是 'custom'、'benchmark' 或 'fast'");
         }
         if !matches!(
             self.opus47_plain_stabilization_mode.as_str(),
@@ -429,6 +437,14 @@ pub fn normalize_load_balancing_mode(mode: &str) -> String {
     }
 }
 
+pub fn normalize_opus47_run_mode(mode: &str) -> String {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "benchmark" | "score" | "scoring" | "跑分" => "benchmark".to_string(),
+        "fast" | "speed" | "极速" => "fast".to_string(),
+        _ => "custom".to_string(),
+    }
+}
+
 pub fn normalize_opus47_plain_stabilization_mode(mode: &str) -> String {
     match mode.trim().to_ascii_lowercase().as_str() {
         "adaptive_low" => "adaptive_low".to_string(),
@@ -500,15 +516,21 @@ pub fn normalize_prompt_dump_models(models: &str) -> String {
 }
 
 pub fn effective_opus47_clean_probe_mode(settings: &RuntimeSettings) -> String {
+    if settings.opus47_run_mode == "fast" {
+        return "off".to_string();
+    }
     match settings.opus47_detection_profile.as_str() {
         "clean_probe_debug" => "clean".to_string(),
-        "cc_max_like" => "off".to_string(),
+        "cc_max_like" | "benchmark" => "off".to_string(),
         _ => normalize_opus47_clean_probe_mode(&settings.opus47_clean_probe_mode),
     }
 }
 
 pub fn effective_opus47_plain_stabilization_mode(settings: &RuntimeSettings) -> String {
-    if settings.opus47_detection_profile == "cc_max_like" {
+    if settings.opus47_run_mode == "fast"
+        || settings.opus47_run_mode == "benchmark"
+        || settings.opus47_detection_profile == "cc_max_like"
+    {
         "off".to_string()
     } else {
         normalize_opus47_plain_stabilization_mode(&settings.opus47_plain_stabilization_mode)
@@ -516,7 +538,11 @@ pub fn effective_opus47_plain_stabilization_mode(settings: &RuntimeSettings) -> 
 }
 
 pub fn effective_opus47_antml_probe_compat(settings: &RuntimeSettings) -> String {
-    if settings.opus47_detection_profile == "cc_max_like" {
+    if settings.opus47_run_mode == "fast" {
+        "off".to_string()
+    } else if settings.opus47_run_mode == "benchmark"
+        || settings.opus47_detection_profile == "cc_max_like"
+    {
         "clarify".to_string()
     } else {
         normalize_opus47_antml_probe_compat(&settings.opus47_antml_probe_compat)
@@ -524,7 +550,11 @@ pub fn effective_opus47_antml_probe_compat(settings: &RuntimeSettings) -> String
 }
 
 pub fn effective_compat_usage_shape(settings: &RuntimeSettings) -> String {
-    if settings.opus47_detection_profile == "cc_max_like" {
+    if settings.opus47_run_mode == "fast" {
+        normalize_compat_usage_shape(&settings.compat_usage_shape)
+    } else if settings.opus47_run_mode == "benchmark"
+        || settings.opus47_detection_profile == "cc_max_like"
+    {
         "flat".to_string()
     } else {
         normalize_compat_usage_shape(&settings.compat_usage_shape)
@@ -532,7 +562,11 @@ pub fn effective_compat_usage_shape(settings: &RuntimeSettings) -> String {
 }
 
 pub fn effective_compat_thinking_model(settings: &RuntimeSettings) -> String {
-    if settings.opus47_detection_profile == "cc_max_like" {
+    if settings.opus47_run_mode == "fast" {
+        normalize_compat_thinking_model(&settings.compat_thinking_model)
+    } else if settings.opus47_run_mode == "benchmark"
+        || settings.opus47_detection_profile == "cc_max_like"
+    {
         "native".to_string()
     } else {
         normalize_compat_thinking_model(&settings.compat_thinking_model)
@@ -540,10 +574,46 @@ pub fn effective_compat_thinking_model(settings: &RuntimeSettings) -> String {
 }
 
 pub fn effective_compat_models_shape(settings: &RuntimeSettings) -> String {
-    if settings.opus47_detection_profile == "cc_max_like" {
+    if settings.opus47_run_mode == "fast" {
+        normalize_compat_models_shape(&settings.compat_models_shape)
+    } else if settings.opus47_run_mode == "benchmark"
+        || settings.opus47_detection_profile == "cc_max_like"
+    {
         "aggregator".to_string()
     } else {
         normalize_compat_models_shape(&settings.compat_models_shape)
+    }
+}
+
+pub fn effective_opus47_detection_profile(settings: &RuntimeSettings) -> String {
+    match settings.opus47_run_mode.as_str() {
+        "benchmark" => "cc_max_like".to_string(),
+        "fast" => "normal".to_string(),
+        _ => normalize_opus47_detection_profile(&settings.opus47_detection_profile),
+    }
+}
+
+pub fn effective_opus47_signed_thinking_preservation(settings: &RuntimeSettings) -> String {
+    match settings.opus47_run_mode.as_str() {
+        "benchmark" => "history_experiment".to_string(),
+        "fast" => "off".to_string(),
+        _ => normalize_opus47_signed_thinking_preservation(
+            &settings.opus47_signed_thinking_preservation,
+        ),
+    }
+}
+
+pub fn effective_opus47_short_thinking_experiment(settings: &RuntimeSettings) -> String {
+    match settings.opus47_run_mode.as_str() {
+        "benchmark" | "fast" => "off".to_string(),
+        _ => normalize_opus47_short_thinking_experiment(&settings.opus47_short_thinking_experiment),
+    }
+}
+
+pub fn effective_opus47_diagnostics_enabled(settings: &RuntimeSettings) -> bool {
+    match settings.opus47_run_mode.as_str() {
+        "fast" => false,
+        _ => settings.opus47_diagnostics_enabled,
     }
 }
 
@@ -809,6 +879,7 @@ mod tests {
     #[test]
     fn opus47_profile_defaults_and_normalization() {
         let settings = RuntimeSettings::from_config(&Config::default());
+        assert_eq!(settings.opus47_run_mode, "custom");
         assert_eq!(settings.opus47_detection_profile, "normal");
         assert_eq!(settings.opus47_signed_thinking_preservation, "off");
         assert_eq!(settings.opus47_short_thinking_experiment, "off");
@@ -819,6 +890,8 @@ mod tests {
             settings.prompt_dump_models,
             "claude-opus-4-6,claude-opus-4-7,claude-sonnet-4-6"
         );
+        assert_eq!(normalize_opus47_run_mode("score"), "benchmark");
+        assert_eq!(normalize_opus47_run_mode("极速"), "fast");
         assert_eq!(
             normalize_opus47_detection_profile("cc-max-like"),
             "cc_max_like"
@@ -871,6 +944,42 @@ mod tests {
         assert_eq!(effective_compat_usage_shape(&settings), "flat");
         assert_eq!(effective_compat_thinking_model(&settings), "native");
         assert_eq!(effective_compat_models_shape(&settings), "aggregator");
+    }
+
+    #[test]
+    fn opus47_run_mode_presets_override_effective_settings_without_touching_dump() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_run_mode = "benchmark".to_string();
+        settings.opus47_detection_profile = "normal".to_string();
+        settings.opus47_signed_thinking_preservation = "off".to_string();
+        settings.prompt_dump_enabled = false;
+
+        assert_eq!(effective_opus47_detection_profile(&settings), "cc_max_like");
+        assert_eq!(
+            effective_opus47_signed_thinking_preservation(&settings),
+            "history_experiment"
+        );
+        assert_eq!(effective_opus47_antml_probe_compat(&settings), "clarify");
+        assert!(!settings.prompt_dump_enabled);
+
+        settings.opus47_run_mode = "fast".to_string();
+        settings.opus47_detection_profile = "cc_max_like".to_string();
+        settings.opus47_antml_probe_compat = "clarify".to_string();
+        settings.compat_usage_shape = "anthropic".to_string();
+        settings.compat_models_shape = "anthropic".to_string();
+        settings.opus47_diagnostics_enabled = true;
+        settings.prompt_dump_enabled = true;
+
+        assert_eq!(effective_opus47_detection_profile(&settings), "normal");
+        assert_eq!(
+            effective_opus47_signed_thinking_preservation(&settings),
+            "off"
+        );
+        assert_eq!(effective_opus47_antml_probe_compat(&settings), "off");
+        assert_eq!(effective_compat_usage_shape(&settings), "anthropic");
+        assert_eq!(effective_compat_models_shape(&settings), "anthropic");
+        assert!(!effective_opus47_diagnostics_enabled(&settings));
+        assert!(settings.prompt_dump_enabled);
     }
 
     #[test]

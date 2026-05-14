@@ -12,8 +12,8 @@ use crate::kiro::settings::{
     CredentialPolicy, RuntimeSettings, SameAccountRetryRule, normalize_dynamic_proxy_protocol,
     normalize_dynamic_proxy_provider, normalize_opus47_antml_probe_compat,
     normalize_opus47_clean_probe_mode, normalize_opus47_detection_profile,
-    normalize_opus47_plain_stabilization_mode, normalize_opus47_short_thinking_experiment,
-    normalize_opus47_signed_thinking_preservation,
+    normalize_opus47_plain_stabilization_mode, normalize_opus47_run_mode,
+    normalize_opus47_short_thinking_experiment, normalize_opus47_signed_thinking_preservation,
 };
 use crate::model::config::Config;
 
@@ -440,6 +440,7 @@ fn runtime_settings_pairs(
             "sessionAffinityTtlSecs",
             settings.session_affinity_ttl_secs.to_string(),
         ),
+        ("opus47RunMode", settings.opus47_run_mode.clone()),
         (
             "opus47PlainStabilizationMode",
             settings.opus47_plain_stabilization_mode.clone(),
@@ -651,6 +652,7 @@ fn apply_runtime_setting(
             settings.token_auto_refresh_window_secs = parse_u64(key, value)?
         }
         "sessionAffinityTtlSecs" => settings.session_affinity_ttl_secs = parse_u64(key, value)?,
+        "opus47RunMode" => settings.opus47_run_mode = normalize_opus47_run_mode(value),
         "opus47PlainStabilizationMode" => {
             settings.opus47_plain_stabilization_mode =
                 normalize_opus47_plain_stabilization_mode(value)
@@ -995,6 +997,7 @@ mod tests {
         updated.global_max_concurrent = 11;
         updated.per_account_default_max_concurrent = 4;
         updated.session_affinity_ttl_secs = 900;
+        updated.opus47_run_mode = "fast".to_string();
         updated.same_account_retry_rules = vec![SameAccountRetryRule {
             enabled: true,
             status: "408,500-599".to_string(),
@@ -1032,6 +1035,7 @@ mod tests {
         assert_eq!(loaded.same_account_retry_rules[0].attempts, 1);
         assert_eq!(loaded.same_account_retry_rules[0].delay_ms, 1_250);
         assert!(!loaded.same_account_retry_rules[0].respect_retry_after);
+        assert_eq!(loaded.opus47_run_mode, "fast");
         assert_eq!(loaded.opus47_plain_stabilization_mode, "adaptive_low");
         assert_eq!(loaded.opus47_antml_probe_compat, "clarify");
         assert_eq!(loaded.opus47_clean_probe_mode, "clean");

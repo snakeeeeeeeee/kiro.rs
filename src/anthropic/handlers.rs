@@ -462,6 +462,7 @@ mod tests {
             &mut payload,
             "claude-opus-4-7",
             client_requested_thinking,
+            &RuntimeSettings::from_config(&Config::default()),
         );
 
         // 归一化后统一为 enabled/high，强制模型生成 thinking block
@@ -497,7 +498,10 @@ mod tests {
         let mut payload = request("claude-opus-4-7-thinking");
         let client_requested_thinking =
             client_requested_thinking_for_request("claude-opus-4-7-thinking", &payload);
-        override_thinking_from_model_name(&mut payload);
+        override_thinking_from_model_name(
+            &mut payload,
+            &RuntimeSettings::from_config(&Config::default()),
+        );
         let mode = apply_opus47_plain_stabilization(
             &mut payload,
             "claude-opus-4-7-thinking",
@@ -519,6 +523,69 @@ mod tests {
             "native",
             client_requested_thinking
         ));
+    }
+
+    #[test]
+    fn opus47_fast_mode_caps_top_level_and_content_thinking() {
+        let mut payload = request_with_content(
+            "claude-opus-4-7",
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n请尽快回答",
+        );
+        payload.thinking = Some(Thinking {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: 20000,
+        });
+        payload.output_config = Some(OutputConfig {
+            effort: "high".to_string(),
+            format: None,
+        });
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_run_mode = "fast".to_string();
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-7", &payload);
+
+        normalize_opus47_client_thinking(
+            &mut payload,
+            "claude-opus-4-7",
+            client_requested_thinking,
+            &settings,
+        );
+
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.budget_tokens),
+            Some(OPUS47_FAST_THINKING_BUDGET_TOKENS)
+        );
+        assert_eq!(
+            payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("low")
+        );
+        assert!(
+            last_user_text(&payload).as_deref().is_some_and(
+                |text| text.contains("<max_thinking_length>4096</max_thinking_length>")
+            )
+        );
+    }
+
+    #[test]
+    fn opus47_thinking_fast_mode_uses_adaptive_low() {
+        let mut payload = request("claude-opus-4-7-thinking");
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.opus47_run_mode = "fast".to_string();
+
+        override_thinking_from_model_name(&mut payload, &settings);
+
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.budget_tokens),
+            Some(OPUS47_FAST_THINKING_BUDGET_TOKENS)
+        );
+        assert_eq!(
+            payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("low")
+        );
     }
 
     #[test]
@@ -1103,7 +1170,10 @@ mod tests {
         let mut payload = request("claude-opus-4-7-thinking");
         let client_requested_thinking =
             client_requested_thinking_for_request("claude-opus-4-7-thinking", &payload);
-        override_thinking_from_model_name(&mut payload);
+        override_thinking_from_model_name(
+            &mut payload,
+            &RuntimeSettings::from_config(&Config::default()),
+        );
 
         assert!(!client_thinking_enabled_for_request(
             "claude-opus-4-7-thinking",
@@ -1327,9 +1397,10 @@ pub async fn post_messages(
     };
 
     let requested_model = payload.model.clone();
+    let runtime_settings = provider.token_manager().runtime_settings();
     let route = "/v1/messages";
     let prompt_dump = PromptDump::maybe_create(
-        &provider.token_manager().runtime_settings(),
+        &runtime_settings,
         route,
         &requested_model,
         payload.stream,
@@ -1338,9 +1409,13 @@ pub async fn post_messages(
     let client_requested_thinking =
         client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
-    override_thinking_from_model_name(&mut payload);
-    normalize_opus47_client_thinking(&mut payload, &requested_model, client_requested_thinking);
-    let runtime_settings = provider.token_manager().runtime_settings();
+    override_thinking_from_model_name(&mut payload, &runtime_settings);
+    normalize_opus47_client_thinking(
+        &mut payload,
+        &requested_model,
+        client_requested_thinking,
+        &runtime_settings,
+    );
     let usage_session_key = session_key_for_request(
         &payload,
         &payload.model,
@@ -1374,9 +1449,8 @@ pub async fn post_messages(
         return websearch::handle_websearch_request(provider, &payload, input_tokens, permit).await;
     }
 
-    let detection_profile = crate::kiro::settings::normalize_opus47_detection_profile(
-        &runtime_settings.opus47_detection_profile,
-    );
+    let detection_profile =
+        crate::kiro::settings::effective_opus47_detection_profile(&runtime_settings);
     let stabilization_mode =
         apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
     let compat_thinking_model =
@@ -1390,7 +1464,8 @@ pub async fn post_messages(
         client_requested_thinking,
     );
     let opus47_diagnostics_enabled =
-        runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
+        crate::kiro::settings::effective_opus47_diagnostics_enabled(&runtime_settings)
+            && is_opus47_model_name(&requested_model);
     let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
 
     // 转换请求
@@ -1444,6 +1519,7 @@ pub async fn post_messages(
         conversion_options.clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment.as_str(),
+        runtime_settings.opus47_run_mode.as_str(),
         &conversion_result.conversation_state,
     );
 
@@ -1483,6 +1559,8 @@ pub async fn post_messages(
     let pdf_debug = conversion_result.pdf_debug;
     let request_kind = classify_opus47_request_kind(&payload, pdf_debug.is_some());
     let route = "/v1/messages";
+    let signed_thinking_mode =
+        crate::kiro::settings::effective_opus47_signed_thinking_preservation(&runtime_settings);
 
     let _permit = match state
         .runtime_limiter
@@ -1509,9 +1587,7 @@ pub async fn post_messages(
             detection_profile.as_str(),
             opus47_diagnostics_enabled,
             state.signed_thinking_cache.clone(),
-            runtime_settings
-                .opus47_signed_thinking_preservation
-                .as_str(),
+            signed_thinking_mode.as_str(),
             identity_probe_applied,
             antml_probe_tag.clone(),
             tool_name_map,
@@ -1544,9 +1620,7 @@ pub async fn post_messages(
             detection_profile.as_str(),
             opus47_diagnostics_enabled,
             state.signed_thinking_cache.clone(),
-            runtime_settings
-                .opus47_signed_thinking_preservation
-                .as_str(),
+            signed_thinking_mode.as_str(),
             identity_probe_applied,
             antml_probe_tag,
             tool_name_map,
@@ -2912,8 +2986,12 @@ async fn handle_non_stream_request(
 ///
 /// - Opus 4.6/4.7：覆写为 adaptive 类型
 /// - 其他模型：覆写为 enabled 类型
-/// - budget_tokens 固定为 20000
-fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
+/// - custom/benchmark：budget_tokens 保持 20000，Opus adaptive 使用 high
+/// - fast：仅对 Opus 4.7 thinking 别名降低为 adaptive low，减少上游首包前推理时间
+fn override_thinking_from_model_name(
+    payload: &mut MessagesRequest,
+    settings: &crate::kiro::settings::RuntimeSettings,
+) {
     let model_lower = payload.model.to_lowercase();
     if !model_lower.contains("thinking") {
         return;
@@ -2930,32 +3008,94 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     } else {
         "enabled"
     };
+    let fast_opus47 = settings.opus47_run_mode == "fast" && is_opus47_model_name(&payload.model);
+    let budget_tokens = if fast_opus47 {
+        OPUS47_FAST_THINKING_BUDGET_TOKENS
+    } else {
+        20000
+    };
 
     tracing::info!(
         model = %payload.model,
         thinking_type = thinking_type,
+        budget_tokens,
+        run_mode = %settings.opus47_run_mode,
         "模型名包含 thinking 后缀，覆写 thinking 配置"
     );
 
     payload.thinking = Some(Thinking {
         thinking_type: thinking_type.to_string(),
-        budget_tokens: 20000,
+        budget_tokens,
     });
 
     if is_opus_adaptive {
         payload.output_config = Some(OutputConfig {
-            effort: "high".to_string(),
+            effort: if fast_opus47 { "low" } else { "high" }.to_string(),
             format: None,
         });
     }
+}
+
+const OPUS47_FAST_THINKING_MIN_TOKENS: i32 = 1024;
+const OPUS47_FAST_THINKING_BUDGET_TOKENS: i32 = 4096;
+
+fn opus47_fast_thinking_budget(requested: i32) -> i32 {
+    requested.clamp(
+        OPUS47_FAST_THINKING_MIN_TOKENS,
+        OPUS47_FAST_THINKING_BUDGET_TOKENS,
+    )
 }
 
 fn normalize_opus47_client_thinking(
     payload: &mut MessagesRequest,
     requested_model: &str,
     client_requested_thinking: bool,
+    settings: &crate::kiro::settings::RuntimeSettings,
 ) {
     if !client_requested_thinking || !is_opus47_model_name(requested_model) {
+        return;
+    }
+
+    if settings.opus47_run_mode == "fast" {
+        let content_limited = apply_opus47_fast_content_thinking_limits(payload);
+        let mut budget_tokens = None;
+        if let Some((thinking_type, limited_budget)) =
+            payload.thinking.as_ref().and_then(|thinking| {
+                thinking.is_enabled().then(|| {
+                    (
+                        thinking.thinking_type.clone(),
+                        opus47_fast_thinking_budget(thinking.budget_tokens),
+                    )
+                })
+            })
+        {
+            payload.thinking = Some(Thinking {
+                thinking_type,
+                budget_tokens: limited_budget,
+            });
+
+            let format = payload
+                .output_config
+                .as_ref()
+                .and_then(|config| config.format.clone());
+            payload.output_config = Some(OutputConfig {
+                effort: "low".to_string(),
+                format,
+            });
+            budget_tokens = Some(limited_budget);
+        }
+
+        if budget_tokens.is_some() || content_limited {
+            tracing::info!(
+                model = %requested_model,
+                run_mode = %settings.opus47_run_mode,
+                thinking_type = payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+                budget_tokens,
+                effort = payload.output_config.as_ref().map(|c| c.effort.as_str()),
+                content_limited,
+                "Opus 4.7 极速模式已限制客户端 thinking 请求"
+            );
+        }
         return;
     }
 
@@ -2985,11 +3125,89 @@ fn normalize_opus47_client_thinking(
 
     tracing::info!(
         model = %requested_model,
+        run_mode = %settings.opus47_run_mode,
         thinking_type = "enabled",
         budget_tokens,
         effort = "high",
         "Opus 4.7 客户端 thinking 请求已归一为 enabled/max_thinking_length"
     );
+}
+
+fn apply_opus47_fast_content_thinking_limits(payload: &mut MessagesRequest) -> bool {
+    let mut changed = false;
+    for message in &mut payload.messages {
+        changed |= apply_opus47_fast_content_value_limits(&mut message.content);
+    }
+    changed
+}
+
+fn apply_opus47_fast_content_value_limits(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            let next = limit_opus47_fast_thinking_directives(text);
+            if next != *text {
+                *text = next;
+                true
+            } else {
+                false
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                if let Some(obj) = item.as_object_mut() {
+                    let Some(text) = obj.get("text").and_then(|text| text.as_str()) else {
+                        continue;
+                    };
+                    let next = limit_opus47_fast_thinking_directives(text);
+                    if next != text {
+                        obj.insert("text".to_string(), serde_json::Value::String(next));
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn limit_opus47_fast_thinking_directives(input: &str) -> String {
+    let limited = replace_xml_tag_value_case_insensitive(
+        input,
+        "max_thinking_length",
+        &OPUS47_FAST_THINKING_BUDGET_TOKENS.to_string(),
+    );
+    replace_xml_tag_value_case_insensitive(&limited, "thinking_effort", "low")
+}
+
+fn replace_xml_tag_value_case_insensitive(input: &str, tag: &str, replacement: &str) -> String {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let lower = input.to_ascii_lowercase();
+    let mut search_from = 0;
+    let mut output = String::with_capacity(input.len());
+    let mut changed = false;
+
+    while let Some(start_rel) = lower[search_from..].find(&open) {
+        let start = search_from + start_rel;
+        let value_start = start + open.len();
+        let Some(end_rel) = lower[value_start..].find(&close) else {
+            break;
+        };
+        let value_end = value_start + end_rel;
+        output.push_str(&input[search_from..value_start]);
+        output.push_str(replacement);
+        changed |= input[value_start..value_end].trim() != replacement;
+        search_from = value_end;
+    }
+
+    if !changed {
+        return input.to_string();
+    }
+
+    output.push_str(&input[search_from..]);
+    output
 }
 
 fn log_opus47_request_thinking_state(
@@ -3003,6 +3221,7 @@ fn log_opus47_request_thinking_state(
     clean_probe_mode: bool,
     identity_probe_applied: bool,
     short_thinking_experiment: &str,
+    run_mode: &str,
     conversation_state: &ConversationState,
 ) {
     if !is_opus47_model_name(requested_model) {
@@ -3026,6 +3245,7 @@ fn log_opus47_request_thinking_state(
         stabilization_mode,
         detection_profile,
         compat_thinking_model,
+        run_mode,
         clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment,
@@ -3193,8 +3413,9 @@ fn conversion_options_for_request(
     requested_model: &str,
     settings: &crate::kiro::settings::RuntimeSettings,
 ) -> ConversionOptions {
-    let signed_thinking_mode =
-        SignedThinkingMode::from_setting(settings.opus47_signed_thinking_preservation.as_str());
+    let signed_thinking_setting =
+        crate::kiro::settings::effective_opus47_signed_thinking_preservation(settings);
+    let signed_thinking_mode = SignedThinkingMode::from_setting(signed_thinking_setting.as_str());
     ConversionOptions {
         clean_probe_mode: is_plain_opus47_model_name(requested_model)
             && crate::kiro::settings::effective_opus47_clean_probe_mode(settings) == "clean",
@@ -3243,15 +3464,16 @@ fn apply_opus47_short_thinking_experiment(
     client_requested_thinking: bool,
     is_pdf_request: bool,
 ) -> String {
-    let mode = crate::kiro::settings::normalize_opus47_short_thinking_experiment(
-        &settings.opus47_short_thinking_experiment,
-    );
+    let mode = crate::kiro::settings::effective_opus47_short_thinking_experiment(settings);
     if mode == "off" {
         return "off".to_string();
     }
+    let detection_profile = crate::kiro::settings::effective_opus47_detection_profile(settings);
+    let signed_thinking_preservation =
+        crate::kiro::settings::effective_opus47_signed_thinking_preservation(settings);
     if !is_opus47_model_name(requested_model)
-        || settings.opus47_detection_profile != "cc_max_like"
-        || settings.opus47_signed_thinking_preservation != "history_experiment"
+        || detection_profile != "cc_max_like"
+        || signed_thinking_preservation != "history_experiment"
         || !client_requested_thinking
         || payload.max_tokens > 16_384
     {
@@ -3358,9 +3580,7 @@ fn apply_opus47_identity_probe_compat(
         .content;
     let identity_candidate = looks_like_identity_probe(current_content);
 
-    let detection_profile = crate::kiro::settings::normalize_opus47_detection_profile(
-        &settings.opus47_detection_profile,
-    );
+    let detection_profile = crate::kiro::settings::effective_opus47_detection_profile(settings);
     if detection_profile != "cc_max_like" {
         log_opus47_identity_probe_compat_skip(
             settings,
@@ -3469,7 +3689,7 @@ fn apply_opus47_identity_probe_compat(
 
     tracing::info!(
         model = %requested_model,
-        profile = %settings.opus47_detection_profile,
+        profile = %crate::kiro::settings::effective_opus47_detection_profile(settings),
         cleared_tool_count = cleared_tool_count,
         "opus47_identity_probe_compat_applied"
     );
@@ -3483,13 +3703,14 @@ fn log_opus47_identity_probe_compat_skip(
     identity_candidate: bool,
     reason: &'static str,
 ) {
-    if !settings.opus47_diagnostics_enabled || !identity_candidate {
+    if !crate::kiro::settings::effective_opus47_diagnostics_enabled(settings) || !identity_candidate
+    {
         return;
     }
 
     tracing::info!(
         model = %requested_model,
-        profile = %settings.opus47_detection_profile,
+        profile = %crate::kiro::settings::effective_opus47_detection_profile(settings),
         reason = reason,
         message_count = payload.messages.len(),
         tool_count = payload.tools.as_ref().map_or(0, Vec::len),
@@ -3869,9 +4090,10 @@ pub async fn post_messages_cc(
     };
 
     let requested_model = payload.model.clone();
+    let runtime_settings = provider.token_manager().runtime_settings();
     let route = "/cc/v1/messages";
     let prompt_dump = PromptDump::maybe_create(
-        &provider.token_manager().runtime_settings(),
+        &runtime_settings,
         route,
         &requested_model,
         payload.stream,
@@ -3880,9 +4102,13 @@ pub async fn post_messages_cc(
     let client_requested_thinking =
         client_requested_thinking_for_request(&requested_model, &payload);
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
-    override_thinking_from_model_name(&mut payload);
-    normalize_opus47_client_thinking(&mut payload, &requested_model, client_requested_thinking);
-    let runtime_settings = provider.token_manager().runtime_settings();
+    override_thinking_from_model_name(&mut payload, &runtime_settings);
+    normalize_opus47_client_thinking(
+        &mut payload,
+        &requested_model,
+        client_requested_thinking,
+        &runtime_settings,
+    );
     let usage_session_key = session_key_for_request(
         &payload,
         &payload.model,
@@ -3916,9 +4142,8 @@ pub async fn post_messages_cc(
         return websearch::handle_websearch_request(provider, &payload, input_tokens, permit).await;
     }
 
-    let detection_profile = crate::kiro::settings::normalize_opus47_detection_profile(
-        &runtime_settings.opus47_detection_profile,
-    );
+    let detection_profile =
+        crate::kiro::settings::effective_opus47_detection_profile(&runtime_settings);
     let stabilization_mode =
         apply_opus47_plain_stabilization(&mut payload, &requested_model, &runtime_settings);
     let compat_thinking_model =
@@ -3932,7 +4157,8 @@ pub async fn post_messages_cc(
         client_requested_thinking,
     );
     let opus47_diagnostics_enabled =
-        runtime_settings.opus47_diagnostics_enabled && is_opus47_model_name(&requested_model);
+        crate::kiro::settings::effective_opus47_diagnostics_enabled(&runtime_settings)
+            && is_opus47_model_name(&requested_model);
     let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
 
     // 转换请求
@@ -3986,6 +4212,7 @@ pub async fn post_messages_cc(
         conversion_options.clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment.as_str(),
+        runtime_settings.opus47_run_mode.as_str(),
         &conversion_result.conversation_state,
     );
 
@@ -4024,6 +4251,8 @@ pub async fn post_messages_cc(
     let tool_name_map = conversion_result.tool_name_map;
     let pdf_debug = conversion_result.pdf_debug;
     let request_kind = classify_opus47_request_kind(&payload, pdf_debug.is_some());
+    let signed_thinking_mode =
+        crate::kiro::settings::effective_opus47_signed_thinking_preservation(&runtime_settings);
 
     let _permit = match state
         .runtime_limiter
@@ -4050,9 +4279,7 @@ pub async fn post_messages_cc(
             detection_profile.as_str(),
             opus47_diagnostics_enabled,
             state.signed_thinking_cache.clone(),
-            runtime_settings
-                .opus47_signed_thinking_preservation
-                .as_str(),
+            signed_thinking_mode.as_str(),
             identity_probe_applied,
             antml_probe_tag.clone(),
             tool_name_map,
@@ -4085,9 +4312,7 @@ pub async fn post_messages_cc(
             detection_profile.as_str(),
             opus47_diagnostics_enabled,
             state.signed_thinking_cache.clone(),
-            runtime_settings
-                .opus47_signed_thinking_preservation
-                .as_str(),
+            signed_thinking_mode.as_str(),
             identity_probe_applied,
             antml_probe_tag,
             tool_name_map,

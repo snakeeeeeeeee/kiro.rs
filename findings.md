@@ -1,6 +1,8 @@
 # Findings
 
 ## Current Task Findings
+- Opus 4.7 run mode should be implemented as an effective preset layer. It must not rewrite persisted granular settings, and it must not toggle Prompt Dump or raw debug automatically.
+- Fast mode should not use `diagnose` signed-thinking, because `diagnose` still observes/logs signature state; effective signed-thinking is `off` for lowest overhead.
 - SQLite store and runtime settings modules are present under `src/kiro/store.rs` and `src/kiro/settings.rs`.
 - Admin runtime settings and policy routes are registered in `src/admin/router.rs`.
 - Admin UI now has table-oriented components in `admin-ui/src/components/account-table.tsx`, `runtime-settings-dialog.tsx`, and `policy-dialog.tsx`.

@@ -20,7 +20,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -185,6 +185,24 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="enabled">启用</option>
                 <option value="disabled">关闭</option>
               </select>
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-sm font-medium">Opus 4.7 运行模式</label>
+              <select
+                value={form.opus47RunMode}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, opus47RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="custom">自定义</option>
+                <option value="benchmark">跑分模式</option>
+                <option value="fast">极速模式</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                跑分模式按 cctest/hvoy 兼容预设生效；极速模式降低 Opus 4.7 thinking 和探针诊断开销。Prompt Dump 仍只由下方开关手动控制。
+              </p>
             </div>
 
             <div className="space-y-2">
