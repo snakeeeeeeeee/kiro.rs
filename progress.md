@@ -1,6 +1,7 @@
 # Progress
 
 ## Session Log
+- Widened the default-off Opus 4.7 short thinking experiment after cctest logs showed short/PDF probes with `max_tokens=10240`, above the previous `<=1024` guard. The adaptive-high rewrite now applies up to `max_tokens <= 16384` and short text `<=2048` chars, still only under `cc_max_like + history_experiment + client-requested thinking`.
 - Resumed from an existing implementation handoff.
 - Reviewed `/Users/zhangyu/Desktop/详细日志.txt` for the latest Opus 4.7 cctest/hvoy run.
 - Found that Opus routing was correct, but identity diagnostics saw `sonnet` in visible assistant text and the short identity probe did not show `identity_probe_applied=true` in the supplied log.

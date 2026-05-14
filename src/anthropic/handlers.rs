@@ -1226,7 +1226,7 @@ mod tests {
             "claude-opus-4-7",
             "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n读 PDF 中的代码",
         );
-        payload.max_tokens = 1024;
+        payload.max_tokens = 10_240;
         let client_requested_thinking =
             client_requested_thinking_for_request("claude-opus-4-7", &payload);
         let mut state = convert_request(&payload).unwrap().conversation_state;
@@ -1257,10 +1257,10 @@ mod tests {
     fn opus47_short_thinking_experiment_is_narrowly_gated() {
         let content = format!(
             "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n{}",
-            "x".repeat(600)
+            "x".repeat(2_100)
         );
         let mut payload = request_with_content("claude-opus-4-7", &content);
-        payload.max_tokens = 1024;
+        payload.max_tokens = 10_240;
         let client_requested_thinking =
             client_requested_thinking_for_request("claude-opus-4-7", &payload);
         let mut state = convert_request(&payload).unwrap().conversation_state;
@@ -3081,7 +3081,7 @@ fn apply_opus47_short_thinking_experiment(
         || settings.opus47_detection_profile != "cc_max_like"
         || settings.opus47_signed_thinking_preservation != "history_experiment"
         || !client_requested_thinking
-        || payload.max_tokens > 1024
+        || payload.max_tokens > 16_384
     {
         return "off".to_string();
     }
@@ -3091,7 +3091,7 @@ fn apply_opus47_short_thinking_experiment(
         .user_input_message
         .content;
     let content_chars = content.chars().count();
-    let is_short_text = content_chars <= 512;
+    let is_short_text = content_chars <= 2_048;
     if !is_short_text && !is_pdf_request {
         return "off".to_string();
     }
