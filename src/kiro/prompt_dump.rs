@@ -82,7 +82,6 @@ impl PromptDump {
                 max_bytes: settings.prompt_dump_max_bytes,
             }),
         };
-        dump.write_json("client_request.json", client_request);
         dump.write_json(
             "meta.json",
             &json!({
@@ -94,7 +93,16 @@ impl PromptDump {
                 "truncated": false
             }),
         );
+        dump.write_json("client_request.json", client_request);
         dump.update_latest(route, stream);
+        tracing::info!(
+            request_id = dump.request_id(),
+            model,
+            route,
+            stream,
+            dir = %dump.inner.dir.display(),
+            "prompt_dump_created"
+        );
         Some(dump)
     }
 
@@ -397,6 +405,35 @@ mod tests {
         assert!(meta.contains("\"truncated\": true"));
         assert_eq!(
             fs::metadata(dump.dir().join("upstream_response.raw"))
+                .unwrap()
+                .len(),
+            10_000
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dump_truncates_large_initial_client_request_and_marks_meta() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        let dir = std::env::temp_dir().join(format!("kiro-prompt-dump-test-{}", Uuid::new_v4()));
+        settings.prompt_dump_enabled = true;
+        settings.prompt_dump_dir = dir.to_string_lossy().to_string();
+        settings.prompt_dump_max_bytes = 10_000;
+
+        let dump = PromptDump::maybe_create(
+            &settings,
+            "/v1/messages",
+            "claude-opus-4-7",
+            true,
+            &json!({"prompt": "x".repeat(20_000)}),
+        )
+        .unwrap();
+
+        let meta = fs::read_to_string(dump.dir().join("meta.json")).unwrap();
+        assert!(meta.contains("\"truncated\": true"));
+        assert!(meta.contains("client_request.json"));
+        assert_eq!(
+            fs::metadata(dump.dir().join("client_request.json"))
                 .unwrap()
                 .len(),
             10_000

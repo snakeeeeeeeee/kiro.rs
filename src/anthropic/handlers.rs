@@ -3756,7 +3756,10 @@ fn classify_opus47_request_kind(
     }
 
     if let Some(text) = last_user_text(payload) {
-        if looks_like_identity_probe(&text) || looks_like_antml_probe(&text) {
+        if looks_like_antml_probe(&text) {
+            return Opus47RequestKind::AntmlProbe;
+        }
+        if looks_like_identity_probe(&text) {
             return Opus47RequestKind::IdentityShort;
         }
         let lower = text.to_ascii_lowercase();

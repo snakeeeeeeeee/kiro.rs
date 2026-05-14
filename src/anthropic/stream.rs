@@ -19,6 +19,7 @@ pub enum Opus47RequestKind {
     PdfExact,
     ImageOcr,
     IdentityShort,
+    AntmlProbe,
     Other,
 }
 
@@ -30,6 +31,7 @@ impl Opus47RequestKind {
             Self::PdfExact => "pdf_exact",
             Self::ImageOcr => "image_ocr",
             Self::IdentityShort => "identity_short",
+            Self::AntmlProbe => "antml_probe",
             Self::Other => "other",
         }
     }
@@ -37,7 +39,11 @@ impl Opus47RequestKind {
     pub fn expected_text_only(&self) -> bool {
         matches!(
             self,
-            Self::ShortExact | Self::PdfExact | Self::ImageOcr | Self::IdentityShort
+            Self::ShortExact
+                | Self::PdfExact
+                | Self::ImageOcr
+                | Self::IdentityShort
+                | Self::AntmlProbe
         )
     }
 }
