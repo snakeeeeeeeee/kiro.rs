@@ -353,3 +353,19 @@
 - `cargo test runtime_settings_round_trip -- --nocapture`: passed.
 - `cargo test -q`: passed, 298 tests.
 - `pnpm --dir admin-ui build`: passed.
+
+
+## Completed: CCTest Behavior ANTML/Identity Fix
+- Aggregated `tmp/cctest提问和回答信息.txt` and `tmp/cctest提问和回答信息-2.txt` by `raw_request_id` to inspect current prompt, visible answer, reasoning/signature counts, and tool-use counts.
+- Found two concrete behavior issues: ANTML probes were also receiving the identity compatibility prefix, and upstream often answered the ANTML tag as bare `<hex>` instead of `<antml:hex>`.
+- Updated `src/anthropic/handlers.rs` so identity probe detection uses the original latest user text instead of content after ANTML/other compatibility prefixes.
+- Added narrow ANTML visible-text normalization for a single extracted `<antml:hex>` probe tag across non-stream, normal stream, and buffered stream response paths. Reasoning and signature events still pass through unchanged.
+- Added regression tests for ANTML not triggering identity compatibility from its clarification prefix and for restoring the `antml:` tag prefix in visible output.
+
+## Latest Validation: CCTest Behavior ANTML/Identity Fix
+- `cargo check`: passed.
+- `cargo test antml -- --nocapture`: passed, 7 tests.
+- `cargo test identity -- --nocapture`: passed, 16 tests.
+- `cargo fmt -- --check`: passed.
+- `git diff --check`: passed.
+- `cargo test -q`: passed, 301 tests.

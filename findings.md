@@ -228,3 +228,10 @@
 - Short/PDF probes can still be `thinking_type=enabled` with `client_thinking_enabled=true` but receive only `assistant_response`; this is upstream no-reasoning behavior, not local signature swallowing.
 - Added default-off `opus47ShortThinkingExperiment`. The `adaptive_high` mode rewrites only the existing XML thinking directive to `<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>` for narrow cctest-like traffic under Opus 4.7 + `cc_max_like` + `history_experiment` + client-requested thinking + `max_tokens <= 1024` + PDF/short current text.
 - The experiment avoids hidden natural-language prompt injection, protocol envelope changes, fake signatures, and global plain Opus 4.7 stabilization changes.
+
+
+## CCTest Behavior Follow-up: ANTML and Identity Cross-Contamination
+- Parsed `tmp/cctest提问和回答信息*.txt` by `raw_request_id` and found the first ANTML probe was sent upstream with both `身份兼容说明` and ANTML clarification. The identity probe matched because it scanned content after ANTML clarification injected phrases such as internal/system configuration.
+- The observed ANTML answer returned the bare hex tag form like `<53cb...>` / `<da6d...>` instead of the requested visible text `<antml:53cb...>`. This is a behavior-scoring issue, not a signature/protocol issue.
+- Fix direction: keep identity matching based on the original current user text from the Anthropic request, while allowing a narrow ANTML visible-text post-normalization that only restores one exact extracted `<antml:hex>` tag if upstream drops the `antml:` prefix.
+- The change keeps real signed thinking untouched and does not fabricate signatures. It buffers only visible assistant text for matched ANTML probes, similar to the existing identity visible-text buffering.

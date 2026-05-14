@@ -31,8 +31,8 @@ use super::middleware::AppState;
 use super::signed_thinking::{SignedThinkingCache, SignedThinkingMode};
 use super::stream::{BufferedStreamContext, Opus47Diagnostics, SseEvent, StreamContext};
 use super::types::{
-    CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
-    OutputConfig, Thinking,
+    CountTokensRequest, CountTokensResponse, ErrorResponse, Message, MessagesRequest, Model,
+    ModelsResponse, OutputConfig, Thinking,
 };
 use super::usage::{
     AnthropicUsage, CacheTtl, VirtualCacheUsageManager, VirtualUsageInput,
@@ -673,6 +673,36 @@ mod tests {
     }
 
     #[test]
+    fn antml_probe_compat_does_not_trigger_identity_from_clarification() {
+        let payload = request_with_content("claude-opus-4-7", ANTML_PROBE);
+        let original = latest_user_message_text(&payload);
+        let mut conversion_result = convert_request(&payload).unwrap();
+
+        assert_eq!(
+            apply_opus47_antml_probe_compat(
+                &mut conversion_result.conversation_state,
+                "claude-opus-4-7",
+                &cc_max_like_settings(),
+            ),
+            "clarify"
+        );
+        assert!(!apply_opus47_identity_probe_compat(
+            &mut conversion_result.conversation_state,
+            "claude-opus-4-7",
+            &cc_max_like_settings(),
+            &payload,
+            original.as_deref(),
+        ));
+
+        let content = &conversion_result
+            .conversation_state
+            .current_message
+            .user_input_message
+            .content;
+        assert!(!content.starts_with("身份兼容说明："));
+    }
+
+    #[test]
     fn antml_probe_compat_does_not_modify_non_probe() {
         let payload = request_with_content(
             "claude-opus-4-7",
@@ -756,6 +786,7 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
+            None,
         );
         let content = &conversion_result
             .conversation_state
@@ -783,6 +814,7 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
+            None,
         ));
         assert!(
             conversion_result
@@ -813,6 +845,7 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
+            None,
         ));
         assert!(
             conversion_result
@@ -846,6 +879,7 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
+            None,
         ));
         let current_message = &conversion_result.conversation_state.current_message;
         assert!(
@@ -898,6 +932,7 @@ mod tests {
             "claude-opus-4-7",
             &settings("off"),
             &payload,
+            None,
         ));
 
         payload.response_format = Some(super::super::types::StructuredOutputFormat {
@@ -913,6 +948,7 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
+            None,
         ));
 
         let pdf_payload =
@@ -923,6 +959,7 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &pdf_payload,
+            None,
         ));
     }
 
@@ -940,6 +977,7 @@ mod tests {
             "claude-opus-4-7",
             &cc_max_like_settings(),
             &payload,
+            None,
         ));
     }
 
@@ -1021,6 +1059,18 @@ mod tests {
         assert!(normalized.starts_with("# Claude Code"));
         assert!(!normalized.contains("我是 Claude，一个 AI 驱动的开发助手"));
         assert!(normalized.contains("至于第二个问题：2 + 2 = 4"));
+    }
+
+    #[test]
+    fn antml_visible_text_normalizer_restores_tag_prefix() {
+        let tag = "<antml:8308bd23134dd517>";
+        let normalized = normalize_antml_probe_visible_text(
+            "你输入的 tag 是：`<8308bd23134dd517>`\n\n问题 2 没有实际含义。",
+            tag,
+        );
+
+        assert!(normalized.contains("`<antml:8308bd23134dd517>`"));
+        assert!(normalized.contains("问题 2"));
     }
 
     #[test]
@@ -1359,11 +1409,15 @@ pub async fn post_messages(
                 .into_response();
         }
     };
+    let original_current_user_content = latest_user_message_text(&payload);
     apply_opus47_antml_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
     );
+    let antml_probe_tag = original_current_user_content
+        .as_deref()
+        .and_then(extract_single_antml_tag);
     let short_thinking_experiment = apply_opus47_short_thinking_experiment(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -1377,6 +1431,7 @@ pub async fn post_messages(
         &requested_model,
         &runtime_settings,
         &payload,
+        original_current_user_content.as_deref(),
     );
     log_opus47_request_thinking_state(
         &requested_model,
@@ -1456,6 +1511,7 @@ pub async fn post_messages(
                 .opus47_signed_thinking_preservation
                 .as_str(),
             identity_probe_applied,
+            antml_probe_tag.clone(),
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -1487,6 +1543,7 @@ pub async fn post_messages(
                 .opus47_signed_thinking_preservation
                 .as_str(),
             identity_probe_applied,
+            antml_probe_tag,
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -1516,6 +1573,7 @@ async fn handle_stream_request(
     signed_thinking_cache: Arc<SignedThinkingCache>,
     signed_thinking_mode: &str,
     identity_probe_applied: bool,
+    antml_probe_tag: Option<String>,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
     usage_session_key: String,
@@ -1586,6 +1644,7 @@ async fn handle_stream_request(
         initial_events,
         pdf_debug,
         identity_probe_applied,
+        antml_probe_tag,
         permit,
     );
 
@@ -1614,6 +1673,7 @@ fn create_sse_stream(
     initial_events: Vec<SseEvent>,
     pdf_debug: Option<PdfDebugInfo>,
     identity_probe_applied: bool,
+    antml_probe_tag: Option<String>,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
@@ -1653,6 +1713,7 @@ fn create_sse_stream(
             stream_started_at,
             pdf_debug,
             identity_probe_applied,
+            antml_probe_tag,
             String::new(),
         ),
         |(
@@ -1674,6 +1735,7 @@ fn create_sse_stream(
             stream_started_at,
             pdf_debug,
             identity_probe_applied,
+            antml_probe_tag,
             mut assistant_text,
         )| async move {
             if finished {
@@ -1752,6 +1814,12 @@ fn create_sse_stream(
                                             {
                                                 continue;
                                             }
+                                            if antml_probe_tag.is_some()
+                                                && let Event::AssistantResponse(resp) = &event
+                                            {
+                                                assistant_text.push_str(&resp.content);
+                                                continue;
+                                            }
                                             if pdf_debug.is_some() {
                                                 if let Event::AssistantResponse(resp) = &event {
                                                     assistant_text.push_str(&resp.content);
@@ -1773,14 +1841,19 @@ fn create_sse_stream(
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, assistant_text)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
                         }
                         Some(Err(e)) => {
                             tracing::error!("读取响应流失败: {}", e);
                             drop(permit);
                             // 发送最终事件并结束
+                            normalize_antml_probe_stream_text(&mut assistant_text, antml_probe_tag.as_deref());
                             let mut final_events = if identity_probe_applied {
                                 flush_identity_stream_text(&mut ctx, &stream_model, &mut assistant_text)
+                            } else if !assistant_text.is_empty() {
+                                let mut assistant = crate::kiro::model::events::AssistantResponseEvent::default();
+                                assistant.content = assistant_text.clone();
+                                ctx.process_kiro_event(&Event::AssistantResponse(assistant))
                             } else {
                                 Vec::new()
                             };
@@ -1796,13 +1869,18 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, assistant_text)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
                         }
                         None => {
                             // 流结束，发送最终事件
                             drop(permit);
+                            normalize_antml_probe_stream_text(&mut assistant_text, antml_probe_tag.as_deref());
                             let mut final_events = if identity_probe_applied {
                                 flush_identity_stream_text(&mut ctx, &stream_model, &mut assistant_text)
+                            } else if !assistant_text.is_empty() {
+                                let mut assistant = crate::kiro::model::events::AssistantResponseEvent::default();
+                                assistant.content = assistant_text.clone();
+                                ctx.process_kiro_event(&Event::AssistantResponse(assistant))
                             } else {
                                 Vec::new()
                             };
@@ -1818,7 +1896,7 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, assistant_text)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
                         }
                     }
                 }
@@ -1826,7 +1904,7 @@ fn create_sse_stream(
                 _ = ping_interval.tick() => {
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, assistant_text)))
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)))
                 }
             }
         },
@@ -2248,6 +2326,40 @@ fn log_pdf_response_diagnostics(pdf_debug: &PdfDebugInfo, assistant_text: &str) 
     );
 }
 
+fn normalize_antml_probe_stream_text(text: &mut String, expected_tag: Option<&str>) {
+    let Some(expected_tag) = expected_tag else {
+        return;
+    };
+    let normalized = normalize_antml_probe_visible_text(text, expected_tag);
+    if normalized != *text {
+        *text = normalized;
+        tracing::info!(
+            target: "kiro_rs::metrics",
+            antml_tag = %expected_tag,
+            "opus47_antml_probe_visible_text_normalized"
+        );
+    }
+}
+
+fn normalize_antml_probe_visible_text(text: &str, expected_tag: &str) -> String {
+    if text.contains(expected_tag) {
+        return text.to_string();
+    }
+
+    let Some(hex) = expected_tag
+        .strip_prefix("<antml:")
+        .and_then(|rest| rest.strip_suffix('>'))
+    else {
+        return text.to_string();
+    };
+    let bare_tag = format!("<{hex}>");
+    if !text.contains(&bare_tag) {
+        return text.to_string();
+    }
+
+    text.replacen(&bare_tag, expected_tag, 1)
+}
+
 fn preview_log_text(text: &str, max_chars: usize) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -2334,6 +2446,7 @@ async fn handle_non_stream_request(
     signed_thinking_cache: Arc<SignedThinkingCache>,
     signed_thinking_mode: &str,
     identity_probe_applied: bool,
+    antml_probe_tag: Option<String>,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
     usage_session_key: String,
@@ -2544,6 +2657,8 @@ async fn handle_non_stream_request(
         &upstream_reasoning_content,
         upstream_reasoning_signature.as_deref(),
     );
+
+    normalize_antml_probe_stream_text(&mut text_content, antml_probe_tag.as_deref());
 
     if identity_probe_applied {
         let (sanitized, replaced_keywords) = normalize_identity_visible_text(model, &text_content);
@@ -3078,12 +3193,14 @@ fn apply_opus47_identity_probe_compat(
     requested_model: &str,
     settings: &crate::kiro::settings::RuntimeSettings,
     payload: &MessagesRequest,
+    original_current_user_content: Option<&str>,
 ) -> bool {
     let current_content = &conversation_state
         .current_message
         .user_input_message
         .content;
-    let identity_candidate = looks_like_identity_probe(current_content);
+    let identity_probe_content = original_current_user_content.unwrap_or(current_content);
+    let identity_candidate = looks_like_identity_probe(identity_probe_content);
 
     let detection_profile = crate::kiro::settings::normalize_opus47_detection_profile(
         &settings.opus47_detection_profile,
@@ -3165,7 +3282,7 @@ fn apply_opus47_identity_probe_compat(
         return false;
     }
 
-    if looks_like_pdf_probe(current_content) {
+    if looks_like_pdf_probe(identity_probe_content) {
         log_opus47_identity_probe_compat_skip(
             settings,
             requested_model,
@@ -3238,6 +3355,37 @@ fn tool_choice_type(payload: &MessagesRequest) -> Option<&str> {
         .as_ref()
         .and_then(|choice| choice.get("type"))
         .and_then(|value| value.as_str())
+}
+
+fn latest_user_message_text(payload: &MessagesRequest) -> Option<String> {
+    payload
+        .messages
+        .iter()
+        .rfind(|message| message.role == "user")
+        .and_then(message_text_content)
+}
+
+fn message_text_content(message: &Message) -> Option<String> {
+    if let Some(text) = message.content.as_str() {
+        return Some(text.to_string());
+    }
+
+    let blocks = message.content.as_array()?;
+    let mut text = String::new();
+    for block in blocks {
+        if block
+            .get("type")
+            .and_then(|value| value.as_str())
+            .is_some_and(|block_type| block_type == "text")
+        {
+            if let Some(block_text) = block.get("text").and_then(|value| value.as_str()) {
+                text.push_str(block_text);
+                text.push('\n');
+            }
+        }
+    }
+
+    (!text.is_empty()).then_some(text)
 }
 
 fn current_message_has_tool_results(conversation_state: &ConversationState) -> bool {
@@ -3421,6 +3569,32 @@ fn count_antml_tags(content: &str) -> usize {
     count
 }
 
+fn extract_single_antml_tag(content: &str) -> Option<String> {
+    let mut tags = Vec::new();
+    let mut rest = content;
+
+    while let Some(start) = rest.find("<antml:") {
+        rest = &rest[start..];
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let tag = &rest[..=end];
+        if tag
+            .strip_prefix("<antml:")
+            .and_then(|inner| inner.strip_suffix('>'))
+            .is_some_and(|inner| !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            tags.push(tag.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+
+    match tags.as_slice() {
+        [tag] => Some(tag.clone()),
+        _ => None,
+    }
+}
+
 /// POST /v1/messages/count_tokens
 ///
 /// 计算消息的 token 数量
@@ -3557,11 +3731,15 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
+    let original_current_user_content = latest_user_message_text(&payload);
     apply_opus47_antml_probe_compat(
         &mut conversion_result.conversation_state,
         &requested_model,
         &runtime_settings,
     );
+    let antml_probe_tag = original_current_user_content
+        .as_deref()
+        .and_then(extract_single_antml_tag);
     let short_thinking_experiment = apply_opus47_short_thinking_experiment(
         &mut conversion_result.conversation_state,
         &requested_model,
@@ -3575,6 +3753,7 @@ pub async fn post_messages_cc(
         &requested_model,
         &runtime_settings,
         &payload,
+        original_current_user_content.as_deref(),
     );
     log_opus47_request_thinking_state(
         &requested_model,
@@ -3654,6 +3833,7 @@ pub async fn post_messages_cc(
                 .opus47_signed_thinking_preservation
                 .as_str(),
             identity_probe_applied,
+            antml_probe_tag.clone(),
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -3685,6 +3865,7 @@ pub async fn post_messages_cc(
                 .opus47_signed_thinking_preservation
                 .as_str(),
             identity_probe_applied,
+            antml_probe_tag,
             tool_name_map,
             Some(session_affinity_key.as_str()),
             usage_session_key,
@@ -3717,6 +3898,7 @@ async fn handle_stream_request_buffered(
     signed_thinking_cache: Arc<SignedThinkingCache>,
     signed_thinking_mode: &str,
     identity_probe_applied: bool,
+    antml_probe_tag: Option<String>,
     tool_name_map: std::collections::HashMap<String, String>,
     session_id: Option<&str>,
     usage_session_key: String,
@@ -3786,8 +3968,14 @@ async fn handle_stream_request_buffered(
     ));
 
     // 创建缓冲 SSE 流
-    let stream =
-        create_buffered_sse_stream(response, ctx, pdf_debug, identity_probe_applied, permit);
+    let stream = create_buffered_sse_stream(
+        response,
+        ctx,
+        pdf_debug,
+        identity_probe_applied,
+        antml_probe_tag,
+        permit,
+    );
 
     // 返回 SSE 响应
     Response::builder()
@@ -3811,6 +3999,7 @@ fn create_buffered_sse_stream(
     ctx: BufferedStreamContext,
     pdf_debug: Option<PdfDebugInfo>,
     identity_probe_applied: bool,
+    antml_probe_tag: Option<String>,
     permit: GlobalRequestPermit,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let credential_id = response.credential_id();
@@ -3841,6 +4030,7 @@ fn create_buffered_sse_stream(
             stream_started_at,
             pdf_debug,
             identity_probe_applied,
+            antml_probe_tag,
             String::new(),
         ),
         |(
@@ -3862,6 +4052,7 @@ fn create_buffered_sse_stream(
             stream_started_at,
             pdf_debug,
             identity_probe_applied,
+            antml_probe_tag,
             mut assistant_text,
         )| async move {
             if finished {
@@ -3878,7 +4069,7 @@ fn create_buffered_sse_stream(
                     _ = ping_interval.tick() => {
                         tracing::trace!("发送 ping 保活事件（缓冲模式）");
                         let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, assistant_text)));
+                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, first_event_logged, ping_interval, permit, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)));
                     }
 
                     // 然后处理数据流
@@ -3951,6 +4142,12 @@ fn create_buffered_sse_stream(
                                                 {
                                                     continue;
                                                 }
+                                                if antml_probe_tag.is_some()
+                                                    && let Event::AssistantResponse(resp) = &event
+                                                {
+                                                    assistant_text.push_str(&resp.content);
+                                                    continue;
+                                                }
                                                 if pdf_debug.is_some()
                                                     && let Event::AssistantResponse(resp) = &event
                                                 {
@@ -3971,12 +4168,18 @@ fn create_buffered_sse_stream(
                                 tracing::error!("读取响应流失败: {}", e);
                                 drop(permit);
                                 // 发生错误，完成处理并返回所有事件
+                                normalize_antml_probe_stream_text(
+                                    &mut assistant_text,
+                                    antml_probe_tag.as_deref(),
+                                );
                                 if identity_probe_applied {
                                     flush_identity_buffered_stream_text(
                                         &mut ctx,
                                         &stream_model,
                                         &mut assistant_text,
                                     );
+                                } else if !assistant_text.is_empty() {
+                                    ctx.process_text_and_buffer(&assistant_text);
                                 }
                                 let all_events = ctx.finish_and_get_all_events();
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
@@ -3990,17 +4193,23 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, assistant_text)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)));
                             }
                             None => {
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
                                 drop(permit);
+                                normalize_antml_probe_stream_text(
+                                    &mut assistant_text,
+                                    antml_probe_tag.as_deref(),
+                                );
                                 if identity_probe_applied {
                                     flush_identity_buffered_stream_text(
                                         &mut ctx,
                                         &stream_model,
                                         &mut assistant_text,
                                     );
+                                } else if !assistant_text.is_empty() {
+                                    ctx.process_text_and_buffer(&assistant_text);
                                 }
                                 let all_events = ctx.finish_and_get_all_events_with_usage_commit();
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
@@ -4014,7 +4223,7 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, assistant_text)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, first_event_logged, ping_interval, None, stream_model, credential_id, raw_debug_enabled, raw_debug_max_chars, raw_request_id, raw_chunk_index, raw_frame_index, raw_event_index, stream_started_at, pdf_debug, identity_probe_applied, antml_probe_tag, assistant_text)));
                             }
                         }
                     }

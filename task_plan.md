@@ -60,6 +60,7 @@ Current extension: add Opus 4.7 signature-failure classification diagnostics plu
 - [completed] Run local Docker Opus 4.7 probes and add identity visible-text sanitization for matched identity probes
 - [completed] Add gated signed-thinking history replay and validate true/false signature round trips locally
 - [completed] Add Opus 4.7 signature classification diagnostics and default-off short-request/PDF thinking-label experiment
+- [completed] Fix cctest behavior regressions from ANTML/identity probe cross-contamination
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -89,6 +90,8 @@ Current extension: add Opus 4.7 signature-failure classification diagnostics plu
 - Identity probe matching now combines known detector phrases with a bounded identity-intent heuristic, so wording variants such as product identity, developer/company, model id, underlying model, backend provider, running platform, and system prompt/internal configuration can trigger without relying on exact phrasing.
 - Remaining signature work should be diagnosed by classifying failures first. The new `opus47_signature_diagnostics.classification` distinguishes `signed_ok`, `no_client_thinking`, `client_hidden`, `upstream_no_reasoning`, `upstream_reasoning_no_signature`, and `upstream_signature_not_exposed`.
 - `opus47ShortThinkingExperiment=adaptive_high` is default-off and scoped to Opus 4.7 + `cc_max_like` + `history_experiment` + client-requested thinking + `max_tokens <= 1024` + PDF or short current text. It rewrites only the XML thinking directive from enabled/max length to adaptive/high; it does not add natural-language hidden instructions or fabricate signatures.
+- Identity probe compatibility must be evaluated against the original current user text, not text after other compatibility prefixes are prepended. This prevents ANTML/PDF/other probe clarifications from accidentally triggering identity normalization.
+- ANTML probe visible-text normalization is allowed only for a single extracted `<antml:hex>` probe tag and only restores an upstream answer of `<hex>` to `<antml:hex>`; it does not synthesize unrelated answers or alter reasoning/signature blocks.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
