@@ -1690,31 +1690,11 @@ fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
 }
 
-fn apply_current_message_thinking_prefix(req: &MessagesRequest, content: String) -> String {
-    let Some(prefix) = generate_thinking_prefix(req) else {
-        return content;
-    };
-
-    if has_thinking_tags(&content) {
-        return content;
-    }
-
-    if content.is_empty() {
-        prefix
-    } else {
-        format!("{}\n{}", prefix, content)
-    }
-}
-
 fn apply_current_message_prefixes(
     req: &MessagesRequest,
     content: String,
-    options: ConversionOptions,
+    _options: ConversionOptions,
 ) -> String {
-    if !options.clean_probe_mode {
-        return apply_current_message_thinking_prefix(req, content);
-    }
-
     let mut parts = Vec::new();
 
     if let Some(prefix) = generate_thinking_prefix(req) {
@@ -1797,11 +1777,13 @@ fn build_history(
 ) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
-    // 生成thinking前缀（如果需要）
-    let thinking_prefix = generate_thinking_prefix(req);
-    let output_hint = structured_output_hint(req);
-
     // 1. 处理系统消息
+    //
+    // 注意：thinking_prefix 与 structured_output_hint 都不再注入到 system，
+    // 它们随客户端参数变化（effort、output_config.format），如果塞进 system
+    // 会让 prompt cache 从最前面就 miss，整段长 history 跟着重算。
+    // 现在统一走 apply_current_message_prefixes，注入到当前 user message 前缀，
+    // 只让最后一条消息变化，前面的 history 命中 cache。
     if let Some(ref system) = req.system {
         let system_content: String = system
             .iter()
@@ -1815,30 +1797,9 @@ fn build_history(
                 system_content.push('\n');
                 system_content.push_str(SYSTEM_CHUNKED_POLICY);
             }
-            if !options.clean_probe_mode {
-                if let Some(ref hint) = output_hint {
-                    system_content.push('\n');
-                    system_content.push_str(hint);
-                }
-            }
-
-            // 注入thinking标签到系统消息最前面（如果需要且不存在）
-            let final_content = if !options.clean_probe_mode {
-                if let Some(ref prefix) = thinking_prefix {
-                    if !has_thinking_tags(&system_content) {
-                        format!("{}\n{}", prefix, system_content)
-                    } else {
-                        system_content
-                    }
-                } else {
-                    system_content
-                }
-            } else {
-                system_content
-            };
 
             // 系统消息作为 user + assistant 配对
-            let user_msg = HistoryUserMessage::new(final_content, model_id);
+            let user_msg = HistoryUserMessage::new(system_content, model_id);
             history.push(Message::User(user_msg));
 
             if !options.clean_probe_mode {
@@ -1847,20 +1808,6 @@ fn build_history(
                 history.push(Message::Assistant(assistant_msg));
             }
         }
-    } else if !options.clean_probe_mode && (thinking_prefix.is_some() || output_hint.is_some()) {
-        // 没有系统消息但有 thinking/structured-output 配置，插入新的系统消息
-        let mut parts = Vec::new();
-        if let Some(ref prefix) = thinking_prefix {
-            parts.push(prefix.clone());
-        }
-        if let Some(ref hint) = output_hint {
-            parts.push(hint.clone());
-        }
-        let user_msg = HistoryUserMessage::new(parts.join("\n"), model_id);
-        history.push(Message::User(user_msg));
-
-        let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
-        history.push(Message::Assistant(assistant_msg));
     }
 
     // 2. 处理常规消息历史
@@ -2604,15 +2551,11 @@ startxref
         });
 
         let state = convert_request(&req).unwrap().conversation_state;
-        let first_history = state.history.first().expect("structured hint history");
-        let Message::User(user_msg) = first_history else {
-            panic!("first history item should be user instructions");
-        };
-
-        let content = &user_msg.user_input_message.content;
+        let content = &state.current_message.user_input_message.content;
         assert!(content.contains("Respond with valid JSON only"));
         assert!(content.contains("JSON Schema named `answer` strictly"));
         assert!(content.contains("\"additionalProperties\":false"));
+        assert!(content.contains("Return the result."));
     }
 
     #[test]
@@ -2749,13 +2692,9 @@ startxref
         });
 
         let state = convert_request(&req).unwrap().conversation_state;
-        let first_history = state.history.first().expect("json hint history");
-        let Message::User(user_msg) = first_history else {
-            panic!("first history item should be user instructions");
-        };
-
         assert!(
-            user_msg
+            state
+                .current_message
                 .user_input_message
                 .content
                 .contains("Respond with valid JSON only")
