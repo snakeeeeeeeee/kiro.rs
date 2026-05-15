@@ -422,6 +422,16 @@ fn expire_entry(entry: &mut LedgerEntry, now: DateTime<Utc>) {
         entry.cached_1h_tokens = 0;
         entry.cached_1h_expires_at = None;
     }
+
+    // 两个桶都失效时，整个虚拟 cache 已不存在，对应 Anthropic 真实 cache 已过期，
+    // 下次请求按"全量重建"计费。把 turn_count 和 last_observed_input_tokens 重置，
+    // 让 compute_creation_tokens 走 warmup 分支，把整段 history 当成 creation 写入。
+    let no_active_bucket = entry.cached_5m_expires_at.is_none()
+        && entry.cached_1h_expires_at.is_none();
+    if no_active_bucket {
+        entry.turn_count = 0;
+        entry.last_observed_input_tokens = 0;
+    }
 }
 
 pub fn estimate_latest_user_input_tokens(req: &MessagesRequest) -> i32 {
@@ -842,6 +852,102 @@ mod tests {
         assert_eq!(
             request_cache_ttl(&request, CacheTtl::FiveMinutes),
             CacheTtl::OneHour
+        );
+    }
+
+    #[test]
+    fn buckets_all_expired_reset_entry_so_next_request_rebuilds_creation() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let now = Utc::now();
+
+        // 建立 5m 桶
+        let first = manager.preview_usage_at(
+            &settings,
+            input("session-rebuild", 200_000, CacheTtl::FiveMinutes),
+            now,
+        );
+        manager.commit_usage_at(first, now);
+
+        // 第二轮短增量
+        let second = manager.preview_usage_at(
+            &settings,
+            input("session-rebuild", 200_050, CacheTtl::FiveMinutes),
+            now + Duration::seconds(30),
+        );
+        let second_creation = second.usage().cache_creation_input_tokens;
+        manager.commit_usage_at(second, now + Duration::seconds(30));
+        assert!(
+            second_creation <= settings.virtual_cache_max_creation_tokens as i32,
+            "活跃中应走 delta 路径，creation 受 max 限制"
+        );
+
+        // 6 分钟后 5m 桶过期，且没有 1h 桶活动 → entry 整体失效
+        let after_expiry = manager.preview_usage_at(
+            &settings,
+            input("session-rebuild", 200_100, CacheTtl::FiveMinutes),
+            now + Duration::minutes(6),
+        );
+        let usage = after_expiry.usage();
+        assert_eq!(
+            usage.cache_read_input_tokens, 0,
+            "桶都过期后 cache_read 必须从 0 开始"
+        );
+        // warmup 分支返回 max(observed - uncached, warmup_tokens)，
+        // 对长 history（observed_total=200_100、uncached≈1）来说远大于 warmup_tokens，
+        // 直接按整段 history 写入 → 模拟 Anthropic 真实"cache 过期后重写"的计费行为。
+        assert!(
+            usage.cache_creation_input_tokens >= 199_000,
+            "桶整体过期后下次请求应走 warmup，按整段 history 计 creation，实际值 = {}",
+            usage.cache_creation_input_tokens
+        );
+    }
+
+    #[test]
+    fn five_minute_expiry_with_one_hour_alive_keeps_entry_state() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let now = Utc::now();
+
+        // 先在 5m 桶累一些
+        let first = manager.preview_usage_at(
+            &settings,
+            input("session-mixed", 1000, CacheTtl::FiveMinutes),
+            now,
+        );
+        manager.commit_usage_at(first, now);
+
+        // 再在 1h 桶累一些
+        let second = manager.preview_usage_at(
+            &settings,
+            input("session-mixed", 1100, CacheTtl::OneHour),
+            now + Duration::seconds(10),
+        );
+        manager.commit_usage_at(second, now + Duration::seconds(10));
+
+        // 第三轮，5m 桶累一些
+        let third = manager.preview_usage_at(
+            &settings,
+            input("session-mixed", 1200, CacheTtl::FiveMinutes),
+            now + Duration::seconds(20),
+        );
+        manager.commit_usage_at(third, now + Duration::seconds(20));
+
+        // 6 分钟后 5m 过期，1h 还活着 → entry 不应被重置
+        let after = manager.preview_usage_at(
+            &settings,
+            input("session-mixed", 1300, CacheTtl::FiveMinutes),
+            now + Duration::minutes(6),
+        );
+        let usage = after.usage();
+        assert!(
+            usage.cache_read_input_tokens > 0,
+            "1h 桶还在，cache_read 必须非零（继承 1h 累积）"
+        );
+        // 仍走 delta 路径，creation 受 max 限制（不是 warmup 的大值）
+        assert!(
+            usage.cache_creation_input_tokens <= settings.virtual_cache_max_creation_tokens as i32,
+            "5m 过期但 1h 还在时不能走 warmup 分支，creation 受 max_creation_tokens 限制"
         );
     }
 }
