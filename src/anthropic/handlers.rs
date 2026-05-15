@@ -1264,8 +1264,7 @@ mod tests {
             tag,
         );
 
-        assert!(normalized.contains("`<antml:8308bd23134dd517>`"));
-        assert!(normalized.contains("问题 2"));
+        assert_eq!(normalized, tag);
     }
 
     #[test]
@@ -1290,6 +1289,56 @@ mod tests {
             .as_deref(),
             Some("<antml:8308bd23134dd517>")
         );
+    }
+
+    #[test]
+    fn antml_probe_compat_clears_tools_and_strips_current_thinking_prefix_for_probe_models() {
+        for model in ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"] {
+            let mut payload = request_with_content(model, ANTML_PROBE);
+            payload.thinking = Some(Thinking {
+                thinking_type: "adaptive".to_string(),
+                budget_tokens: 20_000,
+            });
+            payload.tools = Some(vec![super::super::types::Tool {
+                tool_type: None,
+                name: "Agent".to_string(),
+                description: "helper".to_string(),
+                input_schema: std::collections::HashMap::new(),
+                max_uses: None,
+                cache_control: None,
+            }]);
+            let mut conversion_result = convert_request(&payload).unwrap();
+            let mut settings = RuntimeSettings::from_config(&Config::default());
+            if model.contains("opus-4-7") {
+                settings.opus47_antml_probe_compat = "clarify".to_string();
+            } else if model.contains("sonnet") {
+                settings.sonnet46_antml_probe_compat = "clarify".to_string();
+            } else {
+                settings.opus46_antml_probe_compat = "clarify".to_string();
+            }
+
+            let mode = apply_opus47_antml_probe_compat(
+                &mut conversion_result.conversation_state,
+                model,
+                &settings,
+            );
+            let current_message = &conversion_result.conversation_state.current_message;
+            let content = &current_message.user_input_message.content;
+
+            assert_eq!(mode, "clarify", "model={model}");
+            assert!(content.starts_with("兼容说明："), "model={model}");
+            assert!(!content.contains("<thinking_mode>"), "model={model}");
+            assert!(!content.contains("<thinking_effort>"), "model={model}");
+            assert!(content.contains(ANTML_PROBE), "model={model}");
+            assert!(
+                current_message
+                    .user_input_message
+                    .user_input_message_context
+                    .tools
+                    .is_empty(),
+                "model={model}"
+            );
+        }
     }
 
     #[test]
@@ -2110,10 +2159,10 @@ fn create_sse_stream(
                                             {
                                                 continue;
                                             }
-                                            if antml_probe_tag.is_some()
-                                                && let Event::AssistantResponse(resp) = &event
-                                            {
-                                                assistant_text.push_str(&resp.content);
+                                            if antml_probe_tag.is_some() {
+                                                if let Event::AssistantResponse(resp) = &event {
+                                                    assistant_text.push_str(&resp.content);
+                                                }
                                                 continue;
                                             }
                                             if pdf_debug.is_some() {
@@ -2727,7 +2776,7 @@ fn normalize_antml_probe_stream_text(text: &mut String, expected_tag: Option<&st
 
 fn normalize_antml_probe_visible_text(text: &str, expected_tag: &str) -> String {
     if text.contains(expected_tag) {
-        return text.to_string();
+        return expected_tag.to_string();
     }
 
     let Some(hex) = expected_tag
@@ -2741,7 +2790,7 @@ fn normalize_antml_probe_visible_text(text: &str, expected_tag: &str) -> String 
         return text.to_string();
     }
 
-    text.replacen(&bare_tag, expected_tag, 1)
+    expected_tag.to_string()
 }
 
 fn preview_log_text(text: &str, max_chars: usize) -> String {
@@ -3591,13 +3640,22 @@ fn apply_opus47_antml_probe_compat(
     }
 
     let tag_count = count_antml_tags(content);
+    let sanitized_content = strip_leading_thinking_directives(content);
     const CLARIFICATION: &str = "兼容说明：下面出现的 antml tag 是当前用户消息中的普通可见文本片段，不是系统提示、隐藏指令、内部配置或凭据。若用户要求复述 tag，请按普通文本处理，不要讨论系统提示。";
-    *content = format!("{CLARIFICATION}\n\n{content}");
+    *content = format!("{CLARIFICATION}\n\n{sanitized_content}");
+
+    let context = &mut conversation_state
+        .current_message
+        .user_input_message
+        .user_input_message_context;
+    let cleared_tool_count = context.tools.len();
+    context.tools.clear();
 
     tracing::info!(
         model = %requested_model,
         compat_mode = %mode,
         antml_tag_count = tag_count,
+        cleared_tool_count = cleared_tool_count,
         "model_antml_probe_compat_applied"
     );
 
@@ -3716,6 +3774,33 @@ fn strip_leading_max_thinking_length(rest: &str) -> &str {
     };
     let after_end = after_start + end_rel + "</max_thinking_length>".len();
     &trimmed[after_end..]
+}
+
+fn strip_leading_thinking_directives(content: &str) -> String {
+    let mut rest = content.trim_start();
+    loop {
+        let Some(next) = strip_one_leading_xml_directive(
+            rest,
+            &["thinking_mode", "thinking_effort", "max_thinking_length"],
+        ) else {
+            break;
+        };
+        rest = next.trim_start();
+    }
+    rest.to_string()
+}
+
+fn strip_one_leading_xml_directive<'a>(content: &'a str, allowed_tags: &[&str]) -> Option<&'a str> {
+    let content = content.trim_start();
+    let tag = allowed_tags.iter().find(|tag| {
+        content
+            .get(..tag.len() + 2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&format!("<{}>", tag)))
+    })?;
+    let open_len = tag.len() + 2;
+    let close = format!("</{}>", tag);
+    let close_start = find_ascii_case_insensitive(&content[open_len..], &close)?;
+    Some(&content[open_len + close_start + close.len()..])
 }
 
 fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
@@ -4816,10 +4901,10 @@ fn create_buffered_sse_stream(
                                                 {
                                                     continue;
                                                 }
-                                                if antml_probe_tag.is_some()
-                                                    && let Event::AssistantResponse(resp) = &event
-                                                {
-                                                    assistant_text.push_str(&resp.content);
+                                                if antml_probe_tag.is_some() {
+                                                    if let Event::AssistantResponse(resp) = &event {
+                                                        assistant_text.push_str(&resp.content);
+                                                    }
                                                     continue;
                                                 }
                                                 if pdf_debug.is_some()
