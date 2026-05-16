@@ -2709,6 +2709,7 @@ impl MultiTokenManager {
         validated_cred.api_region = new_cred.api_region;
         validated_cred.machine_id = new_cred.machine_id;
         validated_cred.email = new_cred.email;
+        validated_cred.subscription_title = new_cred.subscription_title;
         validated_cred.proxy_url = new_cred.proxy_url;
         validated_cred.proxy_username = new_cred.proxy_username;
         validated_cred.proxy_password = new_cred.proxy_password;

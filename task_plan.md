@@ -163,3 +163,27 @@ Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibili
 - Upstream `402 OVERAGE` means stop overage for that account (`overageStopped=true`, account-level `allowOverage=false`) but do not mark the credential disabled.
 - Upstream `402 MONTHLY_REQUEST_COUNT` remains a hard quota exhaustion signal and continues to disable the credential as before.
 - The account list fetches missing current-page quota data automatically, but manual refresh remains available per account and for the current page.
+
+## Account Import Compatibility Extension
+- [completed] Add a shared Admin UI credential import parser for single JSON objects, JSON arrays, wrapper objects, JSONL, and consecutive pretty-printed JSON objects.
+- [completed] Support old nested `credentials` account exports and new flat account exports from KAM/Kiro-Go-style tools.
+- [completed] Preserve imported account metadata including email, profile ARN, access token, expiration time, subscription title, usage snapshot, endpoint, proxy, and overage settings.
+- [completed] Wire both batch credential import and KAM import dialogs to the shared parser.
+- [completed] Make the account table's main account label show imported email whenever it is present.
+- [completed] Verify frontend build, Rust formatting/checks, parser smoke cases, overage tests, full backend tests, and whitespace diff checks.
+
+## Account Import Decisions
+- Import parsing is intentionally frontend-side and permissive, while backend validation still owns credential validity and duplicate rejection.
+- OAuth imports still require a `refreshToken` for actual add/verify flow; imported `accessToken`/`expiresAt`/`profileArn` are preserved as metadata but refresh remains the source of truth when adding OAuth credentials.
+- The KAM dialog remains OAuth-focused and filters to records with a refresh token. The general batch import dialog supports OAuth and API Key records.
+- Empty email values are not replaced with labels in backend storage. The list shows email when present and falls back to masked API key or credential ID otherwise.
+
+## Account Balance Auto Refresh Extension
+- [completed] Keep manual single-account and current-page balance refresh controls.
+- [completed] Add an Admin page toggle for automatic current-page balance refresh.
+- [completed] Add selectable refresh intervals of 30s, 60s, 2min, and 5min, persisted in browser local storage.
+- [completed] Show the latest successful balance refresh time in the toolbar.
+
+## Account Balance Auto Refresh Decisions
+- Auto refresh is page-scoped: only the currently visible page of accounts is queried, so opening the Admin page does not sweep every account in the pool.
+- Auto refresh is frontend-driven and stops when the Admin page is closed. It does not run as a detached backend scheduler.

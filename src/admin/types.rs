@@ -298,6 +298,15 @@ pub struct AddCredentialRequest {
     /// 刷新令牌（OAuth 凭据必填，API Key 凭据不需要）
     pub refresh_token: Option<String>,
 
+    /// 访问令牌（导入完整凭据时可选；OAuth 凭据仍会优先刷新）
+    pub access_token: Option<String>,
+
+    /// Token 过期时间（RFC3339，导入完整凭据时可选）
+    pub expires_at: Option<String>,
+
+    /// Profile ARN（导入完整凭据时可选）
+    pub profile_arn: Option<String>,
+
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
     pub auth_method: String,
@@ -346,6 +355,27 @@ pub struct AddCredentialRequest {
     /// 端点名称（可选，未配置时使用 config.defaultEndpoint）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+
+    /// 订阅标题（导入缓存值，后续余额查询会刷新）
+    pub subscription_title: Option<String>,
+
+    /// 本地额度满后是否仍允许调度该账号
+    #[serde(default)]
+    pub allow_overage: bool,
+
+    /// 透支后的调度权重（1-10；0 表示默认）
+    #[serde(default)]
+    pub overage_weight: u32,
+
+    /// 导入时携带的本地额度快照
+    pub usage_current: Option<f64>,
+
+    /// 导入时携带的本地额度上限
+    pub usage_limit: Option<f64>,
+
+    /// 是否已因上游 OVERAGE 拒绝而停止透支
+    #[serde(default)]
+    pub overage_stopped: bool,
 }
 
 fn default_auth_method() -> String {

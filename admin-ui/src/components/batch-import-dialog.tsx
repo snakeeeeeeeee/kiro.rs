@@ -11,48 +11,16 @@ import {
 import { Button } from '@/components/ui/button'
 import { useCredentials, useAddCredential, useDeleteCredential } from '@/hooks/use-credentials'
 import { getCredentialBalance, setCredentialDisabled } from '@/api/credentials'
+import {
+  credentialDisplayName,
+  parseCredentialImportInput,
+  type NormalizedCredentialInput,
+} from '@/lib/credential-import'
 import { extractErrorMessage, sha256Hex } from '@/lib/utils'
 
 interface BatchImportDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-}
-
-interface CredentialInput {
-  email?: string
-  refreshToken?: string
-  accessToken?: string
-  clientId?: string
-  clientSecret?: string
-  region?: string
-  authRegion?: string
-  apiRegion?: string
-  priority?: number
-  machineId?: string
-  kiroApiKey?: string
-  authMethod?: string
-  endpoint?: string
-}
-
-function hasCredentialsObject(value: unknown): value is CredentialInput & { credentials: CredentialInput } {
-  if (typeof value !== 'object' || value === null) return false
-  const obj = value as Record<string, unknown>
-  return typeof obj.credentials === 'object' && obj.credentials !== null
-}
-
-function normalizeCredentialInput(value: unknown): CredentialInput {
-  if (hasCredentialsObject(value)) {
-    const nested = value.credentials
-    return {
-      ...nested,
-      email: typeof value.email === 'string' ? value.email : nested.email,
-      machineId: typeof value.machineId === 'string' ? value.machineId : nested.machineId,
-      priority: typeof value.priority === 'number' ? value.priority : nested.priority,
-      endpoint: typeof value.endpoint === 'string' ? value.endpoint : nested.endpoint,
-    }
-  }
-
-  return value as CredentialInput
 }
 
 interface VerificationResult {
@@ -108,18 +76,9 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
   }
 
   const handleBatchImport = async () => {
-    // 先单独解析 JSON，给出精准的错误提示
-    let credentials: CredentialInput[]
+    let credentials: NormalizedCredentialInput[]
     try {
-      const trimmedInput = jsonInput.trim()
-      const parsed = trimmedInput.startsWith('[') || trimmedInput.startsWith('{')
-        ? JSON.parse(trimmedInput)
-        : jsonInput
-            .split(/\r?\n/)
-            .map(line => line.trim())
-            .filter(Boolean)
-            .map(line => JSON.parse(line))
-      credentials = (Array.isArray(parsed) ? parsed : [parsed]).map(normalizeCredentialInput)
+      credentials = parseCredentialImportInput(jsonInput)
     } catch (error) {
       toast.error('JSON 格式错误: ' + extractErrorMessage(error))
       return
@@ -164,12 +123,14 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
       for (let i = 0; i < credentials.length; i++) {
         const cred = credentials[i]
         const isApiKeyCred = !!(cred.kiroApiKey?.trim()) || cred.authMethod === 'api_key'
+        const displayName = credentialDisplayName(cred, `凭据 #${i + 1}`)
+        const email = cred.email?.trim() || undefined
 
         // 更新状态为检查中
-        setCurrentProcessing(`正在处理凭据 ${i + 1}/${credentials.length}`)
+        setCurrentProcessing(`正在处理 ${displayName} (${i + 1}/${credentials.length})`)
         setResults(prev => {
           const newResults = [...prev]
-          newResults[i] = { ...newResults[i], status: 'checking' }
+          newResults[i] = { ...newResults[i], status: 'checking', email: displayName }
           return newResults
         })
 
@@ -184,6 +145,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
                 ...newResults[i],
                 status: 'failed',
                 error: '缺少 kiroApiKey',
+                email: displayName,
               }
               return newResults
             })
@@ -201,7 +163,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
                 ...newResults[i],
                 status: 'duplicate',
                 error: '该凭据已存在',
-                email: existingCred?.email || undefined
+                email: existingCred?.email || displayName,
               }
               return newResults
             })
@@ -217,6 +179,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
                 ...newResults[i],
                 status: 'failed',
                 error: '缺少 refreshToken',
+                email: displayName,
               }
               return newResults
             })
@@ -234,7 +197,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
                 ...newResults[i],
                 status: 'duplicate',
                 error: '该凭据已存在',
-                email: existingCred?.email || undefined
+                email: existingCred?.email || displayName,
               }
               return newResults
             })
@@ -264,7 +227,16 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
               apiRegion: cred.apiRegion?.trim() || undefined,
               machineId: cred.machineId?.trim() || undefined,
               endpoint: cred.endpoint?.trim() || undefined,
-              email: cred.email?.trim() || undefined,
+              email,
+              proxyUrl: cred.proxyUrl?.trim() || undefined,
+              proxyUsername: cred.proxyUsername?.trim() || undefined,
+              proxyPassword: cred.proxyPassword?.trim() || undefined,
+              subscriptionTitle: cred.subscriptionTitle?.trim() || undefined,
+              allowOverage: cred.allowOverage,
+              overageWeight: cred.overageWeight,
+              usageCurrent: cred.usageCurrent,
+              usageLimit: cred.usageLimit,
+              overageStopped: cred.overageStopped,
             })
 
             addedCredId = addedCred.credentialId
@@ -277,14 +249,14 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
 
             successCount++
             existingApiKeyHashes.add(credHash)
-            setCurrentProcessing(addedCred.email ? `验活成功: ${addedCred.email}` : `验活成功: 凭据 ${i + 1}`)
+            setCurrentProcessing(`验活成功: ${addedCred.email || displayName}`)
             setResults(prev => {
               const newResults = [...prev]
               newResults[i] = {
                 ...newResults[i],
                 status: 'verified',
                 usage: `${balance.currentUsage}/${balance.usageLimit}`,
-                email: addedCred.email || undefined,
+                email: addedCred.email || displayName,
                 credentialId: addedCred.credentialId
               }
               return newResults
@@ -314,7 +286,19 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             priority: cred.priority || 0,
             machineId: cred.machineId?.trim() || undefined,
             endpoint: cred.endpoint?.trim() || undefined,
-            email: cred.email?.trim() || undefined,
+            email,
+            accessToken: cred.accessToken?.trim() || undefined,
+            expiresAt: cred.expiresAt?.trim() || undefined,
+            profileArn: cred.profileArn?.trim() || undefined,
+            proxyUrl: cred.proxyUrl?.trim() || undefined,
+            proxyUsername: cred.proxyUsername?.trim() || undefined,
+            proxyPassword: cred.proxyPassword?.trim() || undefined,
+            subscriptionTitle: cred.subscriptionTitle?.trim() || undefined,
+            allowOverage: cred.allowOverage,
+            overageWeight: cred.overageWeight,
+            usageCurrent: cred.usageCurrent,
+            usageLimit: cred.usageLimit,
+            overageStopped: cred.overageStopped,
           })
 
           addedCredId = addedCred.credentialId
@@ -328,14 +312,14 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
           // 验活成功
           successCount++
           existingOauthHashes.add(credHash)
-          setCurrentProcessing(addedCred.email ? `验活成功: ${addedCred.email}` : `验活成功: 凭据 ${i + 1}`)
+          setCurrentProcessing(`验活成功: ${addedCred.email || displayName}`)
           setResults(prev => {
             const newResults = [...prev]
             newResults[i] = {
               ...newResults[i],
               status: 'verified',
               usage: `${balance.currentUsage}/${balance.usageLimit}`,
-              email: addedCred.email || undefined,
+              email: addedCred.email || displayName,
               credentialId: addedCred.credentialId
             }
             return newResults
@@ -366,7 +350,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
               ...newResults[i],
               status: 'failed',
               error: extractErrorMessage(error),
-              email: undefined,
+              email: displayName,
               rollbackStatus,
               rollbackError,
             }

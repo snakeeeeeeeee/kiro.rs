@@ -93,6 +93,8 @@ type SortKey = AccountSortKey
 type SortOrder = 'asc' | 'desc'
 
 const COLUMN_STORAGE_KEY = 'kiro-admin-table-columns'
+const BALANCE_AUTO_REFRESH_STORAGE_KEY = 'kiro-admin-balance-auto-refresh'
+const BALANCE_AUTO_REFRESH_INTERVAL_STORAGE_KEY = 'kiro-admin-balance-auto-refresh-interval'
 const DEFAULT_VISIBLE_COLUMNS = [
   'auth',
   'subscription',
@@ -107,6 +109,13 @@ const DEFAULT_VISIBLE_COLUMNS = [
   'endpoint',
   'dynamicProxy',
   'actions',
+] as const
+
+const BALANCE_REFRESH_INTERVAL_OPTIONS = [
+  { value: 30_000, label: '30s' },
+  { value: 60_000, label: '60s' },
+  { value: 120_000, label: '2min' },
+  { value: 300_000, label: '5min' },
 ] as const
 
 type ColumnKey = AccountColumnKey
@@ -131,6 +140,16 @@ function credentialName(credential: CredentialStatusItem): string {
   return credential.email || credential.maskedApiKey || `凭据 #${credential.id}`
 }
 
+function formatClockTime(value: Date | null): string {
+  if (!value) return '尚未刷新'
+  return value.toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 export function Dashboard({ onLogout }: DashboardProps) {
   const [selectedCredentialId, setSelectedCredentialId] = useState<number | null>(null)
   const [balanceDialogOpen, setBalanceDialogOpen] = useState(false)
@@ -147,6 +166,16 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const balanceMapRef = useRef(balanceMap)
   const loadingBalanceIdsRef = useRef(loadingBalanceIds)
   const balanceFetchFailedIdsRef = useRef<Set<number>>(new Set())
+  const [autoBalanceRefreshEnabled, setAutoBalanceRefreshEnabled] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem(BALANCE_AUTO_REFRESH_STORAGE_KEY) === 'true'
+  })
+  const [autoBalanceRefreshIntervalMs, setAutoBalanceRefreshIntervalMs] = useState(() => {
+    if (typeof window === 'undefined') return 60_000
+    const saved = Number(window.localStorage.getItem(BALANCE_AUTO_REFRESH_INTERVAL_STORAGE_KEY))
+    return BALANCE_REFRESH_INTERVAL_OPTIONS.some(option => option.value === saved) ? saved : 60_000
+  })
+  const [lastBalanceRefreshAt, setLastBalanceRefreshAt] = useState<Date | null>(null)
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchRefreshProgress, setBatchRefreshProgress] = useState({ current: 0, total: 0 })
   const [exporting, setExporting] = useState(false)
@@ -285,6 +314,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const startIndex = (currentPage - 1) * itemsPerPage
   const endIndex = startIndex + itemsPerPage
   const currentCredentials = filteredCredentials.slice(startIndex, endIndex)
+  const currentBalanceIds = currentCredentials.map(credential => credential.id)
+  const currentBalanceIdsKey = currentBalanceIds.join('|')
   const currentBalanceFetchKey = currentCredentials
     .map(credential => `${credential.id}:${credential.usageLimit > 0 ? 'known' : 'missing'}`)
     .join('|')
@@ -303,6 +334,12 @@ export function Dashboard({ onLogout }: DashboardProps) {
     if (typeof window === 'undefined') return
     window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(Array.from(visibleColumns)))
   }, [visibleColumns])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(BALANCE_AUTO_REFRESH_STORAGE_KEY, String(autoBalanceRefreshEnabled))
+    window.localStorage.setItem(BALANCE_AUTO_REFRESH_INTERVAL_STORAGE_KEY, String(autoBalanceRefreshIntervalMs))
+  }, [autoBalanceRefreshEnabled, autoBalanceRefreshIntervalMs])
 
   useEffect(() => {
     fetchRuntimeStatus()
@@ -426,6 +463,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
     }
 
     if (succeeded > 0) {
+      setLastBalanceRefreshAt(new Date())
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
     }
     return { requested: candidates.length, succeeded, failed }
@@ -439,6 +477,17 @@ export function Dashboard({ onLogout }: DashboardProps) {
       void fetchBalancesForIds(ids)
     }
   }, [currentBalanceFetchKey])
+
+  useEffect(() => {
+    if (!autoBalanceRefreshEnabled || currentBalanceIds.length === 0 || typeof window === 'undefined') return
+
+    void fetchBalancesForIds(currentBalanceIds, { force: true })
+    const timer = window.setInterval(() => {
+      void fetchBalancesForIds(currentBalanceIds, { force: true })
+    }, autoBalanceRefreshIntervalMs)
+
+    return () => window.clearInterval(timer)
+  }, [autoBalanceRefreshEnabled, autoBalanceRefreshIntervalMs, currentBalanceIdsKey])
 
   const handleRefreshBalance = async (id: number) => {
     const result = await fetchBalancesForIds([id], { force: true })
@@ -1146,6 +1195,29 @@ export function Dashboard({ onLogout }: DashboardProps) {
                 <RefreshCw className={`h-4 w-4 ${currentPageBalanceLoading ? 'animate-spin' : ''}`} />
                 刷新当前页额度
               </Button>
+              <Button
+                variant={autoBalanceRefreshEnabled ? 'secondary' : 'outline'}
+                size="sm"
+                onClick={() => setAutoBalanceRefreshEnabled(enabled => !enabled)}
+                disabled={currentCredentials.length === 0}
+              >
+                <RefreshCw className={`h-4 w-4 ${autoBalanceRefreshEnabled && currentPageBalanceLoading ? 'animate-spin' : ''}`} />
+                额度自动刷新
+              </Button>
+              <select
+                value={autoBalanceRefreshIntervalMs}
+                onChange={event => setAutoBalanceRefreshIntervalMs(Number(event.target.value))}
+                disabled={!autoBalanceRefreshEnabled}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                title="额度自动刷新间隔"
+              >
+                {BALANCE_REFRESH_INTERVAL_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <span className="text-xs text-muted-foreground">
+                额度刷新：{autoBalanceRefreshEnabled ? `${BALANCE_REFRESH_INTERVAL_OPTIONS.find(option => option.value === autoBalanceRefreshIntervalMs)?.label || `${Math.round(autoBalanceRefreshIntervalMs / 1000)}s`} · ${formatClockTime(lastBalanceRefreshAt)}` : '手动'}
+              </span>
               <Button
                 variant="outline"
                 size="sm"

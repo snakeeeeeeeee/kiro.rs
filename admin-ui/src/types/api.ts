@@ -387,6 +387,9 @@ export interface BatchCredentialIdsRequest {
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken?: string
+  accessToken?: string
+  expiresAt?: string
+  profileArn?: string
   authMethod?: 'social' | 'idc' | 'api_key'
   clientId?: string
   clientSecret?: string
@@ -400,6 +403,12 @@ export interface AddCredentialRequest {
   proxyPassword?: string
   kiroApiKey?: string
   endpoint?: string
+  subscriptionTitle?: string
+  allowOverage?: boolean
+  overageWeight?: number
+  usageCurrent?: number
+  usageLimit?: number
+  overageStopped?: boolean
 }
 
 // 添加凭据响应
@@ -433,6 +442,11 @@ export interface ExportedCredential {
   disabled?: boolean
   kiroApiKey?: string
   endpoint?: string
+  allowOverage?: boolean
+  overageWeight?: number
+  usageCurrent?: number
+  usageLimit?: number
+  overageStopped?: boolean
 }
 
 export interface ExportCredentialsResponse {

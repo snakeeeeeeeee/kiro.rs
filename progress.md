@@ -472,3 +472,31 @@
 - `cargo test`: passed, 331 tests.
 - `pnpm --dir admin-ui build`: passed.
 - `git diff --check`: passed.
+
+## Completed: Account Import Compatibility and Email List Display
+- Added `admin-ui/src/lib/credential-import.ts` as the shared parser/normalizer for account imports.
+- Parser now accepts full JSON object, JSON array, `{accounts:[...]}`, `{credentials:[...]}`, one-object-per-line JSON, and consecutive pretty-printed JSON objects.
+- Normalization supports old nested `credentials` fields and new flat fields, including camelCase/snake_case variants, Kiro-Go `subscription`/`usage` wrappers, numeric expiration timestamps, proxy fields, endpoint, API key, and overage/quota snapshot fields.
+- Rewired both `batch-import-dialog.tsx` and `kam-import-dialog.tsx` to use the shared parser. The KAM dialog remains OAuth-refresh-token focused; the batch dialog supports OAuth and API Key records.
+- Extended frontend and backend `AddCredentialRequest` with import metadata fields: access token, expires at, profile ARN, subscription title, overage settings, and usage snapshot.
+- Updated Admin add-credential service and token manager add path so imported email, subscription title, quota snapshot, endpoint, proxy, and overage settings are preserved after OAuth refresh validation.
+- Account table now shows email as the primary account label when present, with API key/ID as secondary text.
+
+## Latest Validation: Account Import Compatibility
+- `pnpm --dir admin-ui build`: passed.
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- Parser smoke via TypeScript transpile in Node: passed for single object, array, wrapper, JSONL, consecutive pretty JSON, and compatibility field conversions.
+- `cargo test over_usage -- --nocapture`: passed, 3 tests.
+- `cargo test`: passed, 331 tests.
+- `git diff --check`: passed.
+- One attempted parser smoke using ad hoc regex removal of TypeScript types failed with a Node `SyntaxError`; validation was re-run with the actual TypeScript compiler transpilation path and passed.
+
+## Completed: Current-Page Balance Auto Refresh
+- Added a toolbar toggle for `额度自动刷新` alongside the existing manual `刷新当前页额度` button.
+- Added interval choices `30s`, `60s`, `2min`, and `5min`; the selected interval and enabled state are saved to browser local storage.
+- When enabled, the Admin page immediately refreshes the current page's balances and then repeats on the selected interval. Changing filters, page, or page size switches the timer to the new visible account IDs.
+- The toolbar shows the latest successful balance refresh time.
+
+## Latest Validation: Current-Page Balance Auto Refresh
+- `pnpm --dir admin-ui build`: passed.

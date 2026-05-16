@@ -62,6 +62,11 @@ function credentialName(credential: CredentialStatusItem): string {
   return credential.email || credential.maskedApiKey || `凭据 #${credential.id}`
 }
 
+function credentialSecondaryName(credential: CredentialStatusItem): string {
+  if (credential.email && credential.maskedApiKey) return credential.maskedApiKey
+  return `#${credential.id}`
+}
+
 function formatRelativeTime(value: string | null): string {
   if (!value) return '-'
   const date = new Date(value)
@@ -223,7 +228,7 @@ export function AccountTable({
                     <td className="sticky left-12 z-10 min-w-[260px] bg-card px-4 py-4">
                       <div className="space-y-1">
                         <div className="font-medium text-foreground">{credentialName(credential)}</div>
-                        <div className="text-xs text-muted-foreground">#{credential.id}</div>
+                        <div className="text-xs text-muted-foreground">{credentialSecondaryName(credential)}</div>
                       </div>
                     </td>
                     {columns.map(column => (

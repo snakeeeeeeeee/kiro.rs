@@ -677,10 +677,10 @@ impl AdminService {
         let email = req.email.clone();
         let new_cred = KiroCredentials {
             id: None,
-            access_token: None,
+            access_token: req.access_token,
             refresh_token: req.refresh_token,
-            profile_arn: None,
-            expires_at: None,
+            profile_arn: req.profile_arn,
+            expires_at: req.expires_at,
             auth_method: Some(req.auth_method),
             client_id: req.client_id,
             client_secret: req.client_secret,
@@ -690,18 +690,18 @@ impl AdminService {
             api_region: req.api_region,
             machine_id: req.machine_id,
             email: req.email,
-            subscription_title: None, // 将在首次获取使用额度时自动更新
+            subscription_title: req.subscription_title, // 后续余额查询会自动刷新
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,
             proxy_password: req.proxy_password,
             disabled: false, // 新添加的凭据默认启用
             kiro_api_key: req.kiro_api_key,
             endpoint,
-            allow_overage: false,
-            overage_weight: 0,
-            usage_current: 0.0,
-            usage_limit: 0.0,
-            overage_stopped: false,
+            allow_overage: req.allow_overage,
+            overage_weight: req.overage_weight,
+            usage_current: req.usage_current.unwrap_or(0.0).max(0.0),
+            usage_limit: req.usage_limit.unwrap_or(0.0).max(0.0),
+            overage_stopped: req.overage_stopped,
         };
 
         // 调用 token_manager 添加凭据

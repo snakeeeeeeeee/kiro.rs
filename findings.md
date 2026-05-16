@@ -263,3 +263,10 @@
 - In `kiro.rs`, persisted `CredentialPolicy` and `KiroCredentials` must stay synchronized. Dispatch checks read the credential fields, while Admin policy persistence writes SQLite policy columns; loading from SQLite must copy policy overage fields back into the credential object.
 - Balance cache hits still need to update the token manager's usage snapshot. Otherwise the Admin list can show quota data while dispatch continues using stale in-memory quota fields.
 - For the Admin list, the useful default is direct quota visibility. The detail dialog remains useful, but it should not be the only way to see usage.
+
+## Account Import Compatibility Findings
+- The previous batch import path tried `JSON.parse` whenever input started with `{` or `[`, so multiple JSON objects pasted on separate lines could fail before reaching the JSONL-style parser.
+- KAM/Kiro-Go exports can appear as flat records, arrays, `{accounts:[...]}`, `{credentials:[...]}`, or old records with nested `credentials`. A single shared parser avoids divergent compatibility between the KAM dialog and the generic batch import dialog.
+- Kiro-Go account exports use `subscription.title` / `usage.current` / `usage.limit`, while local and KAM-style records may use `subscriptionTitle`, `usageCurrent`, and `usageLimit`. Import normalization needs to accept both shapes.
+- Kiro-Go `expiresAt` can be a Unix timestamp in seconds or milliseconds, while local exports use RFC3339 strings. The UI normalizer converts numeric timestamps to ISO strings before sending to Admin API.
+- The account table already prefers `email` as the account name. The missing piece was preserving imported email through `AddCredentialRequest` and the token manager add path.
