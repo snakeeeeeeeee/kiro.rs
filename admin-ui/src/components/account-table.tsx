@@ -131,7 +131,7 @@ function quotaView(credential: CredentialStatusItem, balance?: BalanceResponse) 
   const current = balance?.currentUsage ?? credential.usageCurrent
   const limit = balance?.usageLimit ?? credential.usageLimit
   const percentage = limit > 0
-    ? Math.min(Math.max(balance?.usagePercentage ?? credential.usagePercentage, 0), 100)
+    ? Math.max(balance?.usagePercentage ?? credential.usagePercentage, 0)
     : 0
   const subscriptionTitle = balance?.subscriptionTitle || credential.subscriptionTitle || '-'
 
@@ -259,7 +259,7 @@ export function AccountTable({
                             </div>
                             {quota.hasQuota ? (
                               <>
-                                <Progress value={quota.percentage} className="h-2 rounded" />
+                                <Progress value={Math.min(quota.percentage, 100)} className="h-2 rounded" />
                                 <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                                   <span>
                                     {formatUsageValue(quota.current)} / {formatUsageValue(quota.limit)}

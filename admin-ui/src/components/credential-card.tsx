@@ -299,7 +299,7 @@ export function CredentialCard({
                 <span className="font-medium ml-1">
                   {balance.remaining.toFixed(2)} / {balance.usageLimit.toFixed(2)}
                   <span className="text-xs text-muted-foreground ml-1">
-                    ({(100 - balance.usagePercentage).toFixed(1)}% 剩余)
+                    ({balance.usagePercentage.toFixed(1)}% 已使用)
                   </span>
                 </span>
               ) : (

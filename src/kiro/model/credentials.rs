@@ -323,7 +323,7 @@ impl KiroCredentials {
         if self.usage_limit <= 0.0 {
             0.0
         } else {
-            (self.usage_current / self.usage_limit * 100.0).clamp(0.0, 100.0)
+            (self.usage_current / self.usage_limit * 100.0).max(0.0)
         }
     }
 

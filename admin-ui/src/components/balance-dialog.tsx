@@ -75,7 +75,7 @@ export function BalanceDialog({ credentialId, open, onOpenChange }: BalanceDialo
                 <span>已使用: ${formatNumber(balance.currentUsage)}</span>
                 <span>限额: ${formatNumber(balance.usageLimit)}</span>
               </div>
-              <Progress value={balance.usagePercentage} />
+              <Progress value={Math.min(Math.max(balance.usagePercentage, 0), 100)} />
               <div className="text-center text-sm text-muted-foreground">
                 {balance.usagePercentage.toFixed(1)}% 已使用
               </div>
