@@ -12,6 +12,11 @@ use crate::kiro::model::events::Event;
 use super::signed_thinking::{SignedThinkingCache, SignedThinkingMode};
 use super::usage::{AnthropicUsage, PendingVirtualUsage, VirtualCacheUsageManager};
 
+pub fn generate_anthropic_message_id() -> String {
+    let id = Uuid::new_v4().to_string().replace('-', "");
+    format!("msg_01{}", &id[..14])
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opus47RequestKind {
     ReasoningLike,
@@ -782,7 +787,7 @@ impl StreamContext {
         Self {
             state_manager: SseStateManager::new(),
             model: model.into(),
-            message_id: format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
+            message_id: generate_anthropic_message_id(),
             input_tokens,
             initial_usage: None,
             usage_shape: "anthropic".to_string(),
@@ -1691,7 +1696,7 @@ impl BufferedStreamContext {
             .take()
             .map(|builder| builder(final_input_tokens, 1, commit_usage));
 
-        // 更正 message_start 事件中的 input_tokens / usage
+        // 更正 message_start 和 message_delta 事件中的 input_tokens / usage
         for event in &mut self.event_buffer {
             if event.event == "message_start" {
                 if let Some(message) = event.data.get_mut("message") {
@@ -1702,6 +1707,10 @@ impl BufferedStreamContext {
                             usage["input_tokens"] = serde_json::json!(final_input_tokens);
                         }
                     }
+                }
+            } else if event.event == "message_delta" {
+                if let Some(final_usage) = &final_usage {
+                    event.data["usage"] = final_usage.to_json_with_shape(&self.usage_shape);
                 }
             }
         }
@@ -2765,5 +2774,11 @@ mod tests {
                 && e.data["delta"]["type"] == "text_delta"
                 && e.data["delta"]["text"] == "answer"
         }));
+    }
+
+    #[test]
+    fn message_ids_use_anthropic_msg_01_prefix() {
+        let ctx = StreamContext::new_with_thinking("test-model", 1, false, HashMap::new());
+        assert!(ctx.message_id.starts_with("msg_01"));
     }
 }

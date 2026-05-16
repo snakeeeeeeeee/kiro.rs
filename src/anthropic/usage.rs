@@ -98,13 +98,17 @@ impl AnthropicUsage {
                         "ephemeral_5m_input_tokens": self.ephemeral_5m_input_tokens,
                         "ephemeral_1h_input_tokens": self.ephemeral_1h_input_tokens
                     },
-                    "output_tokens": self.output_tokens
+                    "output_tokens": self.output_tokens,
+                    "service_tier": "standard",
+                    "inference_geo": "global"
                 })
             }
         } else {
             json!({
                 "input_tokens": self.input_tokens,
-                "output_tokens": self.output_tokens
+                "output_tokens": self.output_tokens,
+                "service_tier": "standard",
+                "inference_geo": "global"
             })
         }
     }
@@ -696,6 +700,18 @@ mod tests {
 
         assert_eq!(json["cache_creation_input_tokens"], 18_000);
         assert!(json.get("cache_creation").is_none());
+    }
+
+    #[test]
+    fn anthropic_usage_shape_includes_service_tier_and_geo() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let usage = manager.build_usage(&settings, input("session-a", 1000, CacheTtl::FiveMinutes));
+        let json = usage.to_json_with_shape("anthropic");
+
+        assert_eq!(json["service_tier"], "standard");
+        assert_eq!(json["inference_geo"], "global");
+        assert!(json.get("cache_creation").is_some());
     }
 
     #[test]

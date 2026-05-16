@@ -720,7 +720,7 @@ fn any_benchmark_compat_profile(settings: &RuntimeSettings) -> bool {
 
 pub fn effective_compat_usage_shape(settings: &RuntimeSettings) -> String {
     if any_benchmark_compat_profile(settings) {
-        "flat".to_string()
+        "anthropic".to_string()
     } else {
         normalize_compat_usage_shape(&settings.compat_usage_shape)
     }
@@ -1120,7 +1120,7 @@ mod tests {
         assert_eq!(effective_opus47_clean_probe_mode(&settings), "off");
         assert_eq!(effective_opus47_plain_stabilization_mode(&settings), "off");
         assert_eq!(effective_opus47_antml_probe_compat(&settings), "clarify");
-        assert_eq!(effective_compat_usage_shape(&settings), "flat");
+        assert_eq!(effective_compat_usage_shape(&settings), "anthropic");
         assert_eq!(effective_compat_thinking_model(&settings), "native");
         assert_eq!(effective_compat_models_shape(&settings), "aggregator");
     }
@@ -1177,7 +1177,7 @@ mod tests {
         assert_eq!(effective_opus46_detection_profile(&settings), "cc_max_like");
         assert_eq!(effective_opus46_antml_probe_compat(&settings), "clarify");
         assert_eq!(effective_sonnet46_detection_profile(&settings), "normal");
-        assert_eq!(effective_compat_usage_shape(&settings), "flat");
+        assert_eq!(effective_compat_usage_shape(&settings), "anthropic");
         assert_eq!(effective_compat_thinking_model(&settings), "native");
         assert_eq!(effective_compat_models_shape(&settings), "aggregator");
         assert!(!settings.prompt_dump_enabled);
@@ -1214,7 +1214,7 @@ mod tests {
 
         assert_eq!(effective_opus46_detection_profile(&settings), "cc_max_like");
         assert_eq!(effective_opus46_antml_probe_compat(&settings), "clarify");
-        assert_eq!(effective_compat_usage_shape(&settings), "flat");
+        assert_eq!(effective_compat_usage_shape(&settings), "anthropic");
         assert_eq!(effective_compat_thinking_model(&settings), "native");
         assert_eq!(effective_compat_models_shape(&settings), "aggregator");
 
@@ -1226,7 +1226,7 @@ mod tests {
             "cc_max_like"
         );
         assert_eq!(effective_sonnet46_antml_probe_compat(&settings), "clarify");
-        assert_eq!(effective_compat_usage_shape(&settings), "flat");
+        assert_eq!(effective_compat_usage_shape(&settings), "anthropic");
     }
 
     #[test]
