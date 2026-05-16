@@ -12,11 +12,9 @@ use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::{
     CredentialPolicy, RuntimeSettings, SameAccountRetryRule, normalize_dynamic_proxy_protocol,
     normalize_dynamic_proxy_provider, normalize_model46_detection_profile,
-    normalize_opus46_run_mode, normalize_opus47_antml_probe_compat,
-    normalize_opus47_clean_probe_mode, normalize_opus47_detection_profile,
-    normalize_opus47_plain_stabilization_mode, normalize_opus47_run_mode,
+    normalize_opus47_antml_probe_compat, normalize_opus47_clean_probe_mode,
+    normalize_opus47_detection_profile, normalize_opus47_plain_stabilization_mode,
     normalize_opus47_short_thinking_experiment, normalize_opus47_signed_thinking_preservation,
-    normalize_sonnet46_run_mode,
 };
 use crate::model::config::Config;
 
@@ -501,7 +499,6 @@ fn runtime_settings_pairs(
             "sessionAffinityTtlSecs",
             settings.session_affinity_ttl_secs.to_string(),
         ),
-        ("opus47RunMode", settings.opus47_run_mode.clone()),
         (
             "opus47PlainStabilizationMode",
             settings.opus47_plain_stabilization_mode.clone(),
@@ -538,7 +535,6 @@ fn runtime_settings_pairs(
             "opus47RawDebugMaxChars",
             settings.opus47_raw_debug_max_chars.to_string(),
         ),
-        ("opus46RunMode", settings.opus46_run_mode.clone()),
         (
             "opus46DetectionProfile",
             settings.opus46_detection_profile.clone(),
@@ -559,7 +555,6 @@ fn runtime_settings_pairs(
             "opus46RawDebugMaxChars",
             settings.opus46_raw_debug_max_chars.to_string(),
         ),
-        ("sonnet46RunMode", settings.sonnet46_run_mode.clone()),
         (
             "sonnet46DetectionProfile",
             settings.sonnet46_detection_profile.clone(),
@@ -757,7 +752,6 @@ fn apply_runtime_setting(
             settings.token_auto_refresh_window_secs = parse_u64(key, value)?
         }
         "sessionAffinityTtlSecs" => settings.session_affinity_ttl_secs = parse_u64(key, value)?,
-        "opus47RunMode" => settings.opus47_run_mode = normalize_opus47_run_mode(value),
         "opus47PlainStabilizationMode" => {
             settings.opus47_plain_stabilization_mode =
                 normalize_opus47_plain_stabilization_mode(value)
@@ -782,7 +776,6 @@ fn apply_runtime_setting(
         "opus47DiagnosticsEnabled" => settings.opus47_diagnostics_enabled = parse_bool(key, value)?,
         "opus47RawDebugEnabled" => settings.opus47_raw_debug_enabled = parse_bool(key, value)?,
         "opus47RawDebugMaxChars" => settings.opus47_raw_debug_max_chars = parse_usize(key, value)?,
-        "opus46RunMode" => settings.opus46_run_mode = normalize_opus46_run_mode(value),
         "opus46DetectionProfile" => {
             settings.opus46_detection_profile = normalize_model46_detection_profile(value)
         }
@@ -792,7 +785,6 @@ fn apply_runtime_setting(
         "opus46DiagnosticsEnabled" => settings.opus46_diagnostics_enabled = parse_bool(key, value)?,
         "opus46RawDebugEnabled" => settings.opus46_raw_debug_enabled = parse_bool(key, value)?,
         "opus46RawDebugMaxChars" => settings.opus46_raw_debug_max_chars = parse_usize(key, value)?,
-        "sonnet46RunMode" => settings.sonnet46_run_mode = normalize_sonnet46_run_mode(value),
         "sonnet46DetectionProfile" => {
             settings.sonnet46_detection_profile = normalize_model46_detection_profile(value)
         }
@@ -1148,7 +1140,6 @@ mod tests {
         updated.global_max_concurrent = 11;
         updated.per_account_default_max_concurrent = 4;
         updated.session_affinity_ttl_secs = 900;
-        updated.opus47_run_mode = "fast".to_string();
         updated.same_account_retry_rules = vec![SameAccountRetryRule {
             enabled: true,
             status: "408,500-599".to_string(),
@@ -1166,13 +1157,11 @@ mod tests {
         updated.opus47_diagnostics_enabled = false;
         updated.opus47_raw_debug_enabled = true;
         updated.opus47_raw_debug_max_chars = 12_345;
-        updated.opus46_run_mode = "benchmark".to_string();
         updated.opus46_detection_profile = "cc_max_like".to_string();
         updated.opus46_antml_probe_compat = "clarify".to_string();
         updated.opus46_diagnostics_enabled = false;
         updated.opus46_raw_debug_enabled = true;
         updated.opus46_raw_debug_max_chars = 23_456;
-        updated.sonnet46_run_mode = "fast".to_string();
         updated.sonnet46_detection_profile = "cc_max_like".to_string();
         updated.sonnet46_antml_probe_compat = "clarify".to_string();
         updated.sonnet46_diagnostics_enabled = false;
@@ -1198,7 +1187,6 @@ mod tests {
         assert_eq!(loaded.same_account_retry_rules[0].attempts, 1);
         assert_eq!(loaded.same_account_retry_rules[0].delay_ms, 1_250);
         assert!(!loaded.same_account_retry_rules[0].respect_retry_after);
-        assert_eq!(loaded.opus47_run_mode, "fast");
         assert_eq!(loaded.opus47_plain_stabilization_mode, "adaptive_low");
         assert_eq!(loaded.opus47_antml_probe_compat, "clarify");
         assert_eq!(loaded.opus47_clean_probe_mode, "clean");
@@ -1208,13 +1196,11 @@ mod tests {
         assert!(!loaded.opus47_diagnostics_enabled);
         assert!(loaded.opus47_raw_debug_enabled);
         assert_eq!(loaded.opus47_raw_debug_max_chars, 12_345);
-        assert_eq!(loaded.opus46_run_mode, "benchmark");
         assert_eq!(loaded.opus46_detection_profile, "cc_max_like");
         assert_eq!(loaded.opus46_antml_probe_compat, "clarify");
         assert!(!loaded.opus46_diagnostics_enabled);
         assert!(loaded.opus46_raw_debug_enabled);
         assert_eq!(loaded.opus46_raw_debug_max_chars, 23_456);
-        assert_eq!(loaded.sonnet46_run_mode, "fast");
         assert_eq!(loaded.sonnet46_detection_profile, "cc_max_like");
         assert_eq!(loaded.sonnet46_antml_probe_compat, "clarify");
         assert!(!loaded.sonnet46_diagnostics_enabled);

@@ -627,8 +627,6 @@ pub struct ManagerSnapshot {
     /// 会话亲和绑定 TTL
     pub session_affinity_ttl_secs: u64,
     pub allow_over_usage: bool,
-    /// Opus 4.7 运行模式
-    pub opus47_run_mode: String,
     /// Opus 4.7 plain 稳定模式
     pub opus47_plain_stabilization_mode: String,
     /// Opus 4.7 ANTML 探针兼容模式
@@ -647,8 +645,6 @@ pub struct ManagerSnapshot {
     pub opus47_raw_debug_enabled: bool,
     /// Opus 4.7 原始调试日志单字段最大字符数
     pub opus47_raw_debug_max_chars: usize,
-    /// Opus 4.6 运行模式
-    pub opus46_run_mode: String,
     /// Opus 4.6 检测 profile
     pub opus46_detection_profile: String,
     /// Opus 4.6 ANTML 探针兼容模式
@@ -659,8 +655,6 @@ pub struct ManagerSnapshot {
     pub opus46_raw_debug_enabled: bool,
     /// Opus 4.6 原始调试日志单字段最大字符数
     pub opus46_raw_debug_max_chars: usize,
-    /// Sonnet 4.6 运行模式
-    pub sonnet46_run_mode: String,
     /// Sonnet 4.6 检测 profile
     pub sonnet46_detection_profile: String,
     /// Sonnet 4.6 ANTML 探针兼容模式
@@ -2359,7 +2353,6 @@ impl MultiTokenManager {
             token_auto_refresh_interval_secs: settings.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: settings.token_auto_refresh_window_secs,
             session_affinity_ttl_secs: settings.session_affinity_ttl_secs,
-            opus47_run_mode: settings.opus47_run_mode,
             opus47_plain_stabilization_mode: settings.opus47_plain_stabilization_mode,
             opus47_antml_probe_compat: settings.opus47_antml_probe_compat,
             opus47_clean_probe_mode: settings.opus47_clean_probe_mode,
@@ -2369,13 +2362,11 @@ impl MultiTokenManager {
             opus47_diagnostics_enabled: settings.opus47_diagnostics_enabled,
             opus47_raw_debug_enabled: settings.opus47_raw_debug_enabled,
             opus47_raw_debug_max_chars: settings.opus47_raw_debug_max_chars,
-            opus46_run_mode: settings.opus46_run_mode,
             opus46_detection_profile: settings.opus46_detection_profile,
             opus46_antml_probe_compat: settings.opus46_antml_probe_compat,
             opus46_diagnostics_enabled: settings.opus46_diagnostics_enabled,
             opus46_raw_debug_enabled: settings.opus46_raw_debug_enabled,
             opus46_raw_debug_max_chars: settings.opus46_raw_debug_max_chars,
-            sonnet46_run_mode: settings.sonnet46_run_mode,
             sonnet46_detection_profile: settings.sonnet46_detection_profile,
             sonnet46_antml_probe_compat: settings.sonnet46_antml_probe_compat,
             sonnet46_diagnostics_enabled: settings.sonnet46_diagnostics_enabled,

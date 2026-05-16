@@ -69,7 +69,6 @@ export interface RuntimeStatusResponse {
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
-  opus47RunMode: 'custom' | 'benchmark' | 'fast'
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47AntmlProbeCompat: 'off' | 'clarify'
   opus47CleanProbeMode: 'off' | 'clean'
@@ -79,13 +78,11 @@ export interface RuntimeStatusResponse {
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
-  opus46RunMode: 'custom' | 'benchmark' | 'fast'
   opus46DetectionProfile: 'normal' | 'cc_max_like'
   opus46AntmlProbeCompat: 'off' | 'clarify'
   opus46DiagnosticsEnabled: boolean
   opus46RawDebugEnabled: boolean
   opus46RawDebugMaxChars: number
-  sonnet46RunMode: 'custom' | 'benchmark' | 'fast'
   sonnet46DetectionProfile: 'normal' | 'cc_max_like'
   sonnet46AntmlProbeCompat: 'off' | 'clarify'
   sonnet46DiagnosticsEnabled: boolean
@@ -305,7 +302,6 @@ export interface RuntimeSettings {
   tokenAutoRefreshIntervalSecs: number
   tokenAutoRefreshWindowSecs: number
   sessionAffinityTtlSecs: number
-  opus47RunMode: 'custom' | 'benchmark' | 'fast'
   opus47PlainStabilizationMode: 'off' | 'adaptive_low' | 'adaptive_high'
   opus47AntmlProbeCompat: 'off' | 'clarify'
   opus47CleanProbeMode: 'off' | 'clean'
@@ -315,13 +311,11 @@ export interface RuntimeSettings {
   opus47DiagnosticsEnabled: boolean
   opus47RawDebugEnabled: boolean
   opus47RawDebugMaxChars: number
-  opus46RunMode: 'custom' | 'benchmark' | 'fast'
   opus46DetectionProfile: 'normal' | 'cc_max_like'
   opus46AntmlProbeCompat: 'off' | 'clarify'
   opus46DiagnosticsEnabled: boolean
   opus46RawDebugEnabled: boolean
   opus46RawDebugMaxChars: number
-  sonnet46RunMode: 'custom' | 'benchmark' | 'fast'
   sonnet46DetectionProfile: 'normal' | 'cc_max_like'
   sonnet46AntmlProbeCompat: 'off' | 'clarify'
   sonnet46DiagnosticsEnabled: boolean

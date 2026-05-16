@@ -21,7 +21,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'allowOverUsage' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46RunMode' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46RunMode' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'allowOverUsage' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -302,24 +302,6 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-medium">运行模式</label>
-                  <select
-                    value={form.opus47RunMode}
-                    onChange={event =>
-                      setForm(prev => prev ? { ...prev, opus47RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
-                    }
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  >
-                    <option value="custom">自定义</option>
-                    <option value="benchmark">跑分模式</option>
-                    <option value="fast">极速模式</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    跑分模式使用 cctest/hvoy 兼容预设；极速模式保留客户端 thinking/tools/history/token/effort，只启用 ANTML Clarify。
-                  </p>
-                </div>
-
                 <div className="space-y-2">
                   <label className="text-sm font-medium">检测 Profile</label>
                   <select
@@ -351,7 +333,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     <option value="clarify">Clarify</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    跑分模式、极速模式和 CC Max Like 会 effective 为 Clarify。
+                    CC Max Like 会 effective 为 Clarify。
                   </p>
                 </div>
 
@@ -466,29 +448,11 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold">Opus 4.6 兼容策略</h3>
                 <p className="text-xs text-muted-foreground">
-                  这些选项只影响 claude-opus-4-6；跑分模式才启用身份探针工具清理和通用兼容预设。
+                  这些选项只影响 claude-opus-4-6。
                 </p>
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-medium">运行模式</label>
-                  <select
-                    value={form.opus46RunMode}
-                    onChange={event =>
-                      setForm(prev => prev ? { ...prev, opus46RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
-                    }
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  >
-                    <option value="custom">自定义</option>
-                    <option value="benchmark">跑分模式</option>
-                    <option value="fast">极速模式</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    跑分模式启用 CC Max Like、ANTML Clarify、flat usage、aggregator models；极速模式保留客户端参数，只启用 ANTML Clarify。
-                  </p>
-                </div>
-
                 <div className="space-y-2">
                   <label className="text-sm font-medium">检测 Profile</label>
                   <select
@@ -516,7 +480,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     <option value="clarify">Clarify</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    跑分模式、极速模式和 CC Max Like 会 effective 为 Clarify。
+                    CC Max Like 会 effective 为 Clarify。
                   </p>
                 </div>
 
@@ -571,24 +535,6 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-medium">运行模式</label>
-                  <select
-                    value={form.sonnet46RunMode}
-                    onChange={event =>
-                      setForm(prev => prev ? { ...prev, sonnet46RunMode: event.target.value as 'custom' | 'benchmark' | 'fast' } : prev)
-                    }
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  >
-                    <option value="custom">自定义</option>
-                    <option value="benchmark">跑分模式</option>
-                    <option value="fast">极速模式</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    跑分模式启用 CC Max Like、身份探针兼容和通用兼容预设；极速模式保留客户端参数，只启用 ANTML Clarify。
-                  </p>
-                </div>
-
                 <div className="space-y-2">
                   <label className="text-sm font-medium">检测 Profile</label>
                   <select
@@ -616,7 +562,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     <option value="clarify">Clarify</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    跑分模式、极速模式和 CC Max Like 会 effective 为 Clarify。
+                    CC Max Like 会 effective 为 Clarify。
                   </p>
                 </div>
 
@@ -666,7 +612,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold">Prompt Dump</h3>
                 <p className="text-xs text-muted-foreground">
-                  手动落盘用户 prompt、文档内容和上游响应；不会被运行模式自动切换。
+                  手动落盘用户 prompt、文档内容和上游响应。
                 </p>
               </div>
 
@@ -721,7 +667,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold">通用兼容形态</h3>
                 <p className="text-xs text-muted-foreground">
-                  这些选项影响 usage、thinking 响应形态和模型列表形态；Opus 4.7 跑分模式可能覆盖 effective 值。
+                  这些选项影响 usage、thinking 响应形态和模型列表形态。
                 </p>
               </div>
 

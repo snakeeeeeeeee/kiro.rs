@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn opus47_fast_mode_preserves_client_thinking() {
+    fn opus47_preserves_client_thinking() {
         let mut payload = request_with_content(
             "claude-opus-4-7",
             "<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>\n请尽快回答",
@@ -548,8 +548,7 @@ mod tests {
             effort: "high".to_string(),
             format: None,
         });
-        let mut settings = RuntimeSettings::from_config(&Config::default());
-        settings.opus47_run_mode = "fast".to_string();
+        let settings = RuntimeSettings::from_config(&Config::default());
         let client_requested_thinking =
             client_requested_thinking_for_request("claude-opus-4-7", &payload);
 
@@ -576,10 +575,9 @@ mod tests {
     }
 
     #[test]
-    fn opus47_thinking_fast_mode_uses_default_adaptive_when_client_did_not_specify() {
+    fn opus47_thinking_model_uses_default_adaptive_when_client_did_not_specify() {
         let mut payload = request("claude-opus-4-7-thinking");
-        let mut settings = RuntimeSettings::from_config(&Config::default());
-        settings.opus47_run_mode = "fast".to_string();
+        let settings = RuntimeSettings::from_config(&Config::default());
 
         override_thinking_from_model_name(&mut payload, &settings);
 
@@ -782,15 +780,15 @@ mod tests {
     }
 
     #[test]
-    fn model46_fast_mode_enables_antml_clarify_effectively() {
+    fn model46_cc_max_like_enables_antml_clarify_effectively() {
         for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
             let payload = request_with_content(model, ANTML_PROBE);
             let mut conversion_result = convert_request(&payload).unwrap();
             let mut settings = RuntimeSettings::from_config(&Config::default());
             if model.contains("sonnet") {
-                settings.sonnet46_run_mode = "fast".to_string();
+                settings.sonnet46_detection_profile = "cc_max_like".to_string();
             } else {
-                settings.opus46_run_mode = "fast".to_string();
+                settings.opus46_detection_profile = "cc_max_like".to_string();
             }
 
             let mode = apply_opus47_antml_probe_compat(
@@ -931,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_probe_compat_applies_to_model46_benchmark_profiles_and_clears_tools() {
+    fn identity_probe_compat_applies_to_model46_cc_max_like_profiles_and_clears_tools() {
         for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
             let mut payload = request_with_content(model, "用一句话介绍你自己，包含标题和描述");
             payload.tools = Some(vec![super::super::types::Tool {
@@ -945,9 +943,9 @@ mod tests {
             let mut conversion_result = convert_request(&payload).unwrap();
             let mut settings = RuntimeSettings::from_config(&Config::default());
             if model.contains("sonnet") {
-                settings.sonnet46_run_mode = "benchmark".to_string();
+                settings.sonnet46_detection_profile = "cc_max_like".to_string();
             } else {
-                settings.opus46_run_mode = "benchmark".to_string();
+                settings.opus46_detection_profile = "cc_max_like".to_string();
             }
 
             assert!(apply_opus47_identity_probe_compat(
@@ -987,17 +985,12 @@ mod tests {
                 &payload,
             ));
 
-            let mut fast_settings = model46_cc_max_like_settings(model);
-            if model.contains("sonnet") {
-                fast_settings.sonnet46_run_mode = "fast".to_string();
-            } else {
-                fast_settings.opus46_run_mode = "fast".to_string();
-            }
+            let cc_max_like_settings = model46_cc_max_like_settings(model);
             let mut conversion_result = convert_request(&payload).unwrap();
             assert!(apply_opus47_identity_probe_compat(
                 &mut conversion_result.conversation_state,
                 model,
-                &fast_settings,
+                &cc_max_like_settings,
                 &payload,
             ));
         }
@@ -1272,7 +1265,7 @@ mod tests {
         let payload = request_with_content("claude-sonnet-4-6", ANTML_PROBE);
         let mut conversion_result = convert_request(&payload).unwrap();
         let mut settings = RuntimeSettings::from_config(&Config::default());
-        settings.sonnet46_run_mode = "benchmark".to_string();
+        settings.sonnet46_detection_profile = "cc_max_like".to_string();
 
         let mode = apply_opus47_antml_probe_compat(
             &mut conversion_result.conversation_state,
@@ -1752,7 +1745,6 @@ pub async fn post_messages(
         conversion_options.clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment.as_str(),
-        run_mode_for_model(&runtime_settings, &requested_model),
         &conversion_result.conversation_state,
     );
 
@@ -3225,7 +3217,7 @@ async fn handle_non_stream_request(
 /// - 其他模型：覆写为 enabled 类型
 fn override_thinking_from_model_name(
     payload: &mut MessagesRequest,
-    settings: &crate::kiro::settings::RuntimeSettings,
+    _settings: &crate::kiro::settings::RuntimeSettings,
 ) {
     let model_lower = payload.model.to_lowercase();
     if !model_lower.contains("thinking") {
@@ -3245,7 +3237,6 @@ fn override_thinking_from_model_name(
     {
         tracing::info!(
             model = %payload.model,
-            run_mode = %settings.opus47_run_mode,
             thinking_type = payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
             budget_tokens = payload.thinking.as_ref().map(|t| t.budget_tokens),
             effort = payload.output_config.as_ref().map(|c| c.effort.as_str()),
@@ -3265,7 +3256,6 @@ fn override_thinking_from_model_name(
         model = %payload.model,
         thinking_type = thinking_type,
         budget_tokens,
-        run_mode = %settings.opus47_run_mode,
         "模型名包含 thinking 后缀，覆写 thinking 配置"
     );
 
@@ -3295,7 +3285,7 @@ fn normalize_opus47_client_thinking(
     payload: &mut MessagesRequest,
     requested_model: &str,
     client_requested_thinking: bool,
-    settings: &crate::kiro::settings::RuntimeSettings,
+    _settings: &crate::kiro::settings::RuntimeSettings,
 ) {
     if !client_requested_thinking || !is_compat_diagnostics_model_name(requested_model) {
         return;
@@ -3303,7 +3293,6 @@ fn normalize_opus47_client_thinking(
 
     tracing::info!(
         model = %requested_model,
-        run_mode = %run_mode_for_model(settings, requested_model),
         thinking_type = payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
         budget_tokens = payload.thinking.as_ref().map(|t| t.budget_tokens),
         effort = payload.output_config.as_ref().map(|c| c.effort.as_str()),
@@ -3322,7 +3311,6 @@ fn log_opus47_request_thinking_state(
     clean_probe_mode: bool,
     identity_probe_applied: bool,
     short_thinking_experiment: &str,
-    run_mode: &str,
     conversation_state: &ConversationState,
 ) {
     if !is_compat_diagnostics_model_name(requested_model) {
@@ -3346,7 +3334,6 @@ fn log_opus47_request_thinking_state(
         stabilization_mode,
         detection_profile,
         compat_thinking_model,
-        run_mode,
         clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment,
@@ -3415,19 +3402,6 @@ fn is_plain_probe_compat_model_name(model: &str) -> bool {
     is_plain_opus47_model_name(model)
         || is_plain_opus46_model_name(model)
         || is_plain_sonnet46_model_name(model)
-}
-
-fn run_mode_for_model<'a>(
-    settings: &'a crate::kiro::settings::RuntimeSettings,
-    model: &str,
-) -> &'a str {
-    if is_opus46_model_name(model) {
-        settings.opus46_run_mode.as_str()
-    } else if is_sonnet46_model_name(model) {
-        settings.sonnet46_run_mode.as_str()
-    } else {
-        settings.opus47_run_mode.as_str()
-    }
 }
 
 fn effective_detection_profile_for_model(
@@ -4486,7 +4460,6 @@ pub async fn post_messages_cc(
         conversion_options.clean_probe_mode,
         identity_probe_applied,
         short_thinking_experiment.as_str(),
-        run_mode_for_model(&runtime_settings, &requested_model),
         &conversion_result.conversation_state,
     );
 

@@ -161,10 +161,6 @@ pub struct Config {
     #[serde(default = "default_session_affinity_ttl_secs")]
     pub session_affinity_ttl_secs: u64,
 
-    /// Opus 4.7 运行模式："custom"、"benchmark" 或 "fast"
-    #[serde(default = "default_opus47_run_mode")]
-    pub opus47_run_mode: String,
-
     /// Opus 4.7 plain 稳定模式："off"、"adaptive_low" 或 "adaptive_high"
     #[serde(default = "default_opus47_plain_stabilization_mode")]
     pub opus47_plain_stabilization_mode: String,
@@ -201,10 +197,6 @@ pub struct Config {
     #[serde(default = "default_opus47_raw_debug_max_chars")]
     pub opus47_raw_debug_max_chars: usize,
 
-    /// Opus 4.6 运行模式："custom"、"benchmark" 或 "fast"
-    #[serde(default = "default_opus46_run_mode")]
-    pub opus46_run_mode: String,
-
     /// Opus 4.6 检测 profile："normal" 或 "cc_max_like"
     #[serde(default = "default_opus46_detection_profile")]
     pub opus46_detection_profile: String,
@@ -224,10 +216,6 @@ pub struct Config {
     /// Opus 4.6 原始调试日志单字段最大字符数
     #[serde(default = "default_opus46_raw_debug_max_chars")]
     pub opus46_raw_debug_max_chars: usize,
-
-    /// Sonnet 4.6 运行模式："custom"、"benchmark" 或 "fast"
-    #[serde(default = "default_sonnet46_run_mode")]
-    pub sonnet46_run_mode: String,
 
     /// Sonnet 4.6 检测 profile："normal" 或 "cc_max_like"
     #[serde(default = "default_sonnet46_detection_profile")]
@@ -529,10 +517,6 @@ fn default_session_affinity_ttl_secs() -> u64 {
     3_600
 }
 
-fn default_opus47_run_mode() -> String {
-    "custom".to_string()
-}
-
 fn default_opus47_plain_stabilization_mode() -> String {
     "off".to_string()
 }
@@ -565,10 +549,6 @@ fn default_opus47_raw_debug_max_chars() -> usize {
     20_000
 }
 
-fn default_opus46_run_mode() -> String {
-    "custom".to_string()
-}
-
 fn default_opus46_detection_profile() -> String {
     "normal".to_string()
 }
@@ -583,10 +563,6 @@ fn default_opus46_diagnostics_enabled() -> bool {
 
 fn default_opus46_raw_debug_max_chars() -> usize {
     20_000
-}
-
-fn default_sonnet46_run_mode() -> String {
-    "custom".to_string()
 }
 
 fn default_sonnet46_detection_profile() -> String {
@@ -796,7 +772,6 @@ impl Default for Config {
             token_auto_refresh_interval_secs: default_token_auto_refresh_interval_secs(),
             token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),
             session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
-            opus47_run_mode: default_opus47_run_mode(),
             opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
             opus47_antml_probe_compat: default_opus47_antml_probe_compat(),
             opus47_clean_probe_mode: default_opus47_clean_probe_mode(),
@@ -806,13 +781,11 @@ impl Default for Config {
             opus47_diagnostics_enabled: default_opus47_diagnostics_enabled(),
             opus47_raw_debug_enabled: false,
             opus47_raw_debug_max_chars: default_opus47_raw_debug_max_chars(),
-            opus46_run_mode: default_opus46_run_mode(),
             opus46_detection_profile: default_opus46_detection_profile(),
             opus46_antml_probe_compat: default_opus46_antml_probe_compat(),
             opus46_diagnostics_enabled: default_opus46_diagnostics_enabled(),
             opus46_raw_debug_enabled: false,
             opus46_raw_debug_max_chars: default_opus46_raw_debug_max_chars(),
-            sonnet46_run_mode: default_sonnet46_run_mode(),
             sonnet46_detection_profile: default_sonnet46_detection_profile(),
             sonnet46_antml_probe_compat: default_sonnet46_antml_probe_compat(),
             sonnet46_diagnostics_enabled: default_sonnet46_diagnostics_enabled(),
