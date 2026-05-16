@@ -1,5 +1,10 @@
 # Findings
 
+## CCTest Regression Baseline: 1ba06f6
+- Server A/B test found commit `1ba06f6` (`2026/05/14 07:44`, "流式 identity 文本里还会残留 sonnet") can pass the current CCTest LLM fingerprint validation.
+- Earlier server test of `3a8d4ff` (`2026/05/14 07:23`, "保住当前 23/30 基线") did not pass, so the known-good point is now `1ba06f6`, not `3a8d4ff`.
+- Regression analysis should compare `1ba06f6..HEAD`, focusing on Anthropic envelope shape, identity normalization, model-family leakage, usage/cache fields, thinking/signature exposure, and model/run-mode presets.
+
 ## Current Task Findings
 - Opus 4.7 run mode should be implemented as an effective preset layer. It must not rewrite persisted granular settings, and it must not toggle Prompt Dump or raw debug automatically.
 - Fast mode should not use `diagnose` signed-thinking, because `diagnose` still observes/logs signature state; effective signed-thinking is `off` for lowest overhead.

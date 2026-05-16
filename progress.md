@@ -1,6 +1,7 @@
 # Progress
 
 ## Session Log
+- 2026-05-17 04:53 CST: User reported server A/B result that known commit `1ba06f6` passes current CCTest LLM fingerprint validation, while `3a8d4ff` did not. Started comparing `1ba06f6..HEAD` for likely regression causes.
 - Started implementing the approved Opus 4.6 / Sonnet 4.6 compatibility plan. Initial code read confirmed no source edits existed yet; untracked `scripts/prompt_leak_conversation_probe.py` and `tmp/` are treated as user artifacts and will not be touched.
 - Found the PDF exact duplicate-output bug in both streaming paths: `assistant_text` is populated for PDF diagnostics while the same assistant events are already forwarded, then stream finalization replays `assistant_text` as a synthetic assistant response. Fix will split PDF diagnostics text from buffered identity/ANTML text.
 - Started implementing Opus 4.7 run mode presets. Goal: `custom` keeps existing knobs, `benchmark` applies current scoring-friendly effective behavior, `fast` prioritizes latency, and Prompt Dump remains independently controlled by its manual runtime setting.
