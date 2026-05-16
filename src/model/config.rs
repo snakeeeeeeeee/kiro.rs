@@ -133,6 +133,10 @@ pub struct Config {
     #[serde(default = "default_max_retry_accounts")]
     pub max_retry_accounts: usize,
 
+    /// 是否允许已达到本地额度快照上限的账号继续参与调度
+    #[serde(default)]
+    pub allow_over_usage: bool,
+
     /// 模型容量不足后的模型级冷却时间（毫秒）
     #[serde(default = "default_model_capacity_cooldown_ms")]
     pub model_capacity_cooldown_ms: u64,
@@ -413,12 +417,13 @@ pub struct Config {
     pub extract_thinking: bool,
 
     /// 默认端点名称（凭据未显式指定 endpoint 时使用，默认 "ide"）
+    /// 支持：ide / codewhisperer / amazonq
     #[serde(default = "default_endpoint")]
     pub default_endpoint: String,
 
     /// 端点特定的配置
     ///
-    /// 键为端点名（如 "ide" / "cli"），值为该端点自由定义的参数对象。
+    /// 键为端点名（如 "ide" / "codewhisperer" / "amazonq"），值为该端点自由定义的参数对象。
     /// 未在此表出现的端点沿用实现内置默认值。
     #[serde(default)]
     pub endpoints: HashMap<String, serde_json::Value>,
@@ -784,6 +789,7 @@ impl Default for Config {
             rate_limit_cooldown_ms: default_rate_limit_cooldown_ms(),
             transient_cooldown_ms: default_transient_cooldown_ms(),
             max_retry_accounts: default_max_retry_accounts(),
+            allow_over_usage: false,
             model_capacity_cooldown_ms: default_model_capacity_cooldown_ms(),
             same_account_retry_rules: default_same_account_retry_rules(),
             token_auto_refresh_enabled: default_token_auto_refresh_enabled(),

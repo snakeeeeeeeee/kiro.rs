@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Clock3, Loader2, Network } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,9 +11,9 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { useRuntimeSettings, useSetRuntimeSettings } from '@/hooks/use-credentials'
+import { useEndpoints, useRuntimeSettings, useSetRuntimeSettings, useTestEndpointLatency } from '@/hooks/use-credentials'
 import { extractErrorMessage } from '@/lib/utils'
-import type { RuntimeSettings } from '@/types/api'
+import type { EndpointLatencyResponse, EndpointName, RuntimeSettings } from '@/types/api'
 
 interface RuntimeSettingsDialogProps {
   open: boolean
@@ -20,7 +21,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46RunMode' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46RunMode' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'allowOverUsage' | 'sameAccountRetryRules' | 'opus47RunMode' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46RunMode' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46RunMode' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -60,8 +61,11 @@ type NumberSettingKey = (typeof numberFields)[number]['key'] | 'opus47RawDebugMa
 
 export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDialogProps) {
   const { data, isLoading } = useRuntimeSettings()
+  const { data: endpointData } = useEndpoints()
   const setRuntimeSettings = useSetRuntimeSettings()
+  const testEndpointLatency = useTestEndpointLatency()
   const [form, setForm] = useState<RuntimeSettings | null>(null)
+  const [latencyResults, setLatencyResults] = useState<Record<string, EndpointLatencyResponse>>({})
 
   useEffect(() => {
     if (data && open) {
@@ -86,6 +90,22 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
       },
       onError: error => {
         toast.error(`保存失败: ${extractErrorMessage(error)}`)
+      },
+    })
+  }
+
+  const handleTestEndpoint = (endpoint: string) => {
+    testEndpointLatency.mutate(endpoint, {
+      onSuccess: result => {
+        setLatencyResults(prev => ({ ...prev, [endpoint]: result }))
+        if (result.networkOk) {
+          toast.success(`${result.label} ${result.latencyMs}ms`)
+        } else {
+          toast.error(`${result.label} 测试失败: ${result.error || '网络不可用'}`)
+        }
+      },
+      onError: error => {
+        toast.error(`测试失败: ${extractErrorMessage(error)}`)
       },
     })
   }
@@ -159,6 +179,75 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
             <div className="py-10 text-center text-sm text-muted-foreground">加载中...</div>
           ) : (
             <div className="grid gap-4 md:grid-cols-2">
+            <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold">上游端点</h3>
+                  <p className="text-xs text-muted-foreground">
+                    未单独指定端点的账号会使用这里的默认端点；测试只探测网络延迟。
+                  </p>
+                </div>
+                <Network className="h-5 w-5 text-muted-foreground" />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">默认端点</label>
+                  <select
+                    value={form.defaultEndpoint}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, defaultEndpoint: event.target.value as EndpointName } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    {(endpointData?.endpoints || [
+                      { name: 'ide', label: 'Kiro IDE', apiUrl: '', isDefault: form.defaultEndpoint === 'ide' },
+                      { name: 'codewhisperer', label: 'CodeWhisperer', apiUrl: '', isDefault: form.defaultEndpoint === 'codewhisperer' },
+                      { name: 'amazonq', label: 'AmazonQ', apiUrl: '', isDefault: form.defaultEndpoint === 'amazonq' },
+                    ]).map(endpoint => (
+                      <option key={endpoint.name} value={endpoint.name}>{endpoint.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid gap-2">
+                  {(endpointData?.endpoints || []).map(endpoint => {
+                    const result = latencyResults[endpoint.name]
+                    const pending = testEndpointLatency.isPending && testEndpointLatency.variables === endpoint.name
+                    return (
+                      <div key={endpoint.name} className="grid gap-2 rounded-md border bg-background p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium">{endpoint.label}</span>
+                            {form.defaultEndpoint === endpoint.name && (
+                              <span className="rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground">默认</span>
+                            )}
+                            {result && (
+                              <span className={result.networkOk ? 'text-xs text-emerald-600' : 'text-xs text-destructive'}>
+                                {result.networkOk ? `${result.latencyMs}ms · HTTP ${result.status ?? '-'}` : result.error}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 truncate text-xs text-muted-foreground">{endpoint.apiUrl}</div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleTestEndpoint(endpoint.name)}
+                          disabled={pending}
+                          title={`测试 ${endpoint.label} 延迟`}
+                        >
+                          {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock3 className="h-4 w-4" />}
+                          测试
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </section>
+
             <div className="space-y-2">
               <label className="text-sm font-medium">负载模式</label>
               <select
@@ -185,6 +274,23 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="enabled">启用</option>
                 <option value="disabled">关闭</option>
               </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">允许超额调度</label>
+              <select
+                value={form.allowOverUsage ? 'enabled' : 'disabled'}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, allowOverUsage: event.target.value === 'enabled' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="disabled">关闭</option>
+                <option value="enabled">启用</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                启用后，本地额度快照已满的账号仍可参与调度；上游返回 OVERAGE 时会停止该账号透支。
+              </p>
             </div>
 
             <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">

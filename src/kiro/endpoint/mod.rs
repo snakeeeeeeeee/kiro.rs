@@ -6,13 +6,17 @@
 //! [`KiroEndpoint`] 抽象了请求侧的差异点；`KiroProvider` 持有一个 endpoint 注册表，
 //! 按凭据的 `endpoint` 字段选择对应实现。
 
+use std::sync::Arc;
+
 use reqwest::RequestBuilder;
 
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::model::config::Config;
 
+pub mod aws;
 pub mod ide;
 
+pub use aws::{AmazonQEndpoint, CodeWhispererEndpoint};
 pub use ide::IdeEndpoint;
 
 /// Kiro 端点
@@ -50,10 +54,71 @@ pub trait KiroEndpoint: Send + Sync {
         default_is_monthly_request_limit(body)
     }
 
+    /// 判断响应体是否表示"透支被上游拒绝"（关闭账号级透支，不禁用凭据）
+    fn is_overage_limit(&self, body: &str) -> bool {
+        default_is_overage_limit(body)
+    }
+
     /// 判断响应体是否表示"上游 bearer token 失效"（触发强制刷新）
     fn is_bearer_token_invalid(&self, body: &str) -> bool {
         default_is_bearer_token_invalid(body)
     }
+}
+
+/// 可注册的上游端点名称。
+pub const SUPPORTED_ENDPOINT_NAMES: &[&str] = &["ide", "codewhisperer", "amazonq"];
+
+/// 构建默认端点注册表。
+pub fn default_endpoints() -> Vec<Arc<dyn KiroEndpoint>> {
+    vec![
+        Arc::new(IdeEndpoint::new()),
+        Arc::new(CodeWhispererEndpoint::new()),
+        Arc::new(AmazonQEndpoint::new()),
+    ]
+}
+
+/// 规范化端点名称。未知名称保持原值，用于后续校验和错误提示。
+pub fn normalize_endpoint_name(name: &str) -> String {
+    let trimmed = name.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "" => "ide".to_string(),
+        "kiro" | "kiro-ide" | "kiro_ide" => "ide".to_string(),
+        "cw" | "code-whisperer" | "code_whisperer" => "codewhisperer".to_string(),
+        "amazon-q" | "amazon_q" | "q" => "amazonq".to_string(),
+        _ => trimmed,
+    }
+}
+
+pub fn is_supported_endpoint_name(name: &str) -> bool {
+    let normalized = normalize_endpoint_name(name);
+    SUPPORTED_ENDPOINT_NAMES.contains(&normalized.as_str())
+}
+
+pub fn endpoint_label(name: &str) -> Option<&'static str> {
+    match normalize_endpoint_name(name).as_str() {
+        "ide" => Some("Kiro IDE"),
+        "codewhisperer" => Some("CodeWhisperer"),
+        "amazonq" => Some("AmazonQ"),
+        _ => None,
+    }
+}
+
+pub fn endpoint_api_url(name: &str, config: &Config) -> anyhow::Result<String> {
+    let normalized = normalize_endpoint_name(name);
+    let endpoint: Arc<dyn KiroEndpoint> = match normalized.as_str() {
+        "ide" => Arc::new(IdeEndpoint::new()),
+        "codewhisperer" => Arc::new(CodeWhispererEndpoint::new()),
+        "amazonq" => Arc::new(AmazonQEndpoint::new()),
+        _ => anyhow::bail!("未知端点: {}", name),
+    };
+    let credentials = KiroCredentials::default();
+    let ctx = RequestContext {
+        credentials: &credentials,
+        token: "",
+        machine_id: "latency-probe",
+        config,
+    };
+    Ok(endpoint.api_url(&ctx))
 }
 
 /// 装饰请求时可用的上下文
@@ -96,6 +161,29 @@ pub fn default_is_monthly_request_limit(body: &str) -> bool {
         .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
 }
 
+pub fn default_is_overage_limit(body: &str) -> bool {
+    if body.contains("OVERAGE") {
+        return true;
+    }
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+
+    if value
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| v == "OVERAGE")
+    {
+        return true;
+    }
+
+    value
+        .pointer("/error/reason")
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| v == "OVERAGE")
+}
+
 /// 默认的 bearer token 失效判断逻辑
 pub fn default_is_bearer_token_invalid(body: &str) -> bool {
     body.contains("The bearer token included in the request is invalid")
@@ -121,6 +209,25 @@ mod tests {
     fn test_default_monthly_request_limit_false() {
         let body = r#"{"message":"nope","reason":"DAILY_REQUEST_COUNT"}"#;
         assert!(!default_is_monthly_request_limit(body));
+    }
+
+    #[test]
+    fn test_default_overage_limit_detects_reason() {
+        let body = r#"{"message":"Overage limit reached","reason":"OVERAGE"}"#;
+        assert!(default_is_overage_limit(body));
+    }
+
+    #[test]
+    fn test_default_overage_limit_nested_reason() {
+        let body = r#"{"error":{"reason":"OVERAGE"}}"#;
+        assert!(default_is_overage_limit(body));
+    }
+
+    #[test]
+    fn test_default_overage_limit_false() {
+        assert!(!default_is_overage_limit(
+            r#"{"reason":"MONTHLY_REQUEST_COUNT"}"#
+        ));
     }
 
     #[test]

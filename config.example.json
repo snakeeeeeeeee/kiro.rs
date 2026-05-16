@@ -15,6 +15,7 @@
   "rateLimitCooldownMs": 60000,
   "transientCooldownMs": 10000,
   "maxRetryAccounts": 3,
+  "allowOverUsage": false,
   "modelCapacityCooldownMs": 10000,
   "sameAccountRetryRules": [
     {
@@ -42,5 +43,6 @@
   "virtualCacheMaxCreationTokens": 1200,
   "virtualCacheFallbackScope": "model",
   "shutdownDrainTimeoutSecs": 60,
+  "_defaultEndpointNote": "Supported values: ide, codewhisperer, amazonq. After SQLite is initialized, manage it from Admin UI.",
   "defaultEndpoint": "ide"
 }

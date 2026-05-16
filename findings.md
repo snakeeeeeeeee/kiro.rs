@@ -249,3 +249,17 @@
 - Reasoning-like requests without reasoning/signature remain warning-level diagnostics. `upstream_signature_not_exposed` remains a local bug signal because it means upstream sent a signature and the proxy failed to expose it.
 - Added `PromptDump` as an opt-in runtime facility. When enabled and the model is allowlisted, each request gets a timestamped directory containing `client_request.json`, `upstream_request.json`, `upstream_response.raw`, optional `client_response.raw`, and `meta.json`.
 - Stream upstream dumps are decoded frame JSONL rather than raw AWS eventstream bytes, so the file is directly reviewable. Non-stream dumps store the complete upstream body. Single-file truncation marks `meta.json.truncated=true` and records `truncated_files`.
+
+## Multi-Endpoint Findings
+- The sibling `Kiro-Go` style uses three practical upstream shapes: Kiro IDE (`q.{region}.amazonaws.com/generateAssistantResponse`), CodeWhisperer (`codewhisperer.{region}.amazonaws.com/generateAssistantResponse` with `AmazonCodeWhispererStreamingService.GenerateAssistantResponse` target), and AmazonQ (`q.{region}.amazonaws.com/generateAssistantResponse` with `AmazonQDeveloperStreamingService.SendMessage` target).
+- `codewhisperer` and `amazonq` can reuse the existing IDE request-body transform, including `profileArn` injection, while changing host and/or `x-amz-target`.
+- MCP remains on the `q.{region}.amazonaws.com/mcp` shape with the existing IDE MCP decoration for all registered endpoints.
+- Endpoint latency testing is intentionally a network probe. It should not be read as a quota or generation-latency benchmark, and it does not predict whether a high-traffic IDE endpoint will return 429.
+- Request logs now emit `kiro_api_request_endpoint` and `kiro_mcp_request_endpoint`, which is the fastest way to confirm which upstream endpoint a real request used.
+
+## Overage and Quota List Findings
+- `Kiro-Go` treats local over-quota snapshots as a dispatch filter, not as a hard disable. Global `allowOverUsage` or account `allowOverage` keeps the account eligible until the upstream explicitly rejects overage.
+- The upstream error distinction matters: `402` with reason `OVERAGE` should stop overage only, while `402` with `MONTHLY_REQUEST_COUNT` is the existing hard quota-exhausted path that disables the credential.
+- In `kiro.rs`, persisted `CredentialPolicy` and `KiroCredentials` must stay synchronized. Dispatch checks read the credential fields, while Admin policy persistence writes SQLite policy columns; loading from SQLite must copy policy overage fields back into the credential object.
+- Balance cache hits still need to update the token manager's usage snapshot. Otherwise the Admin list can show quota data while dispatch continues using stale in-memory quota fields.
+- For the Admin list, the useful default is direct quota visibility. The detail dialog remains useful, but it should not be the only way to see usage.

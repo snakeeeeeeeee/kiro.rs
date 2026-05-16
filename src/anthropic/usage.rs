@@ -426,8 +426,8 @@ fn expire_entry(entry: &mut LedgerEntry, now: DateTime<Utc>) {
     // 两个桶都失效时，整个虚拟 cache 已不存在，对应 Anthropic 真实 cache 已过期，
     // 下次请求按"全量重建"计费。把 turn_count 和 last_observed_input_tokens 重置，
     // 让 compute_creation_tokens 走 warmup 分支，把整段 history 当成 creation 写入。
-    let no_active_bucket = entry.cached_5m_expires_at.is_none()
-        && entry.cached_1h_expires_at.is_none();
+    let no_active_bucket =
+        entry.cached_5m_expires_at.is_none() && entry.cached_1h_expires_at.is_none();
     if no_active_bucket {
         entry.turn_count = 0;
         entry.last_observed_input_tokens = 0;

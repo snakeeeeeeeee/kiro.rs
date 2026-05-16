@@ -27,11 +27,15 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
   const setPolicyBatch = useSetCredentialPolicyBatch()
   const [maxConcurrent, setMaxConcurrent] = useState('')
   const [rpm, setRpm] = useState('')
+  const [allowOverage, setAllowOverage] = useState(false)
+  const [overageWeight, setOverageWeight] = useState('1')
 
   useEffect(() => {
     if (!open) return
     setMaxConcurrent(credential?.maxConcurrentOverride?.toString() ?? '')
     setRpm(credential?.rpmOverride?.toString() ?? '')
+    setAllowOverage(credential?.allowOverage ?? false)
+    setOverageWeight((credential?.overageWeight || 1).toString())
   }, [credential, open])
 
   const parseOptionalNumber = (value: string) => {
@@ -45,6 +49,8 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
     const policy = {
       maxConcurrentOverride: parseOptionalNumber(maxConcurrent),
       rpmOverride: parseOptionalNumber(rpm),
+      allowOverage,
+      overageWeight: Math.min(10, Math.max(1, parseOptionalNumber(overageWeight) ?? 1)),
     }
 
     if (isBatch) {
@@ -84,7 +90,7 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
         <DialogHeader>
           <DialogTitle>{isBatch ? `批量调整 ${selectedIds.length} 个账号` : '账号调度策略'}</DialogTitle>
           <DialogDescription>
-            留空表示使用全局默认值；RPM 为 0 表示不限速。
+            留空表示使用全局默认值；RPM 为 0 表示不限速。透支设置参考 Kiro-Go 的 allowOverage/overageWeight。
           </DialogDescription>
         </DialogHeader>
 
@@ -94,6 +100,11 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
               <div className="font-medium">{credential.email || `#${credential.id}`}</div>
               <div className="mt-1 text-muted-foreground">
                 当前生效：并发 {credential.maxConcurrent}，RPM {credential.effectiveRpm || '不限'}
+              </div>
+              <div className="mt-1 text-muted-foreground">
+                额度：{credential.usageLimit > 0 ? `${credential.usageCurrent.toFixed(2)} / ${credential.usageLimit.toFixed(2)}` : '未查询'}
+                {credential.isOverUsageLimit ? '，已达上限' : ''}
+                {credential.overageStopped ? '，透支已停止' : ''}
               </div>
             </div>
           )}
@@ -120,6 +131,32 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
               placeholder="使用全局默认"
               onChange={event => setRpm(event.target.value)}
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">账号级透支</label>
+            <select
+              value={allowOverage ? 'enabled' : 'disabled'}
+              onChange={event => setAllowOverage(event.target.value === 'enabled')}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="disabled">关闭</option>
+              <option value="enabled">允许本账号超额调度</option>
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">透支权重</label>
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              value={overageWeight}
+              onChange={event => setOverageWeight(event.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              1-10；本地额度已满后使用，数值越大越容易被调度。
+            </p>
           </div>
         </div>
 

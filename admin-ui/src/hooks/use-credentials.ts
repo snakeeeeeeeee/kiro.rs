@@ -12,6 +12,8 @@ import {
   setLoadBalancingMode,
   getRuntimeSettings,
   setRuntimeSettings,
+  getEndpoints,
+  testEndpointLatency,
   setCredentialPolicy,
   setCredentialPolicyBatch,
   clearCredentialCooldown,
@@ -139,15 +141,29 @@ export function useRuntimeSettings() {
   })
 }
 
+export function useEndpoints() {
+  return useQuery({
+    queryKey: ['endpoints'],
+    queryFn: getEndpoints,
+  })
+}
+
 export function useSetRuntimeSettings() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (settings: RuntimeSettings) => setRuntimeSettings(settings),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['runtimeSettings'] })
+      queryClient.invalidateQueries({ queryKey: ['endpoints'] })
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
       queryClient.invalidateQueries({ queryKey: ['loadBalancingMode'] })
     },
+  })
+}
+
+export function useTestEndpointLatency() {
+  return useMutation({
+    mutationFn: (endpoint: string) => testEndpointLatency(endpoint),
   })
 }
 

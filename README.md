@@ -209,6 +209,7 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `rateLimitCooldownMs` | number | `60000` | 上游返回 `429` 后该凭据的冷却时间 |
 | `transientCooldownMs` | number | `10000` | 上游 `408`、`5xx` 或网络超时后的短冷却时间 |
 | `maxRetryAccounts` | number | `3` | 单个请求最多尝试的不同账号数，`1` 表示不换号 |
+| `allowOverUsage` | boolean | `false` | 全局透支开关。本地额度快照显示账号已满时，仍允许账号参与调度；如果上游返回 `402 OVERAGE`，会停止该账号透支而不是禁用账号 |
 | `modelCapacityCooldownMs` | number | `10000` | 所有尝试账号都遇到 `INSUFFICIENT_MODEL_CAPACITY` 后的模型级冷却时间 |
 | `sameAccountRetryRules` | array | 见示例 | 单号重试规则。命中规则时先用当前账号重试，耗尽后才进入账号冷却或换号 |
 | `opus47RunMode` | string | `custom` | Opus 4.7 运行模式：`custom` 保持细项配置；`benchmark` 使用跑分/探针兼容 effective 预设；`fast` 保留客户端 thinking/tools/history/token/effort，不限制客户端参数，并启用 ANTML clarify。不会自动切换诊断日志、Prompt Dump 或原始调试日志 |
@@ -235,7 +236,7 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `sonnet46RawDebugMaxChars` | number | `20000` | Sonnet 4.6 原始调试日志单字段最大字符数 |
 | `shutdownDrainTimeoutSecs` | number | `60` | 收到关闭信号后等待已有请求结束的最长时间 |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
-| `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
+| `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide`、`codewhisperer`、`amazonq`。SQLite 初始化后可在 Admin 面板运行策略里热切换 |
 
 完整配置示例：
 
@@ -333,7 +334,7 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `proxyUrl`     | string | 凭据级代理 URL（可选，特殊值 `direct` 表示不使用代理）       |
 | `proxyUsername`| string | 凭据级代理用户名（可选）                                |
 | `proxyPassword`| string | 凭据级代理密码（可选）                                 |
-| `endpoint`     | string | 凭据级端点名称（可选，未配置时使用 `config.defaultEndpoint`）|
+| `endpoint`     | string | 凭据级端点名称（可选，未配置时使用当前默认端点；支持 `ide`、`codewhisperer`、`amazonq`）|
 
 说明：
 - IdC / Builder-ID / IAM 在本项目里属于同一种登录方式，配置时统一使用 `authMethod: "idc"`
@@ -544,9 +545,11 @@ RUST_LOG=debug ./target/release/kiro-rs
   - `POST /api/admin/credentials/:id/priority` - 设置凭据优先级
   - `POST /api/admin/credentials/:id/reset` - 重置失败计数
   - `GET /api/admin/credentials/:id/balance` - 获取凭据余额
+  - `PATCH /api/admin/credentials/:id/policy` - 设置账号并发/RPM 覆盖和账号级 `allowOverage`/`overageWeight`
 
 - **Admin UI**
   - `GET /admin` - 访问管理页面（需要在编译前构建 `admin-ui/dist`）
+  - 账号列表会直接显示订阅、额度用量和透支状态；当前页缺少本地额度快照时会自动补查，也可以手动刷新当前页额度。
 
 健康检查端点无需认证：
 

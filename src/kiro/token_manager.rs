@@ -21,6 +21,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::dynamic_proxy::{CredentialLite, DynamicProxyManager};
+use crate::kiro::endpoint::normalize_endpoint_name;
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::token_refresh::{
@@ -525,6 +526,8 @@ pub struct CredentialEntrySnapshot {
     pub masked_api_key: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
+    /// 订阅标题（本地缓存）
+    pub subscription_title: Option<String>,
     /// API 调用成功次数
     pub success_count: u64,
     /// 最后一次 API 调用时间（RFC3339 格式）
@@ -542,6 +545,13 @@ pub struct CredentialEntrySnapshot {
     /// 端点名称（未显式配置时返回 None，由 Admin 层回退到默认值）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    pub allow_overage: bool,
+    pub overage_weight: u32,
+    pub overage_stopped: bool,
+    pub usage_current: f64,
+    pub usage_limit: f64,
+    pub usage_percentage: f64,
+    pub is_over_usage_limit: bool,
     /// 当前正在使用该凭据的请求数
     pub in_flight: u32,
     /// 单凭据最大并发数
@@ -568,6 +578,8 @@ pub struct CredentialEntrySnapshot {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagerSnapshot {
+    /// 当前默认上游端点
+    pub default_endpoint: String,
     /// 凭据条目列表
     pub entries: Vec<CredentialEntrySnapshot>,
     /// 当前活跃凭据 ID
@@ -614,6 +626,7 @@ pub struct ManagerSnapshot {
     pub token_auto_refresh_window_secs: u64,
     /// 会话亲和绑定 TTL
     pub session_affinity_ttl_secs: u64,
+    pub allow_over_usage: bool,
     /// Opus 4.7 运行模式
     pub opus47_run_mode: String,
     /// Opus 4.7 plain 稳定模式
@@ -869,6 +882,8 @@ impl MultiTokenManager {
                 entry.disabled = true;
                 entry.disabled_reason = Some(DisabledReason::InvalidConfig);
             }
+            entry.policy.allow_overage = entry.credentials.allow_overage;
+            entry.policy.overage_weight = entry.credentials.effective_overage_weight();
         }
 
         // 检测重复 ID
@@ -961,6 +976,11 @@ impl MultiTokenManager {
                     .find(|e| e.id == stored.credentials.id.unwrap_or_default())
                 {
                     entry.policy = stored.policy;
+                    entry.credentials.allow_overage = entry.policy.allow_overage;
+                    entry.credentials.overage_weight = entry.policy.effective_overage_weight();
+                    if entry.policy.allow_overage {
+                        entry.credentials.overage_stopped = false;
+                    }
                     entry.failure_count = stored.failure_count;
                     entry.refresh_failure_count = stored.refresh_failure_count;
                     entry.success_count = stored.success_count;
@@ -1011,11 +1031,18 @@ impl MultiTokenManager {
         max_concurrent: usize,
         rpm: u32,
         is_opus: bool,
+        settings: &RuntimeSettings,
     ) -> bool {
         if entry.disabled || Self::is_entry_cooling_down(entry, now) {
             return false;
         }
         if is_opus && !entry.credentials.supports_opus() {
+            return false;
+        }
+        if !entry
+            .credentials
+            .is_overage_dispatch_allowed(settings.allow_over_usage)
+        {
             return false;
         }
         if entry.in_flight as usize >= max_concurrent {
@@ -1075,6 +1102,7 @@ impl MultiTokenManager {
                         Self::entry_effective_max_concurrent(e, settings),
                         Self::entry_effective_rpm(e, settings),
                         is_opus,
+                        settings,
                     ))
                 .then_some(idx)
             })
@@ -1088,11 +1116,31 @@ impl MultiTokenManager {
         let idx = match mode {
             "balanced" => *available.iter().min_by_key(|idx| {
                 let e = &entries[**idx];
-                (e.in_flight, e.success_count, e.credentials.priority)
+                let overage_rank = if e.credentials.is_over_usage_limit() {
+                    10_u32.saturating_sub(e.credentials.effective_overage_weight())
+                } else {
+                    0
+                };
+                (
+                    overage_rank,
+                    e.in_flight,
+                    e.success_count,
+                    e.credentials.priority,
+                )
             })?,
             _ => *available.iter().min_by_key(|idx| {
                 let e = &entries[**idx];
-                (e.credentials.priority, e.in_flight, e.success_count)
+                let overage_rank = if e.credentials.is_over_usage_limit() {
+                    10_u32.saturating_sub(e.credentials.effective_overage_weight())
+                } else {
+                    0
+                };
+                (
+                    e.credentials.priority,
+                    overage_rank,
+                    e.in_flight,
+                    e.success_count,
+                )
             })?,
         };
 
@@ -1207,6 +1255,7 @@ impl MultiTokenManager {
                     Self::entry_effective_max_concurrent(entry, &settings),
                     Self::entry_effective_rpm(entry, &settings),
                     is_opus,
+                    &settings,
                 );
                 if can_use {
                     return Some(Self::reserve_entry(entry, now));
@@ -1295,6 +1344,7 @@ impl MultiTokenManager {
                                     Self::entry_effective_max_concurrent(e, &settings),
                                     Self::entry_effective_rpm(e, &settings),
                                     is_opus,
+                                    &settings,
                                 )
                         })
                         .map(|e| {
@@ -1410,6 +1460,7 @@ impl MultiTokenManager {
                 Self::entry_effective_max_concurrent(entry, &settings),
                 Self::entry_effective_rpm(entry, &settings),
                 is_opus,
+                &settings,
             ) {
                 anyhow::bail!("凭据 #{} 当前不可调度", id);
             }
@@ -1633,6 +1684,10 @@ impl MultiTokenManager {
         }
     }
 
+    pub fn global_proxy(&self) -> Option<ProxyConfig> {
+        self.proxy.clone()
+    }
+
     fn refresh_candidate_ids(&self, window_secs: u64) -> Vec<u64> {
         let now = Utc::now();
         let refresh_before = now + Duration::seconds(window_secs as i64);
@@ -1746,6 +1801,8 @@ impl MultiTokenManager {
                     cred.canonicalize_auth_method();
                     // 同步 disabled 状态到凭据对象
                     cred.disabled = e.disabled;
+                    cred.allow_overage = e.policy.allow_overage;
+                    cred.overage_weight = e.policy.effective_overage_weight();
                     cred
                 })
                 .collect()
@@ -1774,6 +1831,8 @@ impl MultiTokenManager {
                 let mut credentials = e.credentials.clone();
                 credentials.canonicalize_auth_method();
                 credentials.disabled = e.disabled;
+                credentials.allow_overage = e.policy.allow_overage;
+                credentials.overage_weight = e.policy.effective_overage_weight();
                 StoredCredential {
                     credentials,
                     policy: e.policy.clone(),
@@ -2192,6 +2251,7 @@ impl MultiTokenManager {
                     Self::entry_effective_max_concurrent(e, &settings),
                     Self::entry_effective_rpm(e, &settings),
                     false,
+                    &settings,
                 )
             })
             .count();
@@ -2211,6 +2271,7 @@ impl MultiTokenManager {
         let session_affinity_bindings = session_affinity_by_credential.values().sum();
 
         ManagerSnapshot {
+            default_endpoint: settings.default_endpoint.clone(),
             entries: entries
                 .iter()
                 .map(|e| {
@@ -2257,6 +2318,7 @@ impl MultiTokenManager {
                             None
                         },
                         email: e.credentials.email.clone(),
+                        subscription_title: e.credentials.subscription_title.clone(),
                         success_count: e.success_count,
                         last_used_at: e.last_used_at.clone(),
                         has_proxy: e.credentials.proxy_url.is_some(),
@@ -2264,6 +2326,13 @@ impl MultiTokenManager {
                         refresh_failure_count: e.refresh_failure_count,
                         disabled_reason: e.disabled_reason.map(disabled_reason_to_string),
                         endpoint: e.credentials.endpoint.clone(),
+                        allow_overage: e.policy.allow_overage,
+                        overage_weight: e.policy.effective_overage_weight(),
+                        overage_stopped: e.credentials.overage_stopped,
+                        usage_current: e.credentials.usage_current,
+                        usage_limit: e.credentials.usage_limit,
+                        usage_percentage: e.credentials.usage_percentage(),
+                        is_over_usage_limit: e.credentials.is_over_usage_limit(),
                         in_flight: e.in_flight,
                         max_concurrent,
                         max_concurrent_override: e.policy.max_concurrent_override,
@@ -2278,6 +2347,7 @@ impl MultiTokenManager {
                             max_concurrent,
                             effective_rpm,
                             false,
+                            &settings,
                         ),
                         session_affinity_bindings: session_affinity_by_credential
                             .get(&e.id)
@@ -2302,6 +2372,7 @@ impl MultiTokenManager {
             rate_limit_cooldown_ms: settings.rate_limit_cooldown_ms,
             transient_cooldown_ms: settings.transient_cooldown_ms,
             max_retry_accounts: settings.max_retry_accounts,
+            allow_over_usage: settings.allow_over_usage,
             model_capacity_cooldown_ms: settings.model_capacity_cooldown_ms,
             same_account_retry_rules: settings.same_account_retry_rules,
             token_auto_refresh_enabled: settings.token_auto_refresh_enabled,
@@ -2643,13 +2714,24 @@ impl MultiTokenManager {
         validated_cred.proxy_password = new_cred.proxy_password;
         validated_cred.kiro_api_key = new_cred.kiro_api_key;
         validated_cred.endpoint = new_cred.endpoint;
+        validated_cred.allow_overage = new_cred.allow_overage;
+        validated_cred.overage_weight = new_cred.overage_weight.clamp(1, 10);
+        validated_cred.usage_current = new_cred.usage_current;
+        validated_cred.usage_limit = new_cred.usage_limit;
+        validated_cred.overage_stopped = new_cred.overage_stopped;
+        let policy = CredentialPolicy {
+            max_concurrent_override: None,
+            rpm_override: None,
+            allow_overage: validated_cred.allow_overage,
+            overage_weight: validated_cred.effective_overage_weight(),
+        };
 
         {
             let mut entries = self.entries.lock();
             entries.push(CredentialEntry {
                 id: new_id,
                 credentials: validated_cred,
-                policy: CredentialPolicy::default(),
+                policy,
                 failure_count: 0,
                 refresh_failure_count: 0,
                 disabled: false,
@@ -2849,7 +2931,12 @@ impl MultiTokenManager {
         self.runtime_settings.lock().clone()
     }
 
-    pub fn update_runtime_settings(&self, settings: RuntimeSettings) -> anyhow::Result<()> {
+    pub fn default_endpoint(&self) -> String {
+        self.runtime_settings.lock().default_endpoint.clone()
+    }
+
+    pub fn update_runtime_settings(&self, mut settings: RuntimeSettings) -> anyhow::Result<()> {
+        settings.default_endpoint = normalize_endpoint_name(&settings.default_endpoint);
         settings.validate()?;
         let previous = self.runtime_settings.lock().clone();
         *self.runtime_settings.lock() = settings.clone();
@@ -2874,6 +2961,11 @@ impl MultiTokenManager {
                 .find(|e| e.id == id)
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
             entry.policy = policy.clone();
+            entry.credentials.allow_overage = policy.allow_overage;
+            entry.credentials.overage_weight = policy.effective_overage_weight();
+            if policy.allow_overage {
+                entry.credentials.overage_stopped = false;
+            }
         }
 
         if let Some(store) = &self.store {
@@ -2900,6 +2992,48 @@ impl MultiTokenManager {
             .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
         entry.cooldown_until = None;
         Ok(())
+    }
+
+    pub fn update_usage_snapshot(
+        &self,
+        id: u64,
+        current_usage: f64,
+        usage_limit: f64,
+    ) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry
+                .credentials
+                .update_usage_snapshot(current_usage, usage_limit);
+            if !entry.credentials.is_over_usage_limit() {
+                entry.credentials.overage_stopped = false;
+            }
+        }
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    pub fn stop_overage_for(&self, id: u64) -> bool {
+        let result = {
+            let mut entries = self.entries.lock();
+            let Some(entry) = entries.iter_mut().find(|e| e.id == id) else {
+                return entries.iter().any(|e| !e.disabled);
+            };
+            entry.credentials.stop_overage();
+            entry.policy.allow_overage = false;
+            entry.policy.overage_weight = entry.credentials.effective_overage_weight();
+            entry.last_used_at = Some(Utc::now().to_rfc3339());
+            tracing::warn!("凭据 #{} 透支已被上游拒绝，已关闭账号级透支", id);
+            entries.iter().any(|e| !e.disabled)
+        };
+        if let Err(err) = self.persist_credentials() {
+            tracing::warn!("关闭账号级透支后持久化失败: {}", err);
+        }
+        result
     }
 
     pub fn clear_cooldown_batch(&self, ids: &[u64]) -> anyhow::Result<()> {
@@ -3081,6 +3215,19 @@ mod tests {
         let exported = manager.export_credentials_by_ids(&[id]).unwrap();
 
         assert_eq!(exported[0].endpoint.as_deref(), Some("ide"));
+    }
+
+    #[test]
+    fn test_update_runtime_settings_normalizes_default_endpoint_alias() {
+        let config = Config::default();
+        let manager = MultiTokenManager::new(config, vec![], None, None, false).unwrap();
+
+        let mut settings = manager.runtime_settings();
+        settings.default_endpoint = "cw".to_string();
+
+        manager.update_runtime_settings(settings).unwrap();
+
+        assert_eq!(manager.default_endpoint(), "codewhisperer");
     }
 
     #[tokio::test]
@@ -3676,6 +3823,87 @@ mod tests {
             err
         );
         assert_eq!(manager.available_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_over_usage_account_skipped_by_default() {
+        let config = Config::default();
+        let mut over = KiroCredentials::default();
+        over.auth_method = Some("api_key".to_string());
+        over.kiro_api_key = Some("ksk_over".to_string());
+        over.usage_current = 10.0;
+        over.usage_limit = 10.0;
+        let mut normal = KiroCredentials::default();
+        normal.auth_method = Some("api_key".to_string());
+        normal.kiro_api_key = Some("ksk_normal".to_string());
+
+        let manager = Arc::new(
+            MultiTokenManager::new(config, vec![over, normal], None, None, false).unwrap(),
+        );
+
+        let ctx = manager.acquire_context(None).await.unwrap();
+        assert_eq!(ctx.id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_over_usage_account_allowed_by_global_setting() {
+        let config = Config::default();
+        let mut settings = RuntimeSettings::from_config(&config);
+        settings.allow_over_usage = true;
+        let mut over = KiroCredentials::default();
+        over.auth_method = Some("api_key".to_string());
+        over.kiro_api_key = Some("ksk_over".to_string());
+        over.usage_current = 10.0;
+        over.usage_limit = 10.0;
+
+        let manager = Arc::new(
+            MultiTokenManager::new_with_store(
+                config,
+                vec![over],
+                None,
+                None,
+                None,
+                false,
+                None,
+                Some(settings),
+            )
+            .unwrap(),
+        );
+
+        let ctx = manager.acquire_context(None).await.unwrap();
+        assert_eq!(ctx.id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_over_usage_account_allowed_by_account_policy_until_stopped() {
+        let config = Config::default();
+        let mut over = KiroCredentials::default();
+        over.auth_method = Some("api_key".to_string());
+        over.kiro_api_key = Some("ksk_over".to_string());
+        over.usage_current = 10.0;
+        over.usage_limit = 10.0;
+        over.allow_overage = true;
+        over.overage_weight = 3;
+
+        let manager =
+            Arc::new(MultiTokenManager::new(config, vec![over], None, None, false).unwrap());
+
+        let ctx = manager.acquire_context(None).await.unwrap();
+        assert_eq!(ctx.id, 1);
+        manager.release_credential(ctx.id);
+
+        manager.stop_overage_for(1);
+        let err = manager
+            .acquire_context(None)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            err.contains("没有可调度凭据"),
+            "错误应提示无可调度凭据，实际: {}",
+            err
+        );
     }
 
     // ============ 凭据级 Region 优先级测试 ============

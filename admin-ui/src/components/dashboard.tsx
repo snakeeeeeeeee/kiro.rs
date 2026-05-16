@@ -113,7 +113,7 @@ type ColumnKey = AccountColumnKey
 
 const columnLabels: Record<ColumnKey, string> = {
   auth: '认证',
-  subscription: '订阅',
+  subscription: '额度',
   status: '状态',
   dispatch: '调度',
   concurrency: '并发',
@@ -144,6 +144,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [verifyResults, setVerifyResults] = useState<Map<number, VerifyResult>>(new Map())
   const [balanceMap, setBalanceMap] = useState<Map<number, BalanceResponse>>(new Map())
   const [loadingBalanceIds, setLoadingBalanceIds] = useState<Set<number>>(new Set())
+  const balanceMapRef = useRef(balanceMap)
+  const loadingBalanceIdsRef = useRef(loadingBalanceIds)
+  const balanceFetchFailedIdsRef = useRef<Set<number>>(new Set())
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchRefreshProgress, setBatchRefreshProgress] = useState({ current: 0, total: 0 })
   const [exporting, setExporting] = useState(false)
@@ -282,6 +285,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const startIndex = (currentPage - 1) * itemsPerPage
   const endIndex = startIndex + itemsPerPage
   const currentCredentials = filteredCredentials.slice(startIndex, endIndex)
+  const currentBalanceFetchKey = currentCredentials
+    .map(credential => `${credential.id}:${credential.usageLimit > 0 ? 'known' : 'missing'}`)
+    .join('|')
+  const currentPageBalanceLoading = currentCredentials.some(credential => loadingBalanceIds.has(credential.id))
   const selectedDisabledCount = Array.from(selectedIds).filter(id => {
     const credential = data?.credentials.find(c => c.id === id)
     return Boolean(credential?.disabled)
@@ -303,11 +310,22 @@ export function Dashboard({ onLogout }: DashboardProps) {
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    balanceMapRef.current = balanceMap
+  }, [balanceMap])
+
+  useEffect(() => {
+    loadingBalanceIdsRef.current = loadingBalanceIds
+  }, [loadingBalanceIds])
+
   // 只保留当前仍存在的凭据缓存，避免删除后残留旧数据
   useEffect(() => {
     if (!data?.credentials) {
       setBalanceMap(new Map())
       setLoadingBalanceIds(new Set())
+      balanceMapRef.current = new Map()
+      loadingBalanceIdsRef.current = new Set()
+      balanceFetchFailedIdsRef.current = new Set()
       return
     }
 
@@ -320,11 +338,14 @@ export function Dashboard({ onLogout }: DashboardProps) {
           next.set(id, value)
         }
       })
-      return next.size === prev.size ? prev : next
+      const result = next.size === prev.size ? prev : next
+      balanceMapRef.current = result
+      return result
     })
 
     setLoadingBalanceIds(prev => {
       if (prev.size === 0) {
+        loadingBalanceIdsRef.current = prev
         return prev
       }
       const next = new Set<number>()
@@ -333,8 +354,13 @@ export function Dashboard({ onLogout }: DashboardProps) {
           next.add(id)
         }
       })
-      return next.size === prev.size ? prev : next
+      const result = next.size === prev.size ? prev : next
+      loadingBalanceIdsRef.current = result
+      return result
     })
+    balanceFetchFailedIdsRef.current = new Set(
+      Array.from(balanceFetchFailedIdsRef.current).filter(id => validIds.has(id)),
+    )
   }, [data?.credentials])
 
   const toggleDarkMode = () => {
@@ -345,6 +371,95 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const handleViewBalance = (id: number) => {
     setSelectedCredentialId(id)
     setBalanceDialogOpen(true)
+  }
+
+  const fetchBalancesForIds = async (
+    ids: number[],
+    options: { force?: boolean } = {},
+  ) => {
+    const uniqueIds = Array.from(new Set(ids))
+    const candidates = uniqueIds.filter(id => {
+      if (loadingBalanceIdsRef.current.has(id)) return false
+      if (options.force) return true
+      return !balanceMapRef.current.has(id) && !balanceFetchFailedIdsRef.current.has(id)
+    })
+
+    if (candidates.length === 0) {
+      return { requested: 0, succeeded: 0, failed: 0 }
+    }
+
+    if (options.force) {
+      candidates.forEach(id => balanceFetchFailedIdsRef.current.delete(id))
+    }
+
+    setLoadingBalanceIds(prev => {
+      const next = new Set(prev)
+      candidates.forEach(id => next.add(id))
+      loadingBalanceIdsRef.current = next
+      return next
+    })
+
+    let succeeded = 0
+    let failed = 0
+    for (const id of candidates) {
+      try {
+        const balance = await getCredentialBalance(id)
+        succeeded += 1
+        balanceFetchFailedIdsRef.current.delete(id)
+        setBalanceMap(prev => {
+          const next = new Map(prev)
+          next.set(id, balance)
+          balanceMapRef.current = next
+          return next
+        })
+      } catch {
+        failed += 1
+        balanceFetchFailedIdsRef.current.add(id)
+      } finally {
+        setLoadingBalanceIds(prev => {
+          const next = new Set(prev)
+          next.delete(id)
+          loadingBalanceIdsRef.current = next
+          return next
+        })
+      }
+    }
+
+    if (succeeded > 0) {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    }
+    return { requested: candidates.length, succeeded, failed }
+  }
+
+  useEffect(() => {
+    const ids = currentCredentials
+      .filter(credential => credential.usageLimit <= 0)
+      .map(credential => credential.id)
+    if (ids.length > 0) {
+      void fetchBalancesForIds(ids)
+    }
+  }, [currentBalanceFetchKey])
+
+  const handleRefreshBalance = async (id: number) => {
+    const result = await fetchBalancesForIds([id], { force: true })
+    if (result.succeeded > 0 && result.failed === 0) {
+      toast.success('额度已刷新')
+    } else if (result.failed > 0) {
+      toast.error('额度查询失败')
+    }
+  }
+
+  const handleRefreshVisibleBalances = async () => {
+    if (currentCredentials.length === 0) {
+      toast.error('当前页没有账号')
+      return
+    }
+    const result = await fetchBalancesForIds(currentCredentials.map(credential => credential.id), { force: true })
+    if (result.failed === 0) {
+      toast.success(`已刷新 ${result.succeeded} 个账号额度`)
+    } else {
+      toast.warning(`额度刷新：成功 ${result.succeeded}，失败 ${result.failed}`)
+    }
   }
 
   const handleRefresh = () => {
@@ -936,6 +1051,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
                 <Badge variant="outline">
                   {runtimeStatus?.loadBalancingMode === 'balanced' ? '均衡负载' : '优先级'}
                 </Badge>
+                <Badge variant="secondary">
+                  {runtimeStatus?.endpoints.find(endpoint => endpoint.name === runtimeStatus.defaultEndpoint)?.label || runtimeStatus?.defaultEndpoint || '-'}
+                </Badge>
                 <Badge variant="outline">默认并发 {runtimeStatus?.perAccountDefaultMaxConcurrent ?? '-'}</Badge>
                 <Badge variant="outline">会话亲和 {runtimeStatus?.sessionAffinityBindings ?? 0}</Badge>
               </div>
@@ -1018,6 +1136,15 @@ export function Dashboard({ onLogout }: DashboardProps) {
               <Button variant="outline" size="sm" disabled>
                 <RefreshCw className="h-4 w-4" />
                 自动刷新 30s
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRefreshVisibleBalances}
+                disabled={currentCredentials.length === 0 || currentPageBalanceLoading}
+              >
+                <RefreshCw className={`h-4 w-4 ${currentPageBalanceLoading ? 'animate-spin' : ''}`} />
+                刷新当前页额度
               </Button>
               <Button
                 variant="outline"
@@ -1171,6 +1298,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             onToggleSelect={toggleSelect}
             onToggleSelectAll={handleToggleSelectAllCurrentPage}
             onViewBalance={handleViewBalance}
+            onRefreshBalance={handleRefreshBalance}
             onEditPolicy={openPolicyDialog}
             onToggleDisabled={handleToggleCredentialDisabled}
             onClearCooldown={handleClearCooldown}

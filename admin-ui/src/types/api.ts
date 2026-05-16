@@ -21,12 +21,20 @@ export interface CredentialStatusItem {
   apiKeyHash?: string
   maskedApiKey?: string
   successCount: number
+  subscriptionTitle?: string | null
   lastUsedAt: string | null
   hasProxy: boolean
   proxyUrl?: string
   refreshFailureCount: number
   disabledReason?: string
   endpoint: string
+  allowOverage: boolean
+  overageWeight: number
+  overageStopped: boolean
+  usageCurrent: number
+  usageLimit: number
+  usagePercentage: number
+  isOverUsageLimit: boolean
   inFlight: number
   maxConcurrent: number
   maxConcurrentOverride?: number | null
@@ -41,6 +49,8 @@ export interface CredentialStatusItem {
 }
 
 export interface RuntimeStatusResponse {
+  defaultEndpoint: EndpointName
+  endpoints: EndpointOption[]
   globalInFlight: number
   globalMaxConcurrent: number
   perAccountDefaultMaxConcurrent: number
@@ -52,6 +62,7 @@ export interface RuntimeStatusResponse {
   rateLimitCooldownMs: number
   transientCooldownMs: number
   maxRetryAccounts: number
+  allowOverUsage: boolean
   modelCapacityCooldownMs: number
   sameAccountRetryRules: SameAccountRetryRule[]
   tokenAutoRefreshEnabled: boolean
@@ -97,6 +108,30 @@ export interface RuntimeStatusResponse {
   modelCooldowns: ModelCooldownSnapshot[]
   dynamicProxy: DynamicProxySummary
   credentials: RuntimeCredentialStatus[]
+}
+
+export type EndpointName = 'ide' | 'codewhisperer' | 'amazonq'
+
+export interface EndpointOption {
+  name: EndpointName
+  label: string
+  apiUrl: string
+  isDefault: boolean
+}
+
+export interface EndpointConfigResponse {
+  defaultEndpoint: EndpointName
+  endpoints: EndpointOption[]
+}
+
+export interface EndpointLatencyResponse {
+  endpoint: EndpointName
+  label: string
+  apiUrl: string
+  networkOk: boolean
+  status: number | null
+  latencyMs: number
+  error: string | null
 }
 
 export interface SameAccountRetryRule {
@@ -253,6 +288,7 @@ export interface SetPriorityRequest {
 }
 
 export interface RuntimeSettings {
+  defaultEndpoint: EndpointName
   globalMaxConcurrent: number
   perAccountDefaultMaxConcurrent: number
   queueMaxSize: number
@@ -262,6 +298,7 @@ export interface RuntimeSettings {
   rateLimitCooldownMs: number
   transientCooldownMs: number
   maxRetryAccounts: number
+  allowOverUsage: boolean
   modelCapacityCooldownMs: number
   sameAccountRetryRules: SameAccountRetryRule[]
   tokenAutoRefreshEnabled: boolean
@@ -335,6 +372,8 @@ export interface RuntimeSettings {
 export interface SetCredentialPolicyRequest {
   maxConcurrentOverride?: number | null
   rpmOverride?: number | null
+  allowOverage: boolean
+  overageWeight: number
 }
 
 export interface BatchCredentialPolicyRequest extends SetCredentialPolicyRequest {

@@ -131,3 +131,35 @@ Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibili
 | Cargo test was invoked with multiple test-name filters | 1 | Re-ran with a single broader filter (`cargo test opus47`) and then full `cargo test -q` |
 | Docker verification helper tried to parse the same Admin PUT response twice | 1 | Reworked the helper to consume the PUT body once and confirm settings with a separate GET |
 | ANTML diagnostics were labeled `identity_short` after behavior was already correct | 1 | Added `Opus47RequestKind::AntmlProbe` and a regression test so logs show `request_kind="antml_probe"` |
+
+## Multi-Endpoint Manual Switching Extension
+- [completed] Compare sibling `Kiro-Go` endpoint shapes and add `ide`, `codewhisperer`, and `amazonq` upstream endpoint implementations.
+- [completed] Persist a runtime `defaultEndpoint` setting and let credentials optionally override it with their own `endpoint`.
+- [completed] Add Admin API/UI support for selecting the default endpoint and manually testing endpoint network latency.
+- [completed] Log the endpoint, credential ID, region, URL, model, and stream mode for API requests, and endpoint/credential/region/URL for MCP requests.
+- [completed] Verify backend formatting, checks, tests, frontend build, and whitespace diff checks.
+
+## Multi-Endpoint Decisions
+- Manual switching only for this iteration. No automatic 429 endpoint failover was added.
+- Latency probing uses unauthenticated GET against the upstream API URL through the configured global proxy. It measures basic network/API reachability latency, not generation latency, quota state, or 429 behavior.
+- Endpoint names are normalized at config/runtime/Admin boundaries so aliases such as `cw`, `code-whisperer`, and `amazon-q` resolve to registered names.
+
+## Multi-Endpoint Errors Encountered
+| Error | Attempt | Resolution |
+|---|---|---|
+| Runtime `defaultEndpoint` validation accepted aliases, but request dispatch needed registered canonical names | 1 | Normalize `defaultEndpoint` before storing runtime settings and return the actual effective settings from Admin save |
+
+## Overage and Quota List Extension
+- [completed] Compare sibling `Kiro-Go` overage behavior and mirror the same config shape: global `allowOverUsage`, account-level `allowOverage`, and `overageWeight`.
+- [completed] Persist account overage policy in SQLite and keep stored policy synchronized with credential JSON/runtime dispatch fields.
+- [completed] Skip accounts whose local quota snapshot is full unless global or account overage is enabled.
+- [completed] Stop overage for a credential when upstream returns `402` with `OVERAGE`, without disabling the account; keep monthly request-count exhaustion as the existing quota-disable path.
+- [completed] Update Admin runtime settings and account policy dialogs for overage controls.
+- [completed] Show subscription/quota/usage percentage directly in the account list and auto-fetch missing quota snapshots for the current page.
+- [completed] Verify backend checks/tests and frontend build.
+
+## Overage Decisions
+- Local quota snapshots are advisory. If an account is locally over limit, it is skipped by default, but `allowOverUsage` or account `allowOverage` lets it continue dispatching until upstream rejects with `OVERAGE`.
+- Upstream `402 OVERAGE` means stop overage for that account (`overageStopped=true`, account-level `allowOverage=false`) but do not mark the credential disabled.
+- Upstream `402 MONTHLY_REQUEST_COUNT` remains a hard quota exhaustion signal and continues to disable the credential as before.
+- The account list fetches missing current-page quota data automatically, but manual refresh remains available per account and for the current page.

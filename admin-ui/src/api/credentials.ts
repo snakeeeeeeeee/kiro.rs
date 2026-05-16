@@ -15,6 +15,8 @@ import type {
   BatchCredentialPolicyRequest,
   DynamicProxyActionResponse,
   DynamicProxyBatchActionResponse,
+  EndpointConfigResponse,
+  EndpointLatencyResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -113,6 +115,16 @@ export async function getRuntimeSettings(): Promise<RuntimeSettings> {
 
 export async function setRuntimeSettings(settings: RuntimeSettings): Promise<RuntimeSettings> {
   const { data } = await api.put<RuntimeSettings>('/settings/runtime', settings)
+  return data
+}
+
+export async function getEndpoints(): Promise<EndpointConfigResponse> {
+  const { data } = await api.get<EndpointConfigResponse>('/endpoints')
+  return data
+}
+
+export async function testEndpointLatency(endpoint: string): Promise<EndpointLatencyResponse> {
+  const { data } = await api.post<EndpointLatencyResponse>(`/endpoints/${endpoint}/latency`)
   return data
 }
 

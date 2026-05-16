@@ -109,11 +109,44 @@ pub struct KiroCredentials {
     /// 端点名必须在启动时注册的端点 registry 中存在。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+
+    /// 账号级透支开关。本地额度快照达到上限后，开启时仍允许该账号被调度。
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_false")]
+    pub allow_overage: bool,
+
+    /// 透支后的调度权重，范围 1-10；0 表示使用默认 1。
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero")]
+    pub overage_weight: u32,
+
+    /// 本地缓存的当前额度使用量。由 Admin 余额查询刷新。
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub usage_current: f64,
+
+    /// 本地缓存的额度上限。由 Admin 余额查询刷新。
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub usage_limit: f64,
+
+    /// 上游已明确拒绝透支时置位，用于停止继续透支调度。
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_false")]
+    pub overage_stopped: bool,
 }
 
 /// 判断是否为零（用于跳过序列化）
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+fn is_zero_f64(value: &f64) -> bool {
+    value.abs() < f64::EPSILON
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn canonicalize_auth_method_value(value: &str) -> &str {
@@ -272,6 +305,38 @@ impl KiroCredentials {
                 .map(|m| m.eq_ignore_ascii_case("api_key") || m.eq_ignore_ascii_case("apikey"))
                 .unwrap_or(false)
     }
+
+    pub fn is_over_usage_limit(&self) -> bool {
+        self.usage_limit > 0.0 && self.usage_current >= self.usage_limit
+    }
+
+    pub fn is_overage_dispatch_allowed(&self, global_allow_over_usage: bool) -> bool {
+        !self.is_over_usage_limit()
+            || (!self.overage_stopped && (self.allow_overage || global_allow_over_usage))
+    }
+
+    pub fn effective_overage_weight(&self) -> u32 {
+        self.overage_weight.clamp(1, 10)
+    }
+
+    pub fn usage_percentage(&self) -> f64 {
+        if self.usage_limit <= 0.0 {
+            0.0
+        } else {
+            (self.usage_current / self.usage_limit * 100.0).clamp(0.0, 100.0)
+        }
+    }
+
+    pub fn update_usage_snapshot(&mut self, current_usage: f64, usage_limit: f64) {
+        self.usage_current = current_usage.max(0.0);
+        self.usage_limit = usage_limit.max(0.0);
+    }
+
+    pub fn stop_overage(&mut self) {
+        self.allow_overage = false;
+        self.overage_weight = 1;
+        self.overage_stopped = true;
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +408,11 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
+            overage_weight: 0,
+            usage_current: 0.0,
+            usage_limit: 0.0,
+            overage_stopped: false,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -461,6 +531,11 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
+            overage_weight: 0,
+            usage_current: 0.0,
+            usage_limit: 0.0,
+            overage_stopped: false,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -492,6 +567,11 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
+            overage_weight: 0,
+            usage_current: 0.0,
+            usage_limit: 0.0,
+            overage_stopped: false,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -606,6 +686,11 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
+            overage_weight: 0,
+            usage_current: 0.0,
+            usage_limit: 0.0,
+            overage_stopped: false,
         };
 
         let json = original.to_pretty_json().unwrap();

@@ -435,3 +435,40 @@
 - Real Docker smoke for both `claude-opus-4-6` and `claude-sonnet-4-6`: identity probe returned text only with no `tool_use`; ANTML returned full `<antml:8308bd23134dd517>` and did not start with the identity template; PDF exact returned the eight-character PDF text exactly once in both non-stream and stream paths.
 - Docker logs confirmed `model_identity_probe_compat_applied`, `model_antml_probe_compat_applied`, PDF diagnostics, and `request_kind="antml_probe"` for ANTML diagnostics.
 - Stopped the temporary `kiro-rs-verify` container after verification.
+
+## Completed: Manual Multi-Endpoint Switching
+- Added registered upstream endpoints for `ide`, `codewhisperer`, and `amazonq`.
+- Added persisted runtime `defaultEndpoint`; credentials can still specify an `endpoint` override and otherwise inherit the runtime default.
+- Added Admin endpoints `GET /api/admin/endpoints` and `POST /api/admin/endpoints/{name}/latency`.
+- Added Admin UI controls in the runtime settings dialog to switch the default endpoint and manually test endpoint network latency.
+- Added endpoint visibility to dashboard runtime policy badges and request logs.
+- Kept automatic 429 endpoint switching out of scope as requested.
+
+## Latest Validation: Manual Multi-Endpoint Switching
+- `cargo fmt -- --check`: passed.
+- `cargo test test_update_runtime_settings_normalizes_default_endpoint_alias -- --nocapture`: passed, 1 test.
+- `cargo check`: passed.
+- `pnpm --dir admin-ui build`: passed.
+- `git diff --check`: passed.
+- `cargo test`: passed, 325 tests.
+
+## Completed: Kiro-Go Style Overage and Quota List Visibility
+- Added global runtime/config setting `allowOverUsage` and account policy fields `allowOverage`/`overageWeight`.
+- Added quota snapshot fields to credentials and Admin status: current usage, limit, percentage, over-limit flag, and `overageStopped`.
+- Dispatch now skips locally over-limit accounts by default, but permits them when global or account-level overage is enabled. Over-limit accounts use reduced selection ranking based on `overageWeight`.
+- Added upstream `402 OVERAGE` detection and handling: stop account-level overage and persist the state without disabling the credential. Existing `402 MONTHLY_REQUEST_COUNT` behavior remains the hard quota-disable path.
+- Synchronized overage policy through SQLite load/save, JSON import, policy updates, and runtime snapshots.
+- Balance queries update the token manager quota snapshot, including cache hits.
+- Admin UI now exposes global overage in runtime settings and account overage/weight in the policy dialog.
+- Account list now displays subscription, quota usage, percentage, overage badges, and refresh controls directly. Missing current-page quota snapshots are auto-fetched in the background.
+- Updated `config.example.json` and README with the new overage option and list behavior.
+
+## Latest Validation: Overage and Quota List Visibility
+- `cargo fmt -- --check`: passed.
+- `cargo check`: passed.
+- `cargo test over_usage -- --nocapture`: passed, 3 tests.
+- `cargo test endpoint -- --nocapture`: passed, 17 tests.
+- `cargo test store -- --nocapture`: passed, 4 tests.
+- `cargo test`: passed, 331 tests.
+- `pnpm --dir admin-ui build`: passed.
+- `git diff --check`: passed.

@@ -10,11 +10,11 @@ use super::{
         add_credential, bind_dynamic_proxy, clear_credential_cooldown,
         clear_credential_cooldown_batch, clear_dynamic_proxy, delete_credential,
         dynamic_proxy_batch_action, export_credentials, force_refresh_token, get_all_credentials,
-        get_credential_balance, get_dynamic_proxy_bindings, get_load_balancing_mode,
+        get_credential_balance, get_dynamic_proxy_bindings, get_endpoints, get_load_balancing_mode,
         get_runtime_settings, get_runtime_status, reset_failure_count, rotate_dynamic_proxy,
         set_credential_disabled, set_credential_policy, set_credential_policy_batch,
         set_credential_priority, set_load_balancing_mode, set_runtime_settings,
-        verify_dynamic_proxy,
+        test_endpoint_latency, verify_dynamic_proxy,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -87,6 +87,8 @@ pub fn create_admin_router(state: AdminState) -> Router {
             post(dynamic_proxy_batch_action),
         )
         .route("/runtime", get(get_runtime_status))
+        .route("/endpoints", get(get_endpoints))
+        .route("/endpoints/{name}/latency", post(test_endpoint_latency))
         .route(
             "/settings/runtime",
             get(get_runtime_settings).put(set_runtime_settings),

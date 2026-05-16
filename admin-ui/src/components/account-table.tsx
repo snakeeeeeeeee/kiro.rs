@@ -1,6 +1,7 @@
 import { Edit3, Globe2, RefreshCw, RotateCw, Snowflake, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
 import type { BalanceResponse, CredentialStatusItem } from '@/types/api'
 
 export type AccountColumnKey =
@@ -45,6 +46,7 @@ interface AccountTableProps {
   onToggleSelect: (id: number) => void
   onToggleSelectAll: () => void
   onViewBalance: (id: number) => void
+  onRefreshBalance: (id: number) => void
   onEditPolicy: (credential: CredentialStatusItem) => void
   onToggleDisabled: (credential: CredentialStatusItem) => void
   onClearCooldown: (credential: CredentialStatusItem) => void
@@ -112,6 +114,30 @@ function dynamicProxyBadge(credential: CredentialStatusItem) {
   return <Badge variant="warning">{binding.status}</Badge>
 }
 
+function formatUsageValue(value: number) {
+  return value.toLocaleString('zh-CN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  })
+}
+
+function quotaView(credential: CredentialStatusItem, balance?: BalanceResponse) {
+  const current = balance?.currentUsage ?? credential.usageCurrent
+  const limit = balance?.usageLimit ?? credential.usageLimit
+  const percentage = limit > 0
+    ? Math.min(Math.max(balance?.usagePercentage ?? credential.usagePercentage, 0), 100)
+    : 0
+  const subscriptionTitle = balance?.subscriptionTitle || credential.subscriptionTitle || '-'
+
+  return {
+    current,
+    limit,
+    percentage,
+    subscriptionTitle,
+    hasQuota: limit > 0,
+  }
+}
+
 export function AccountTable({
   credentials,
   selectedIds,
@@ -124,6 +150,7 @@ export function AccountTable({
   onToggleSelect,
   onToggleSelectAll,
   onViewBalance,
+  onRefreshBalance,
   onEditPolicy,
   onToggleDisabled,
   onClearCooldown,
@@ -180,6 +207,8 @@ export function AccountTable({
             ) : (
               credentials.map(credential => {
                 const balance = balanceMap.get(credential.id)
+                const quota = quotaView(credential, balance)
+                const isBalanceLoading = loadingBalanceIds.has(credential.id)
                 return (
                   <tr key={credential.id} className="border-b hover:bg-muted/40">
                     <td className="sticky left-0 z-10 bg-card px-4 py-4">
@@ -206,13 +235,51 @@ export function AccountTable({
                           </div>
                         )}
                         {column.key === 'subscription' && (
-                          <div className="space-y-1">
-                            <div className="text-xs text-muted-foreground">
-                              {balance ? balance.subscriptionTitle || '-' : loadingBalanceIds.has(credential.id) ? '查询中...' : '-'}
+                          <div className="w-[220px] space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="max-w-[150px] truncate font-medium" title={quota.subscriptionTitle}>
+                                {quota.subscriptionTitle}
+                              </span>
+                              {isBalanceLoading && <span className="text-xs text-muted-foreground">查询中</span>}
                             </div>
-                            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => onViewBalance(credential.id)}>
-                              查看
-                            </Button>
+                            {quota.hasQuota ? (
+                              <>
+                                <Progress value={quota.percentage} className="h-2 rounded" />
+                                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                  <span>
+                                    {formatUsageValue(quota.current)} / {formatUsageValue(quota.limit)}
+                                  </span>
+                                  <span>{quota.percentage.toFixed(1)}%</span>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="text-xs text-muted-foreground">
+                                {isBalanceLoading ? '正在获取额度...' : '额度未查询'}
+                              </div>
+                            )}
+                            <div className="flex flex-wrap gap-1">
+                              {credential.isOverUsageLimit && (
+                                <Badge variant={credential.overageStopped ? 'destructive' : 'warning'}>
+                                  {credential.overageStopped ? '透支停止' : '已满'}
+                                </Badge>
+                              )}
+                              {credential.allowOverage && !credential.overageStopped && (
+                                <Badge variant="secondary">透支 x{credential.overageWeight}</Badge>
+                              )}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-2"
+                                onClick={() => onRefreshBalance(credential.id)}
+                                disabled={isBalanceLoading}
+                                title="刷新额度"
+                              >
+                                <RefreshCw className={`h-3.5 w-3.5 ${isBalanceLoading ? 'animate-spin' : ''}`} />
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => onViewBalance(credential.id)}>
+                                详情
+                              </Button>
+                            </div>
                           </div>
                         )}
                         {column.key === 'status' && (

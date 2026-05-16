@@ -6,6 +6,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::kiro::dynamic_proxy::DynamicProxyBinding;
+use crate::kiro::endpoint::normalize_endpoint_name;
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::settings::{
@@ -78,6 +79,8 @@ impl KiroStore {
                 data_json TEXT NOT NULL,
                 max_concurrent_override INTEGER NULL,
                 rpm_override INTEGER NULL,
+                allow_overage INTEGER NOT NULL DEFAULT 0,
+                overage_weight INTEGER NOT NULL DEFAULT 1,
                 failure_count INTEGER NOT NULL DEFAULT 0,
                 refresh_failure_count INTEGER NOT NULL DEFAULT 0,
                 success_count INTEGER NOT NULL DEFAULT 0,
@@ -117,6 +120,18 @@ impl KiroStore {
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             "#,
+        )?;
+        add_column_if_missing(
+            &conn,
+            "credentials",
+            "allow_overage",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "credentials",
+            "overage_weight",
+            "INTEGER NOT NULL DEFAULT 1",
         )?;
         Ok(())
     }
@@ -207,18 +222,25 @@ impl KiroStore {
 
         let stored = credentials
             .into_iter()
-            .map(|credentials| StoredCredential {
-                disabled_reason: if credentials.disabled {
-                    Some("Manual".to_string())
-                } else {
-                    None
-                },
-                credentials,
-                policy: CredentialPolicy::default(),
-                failure_count: 0,
-                refresh_failure_count: 0,
-                success_count: 0,
-                last_used_at: None,
+            .map(|credentials| {
+                let policy = CredentialPolicy {
+                    allow_overage: credentials.allow_overage,
+                    overage_weight: credentials.effective_overage_weight(),
+                    ..CredentialPolicy::default()
+                };
+                StoredCredential {
+                    disabled_reason: if credentials.disabled {
+                        Some("Manual".to_string())
+                    } else {
+                        None
+                    },
+                    credentials,
+                    policy,
+                    failure_count: 0,
+                    refresh_failure_count: 0,
+                    success_count: 0,
+                    last_used_at: None,
+                }
             })
             .collect::<Vec<_>>();
         self.replace_all_credentials(&stored)?;
@@ -229,8 +251,9 @@ impl KiroStore {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             r#"
-            SELECT data_json, max_concurrent_override, rpm_override, failure_count,
-                   refresh_failure_count, success_count, last_used_at, disabled_reason
+            SELECT data_json, max_concurrent_override, rpm_override, allow_overage,
+                   overage_weight, failure_count, refresh_failure_count, success_count,
+                   last_used_at, disabled_reason
             FROM credentials
             ORDER BY COALESCE(json_extract(data_json, '$.priority'), 0), id
             "#,
@@ -262,13 +285,28 @@ impl KiroStore {
             UPDATE credentials
             SET max_concurrent_override = ?2,
                 rpm_override = ?3,
+                allow_overage = ?4,
+                overage_weight = ?5,
+                data_json = CASE
+                    WHEN ?4 != 0 THEN json_set(data_json,
+                        '$.allowOverage', json('true'),
+                        '$.overageWeight', ?5,
+                        '$.overageStopped', json('false')
+                    )
+                    ELSE json_set(data_json,
+                        '$.allowOverage', json('false'),
+                        '$.overageWeight', ?5
+                    )
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?1
             "#,
             params![
                 id,
                 policy.max_concurrent_override.map(|v| v as i64),
-                policy.rpm_override.map(|v| v as i64)
+                policy.rpm_override.map(|v| v as i64),
+                bool_to_i64(policy.allow_overage),
+                policy.effective_overage_weight() as i64
             ],
         )?;
         if updated == 0 {
@@ -389,11 +427,31 @@ impl KiroStore {
     }
 }
 
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|name| name == column) {
+        conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn runtime_settings_pairs(
     settings: &RuntimeSettings,
 ) -> anyhow::Result<Vec<(&'static str, String)>> {
     settings.validate()?;
     Ok(vec![
+        ("defaultEndpoint", settings.default_endpoint.clone()),
         (
             "globalMaxConcurrent",
             settings.global_max_concurrent.to_string(),
@@ -418,6 +476,7 @@ fn runtime_settings_pairs(
             settings.transient_cooldown_ms.to_string(),
         ),
         ("maxRetryAccounts", settings.max_retry_accounts.to_string()),
+        ("allowOverUsage", settings.allow_over_usage.to_string()),
         (
             "modelCapacityCooldownMs",
             settings.model_capacity_cooldown_ms.to_string(),
@@ -663,6 +722,7 @@ fn apply_runtime_setting(
     value: &str,
 ) -> anyhow::Result<()> {
     match key {
+        "defaultEndpoint" => settings.default_endpoint = normalize_endpoint_name(value),
         "globalMaxConcurrent" => settings.global_max_concurrent = parse_usize(key, value)?,
         "perAccountDefaultMaxConcurrent" => {
             settings.per_account_default_max_concurrent = parse_usize(key, value)?
@@ -674,6 +734,7 @@ fn apply_runtime_setting(
         "rateLimitCooldownMs" => settings.rate_limit_cooldown_ms = parse_u64(key, value)?,
         "transientCooldownMs" => settings.transient_cooldown_ms = parse_u64(key, value)?,
         "maxRetryAccounts" => settings.max_retry_accounts = parse_usize(key, value)?,
+        "allowOverUsage" => settings.allow_over_usage = parse_bool(key, value)?,
         "modelCapacityCooldownMs" => settings.model_capacity_cooldown_ms = parse_u64(key, value)?,
         "sameAccountRetryRules" => {
             settings.same_account_retry_rules =
@@ -968,17 +1029,23 @@ fn stored_credential_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
     })?;
     credentials.canonicalize_auth_method();
 
+    let policy = CredentialPolicy {
+        max_concurrent_override: opt_i64_to_usize(row.get(1)?),
+        rpm_override: opt_i64_to_u32(row.get(2)?),
+        allow_overage: i64_to_bool(row.get(3)?),
+        overage_weight: i64_to_u32(row.get(4)?).clamp(1, 10),
+    };
+    credentials.allow_overage = policy.allow_overage;
+    credentials.overage_weight = policy.effective_overage_weight();
+
     Ok(StoredCredential {
         credentials,
-        policy: CredentialPolicy {
-            max_concurrent_override: opt_i64_to_usize(row.get(1)?),
-            rpm_override: opt_i64_to_u32(row.get(2)?),
-        },
-        failure_count: i64_to_u32(row.get(3)?),
-        refresh_failure_count: i64_to_u32(row.get(4)?),
-        success_count: i64_to_u64(row.get(5)?),
-        last_used_at: row.get(6)?,
-        disabled_reason: row.get(7)?,
+        policy,
+        failure_count: i64_to_u32(row.get(5)?),
+        refresh_failure_count: i64_to_u32(row.get(6)?),
+        success_count: i64_to_u64(row.get(7)?),
+        last_used_at: row.get(8)?,
+        disabled_reason: row.get(9)?,
     })
 }
 
@@ -991,18 +1058,24 @@ fn insert_or_replace_stored_credential_tx(
         .credentials
         .id
         .ok_or_else(|| anyhow::anyhow!("持久化凭据时缺少 id"))?;
-    let data_json = serde_json::to_string(&entry.credentials)?;
+    let mut credentials = entry.credentials.clone();
+    credentials.allow_overage = entry.policy.allow_overage;
+    credentials.overage_weight = entry.policy.effective_overage_weight();
+    let data_json = serde_json::to_string(&credentials)?;
     conn.execute(
         r#"
         INSERT INTO credentials (
-            id, data_json, max_concurrent_override, rpm_override, failure_count,
-            refresh_failure_count, success_count, last_used_at, disabled_reason, updated_at
+            id, data_json, max_concurrent_override, rpm_override, allow_overage,
+            overage_weight, failure_count, refresh_failure_count, success_count,
+            last_used_at, disabled_reason, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
             data_json = excluded.data_json,
             max_concurrent_override = excluded.max_concurrent_override,
             rpm_override = excluded.rpm_override,
+            allow_overage = excluded.allow_overage,
+            overage_weight = excluded.overage_weight,
             failure_count = excluded.failure_count,
             refresh_failure_count = excluded.refresh_failure_count,
             success_count = excluded.success_count,
@@ -1015,6 +1088,8 @@ fn insert_or_replace_stored_credential_tx(
             data_json,
             entry.policy.max_concurrent_override.map(|v| v as i64),
             entry.policy.rpm_override.map(|v| v as i64),
+            bool_to_i64(entry.policy.allow_overage),
+            entry.policy.effective_overage_weight() as i64,
             entry.failure_count as i64,
             entry.refresh_failure_count as i64,
             entry.success_count as i64,
@@ -1035,6 +1110,14 @@ fn opt_i64_to_u32(value: Option<i64>) -> Option<u32> {
 
 fn opt_i64_to_u64(value: Option<i64>) -> Option<u64> {
     value.and_then(|v| u64::try_from(v).ok())
+}
+
+fn bool_to_i64(value: bool) -> i64 {
+    if value { 1 } else { 0 }
+}
+
+fn i64_to_bool(value: i64) -> bool {
+    value != 0
 }
 
 fn i64_to_u32(value: i64) -> u32 {

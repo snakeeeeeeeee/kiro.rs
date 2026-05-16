@@ -3,12 +3,16 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tokio::time::{Duration, timeout};
 
+use crate::http_client::build_client;
 use crate::kiro::dynamic_proxy::DynamicProxyManager;
+use crate::kiro::endpoint::{endpoint_api_url, endpoint_label, normalize_endpoint_name};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownManager;
 use crate::kiro::settings::CredentialPolicy;
@@ -21,9 +25,10 @@ use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, BatchCredentialIdsRequest,
     BatchCredentialPolicyRequest, CredentialStatusItem, CredentialsStatusResponse,
     DynamicProxyActionResponse, DynamicProxyBatchActionResponse, DynamicProxyBindingsResponse,
-    ExportCredentialsRequest, ExportCredentialsResponse, LoadBalancingModeResponse,
-    RuntimeCredentialStatus, RuntimeSettingsResponse, RuntimeStatusResponse,
-    SetCredentialPolicyRequest, SetLoadBalancingModeRequest, SetRuntimeSettingsRequest,
+    EndpointConfigResponse, EndpointLatencyResponse, EndpointOption, ExportCredentialsRequest,
+    ExportCredentialsResponse, LoadBalancingModeResponse, RuntimeCredentialStatus,
+    RuntimeSettingsResponse, RuntimeStatusResponse, SetCredentialPolicyRequest,
+    SetLoadBalancingModeRequest, SetRuntimeSettingsRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -83,7 +88,7 @@ impl AdminService {
     /// 获取所有凭据状态
     pub fn get_all_credentials(&self) -> CredentialsStatusResponse {
         let snapshot = self.token_manager.snapshot();
-        let default_endpoint = self.token_manager.config().default_endpoint.clone();
+        let default_endpoint = self.token_manager.default_endpoint();
         let dynamic_bindings = self.dynamic_proxy_bindings_map();
 
         let mut credentials: Vec<CredentialStatusItem> = snapshot
@@ -102,6 +107,7 @@ impl AdminService {
                 api_key_hash: entry.api_key_hash,
                 masked_api_key: entry.masked_api_key,
                 email: entry.email,
+                subscription_title: entry.subscription_title,
                 success_count: entry.success_count,
                 last_used_at: entry.last_used_at.clone(),
                 has_proxy: entry.has_proxy,
@@ -109,6 +115,13 @@ impl AdminService {
                 refresh_failure_count: entry.refresh_failure_count,
                 disabled_reason: entry.disabled_reason,
                 endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
+                allow_overage: entry.allow_overage,
+                overage_weight: entry.overage_weight,
+                overage_stopped: entry.overage_stopped,
+                usage_current: entry.usage_current,
+                usage_limit: entry.usage_limit,
+                usage_percentage: entry.usage_percentage,
+                is_over_usage_limit: entry.is_over_usage_limit,
                 in_flight: entry.in_flight,
                 max_concurrent: entry.max_concurrent,
                 max_concurrent_override: entry.max_concurrent_override,
@@ -157,6 +170,8 @@ impl AdminService {
             });
         let dynamic_bindings = self.dynamic_proxy_bindings_map();
         RuntimeStatusResponse {
+            default_endpoint: snapshot.default_endpoint.clone(),
+            endpoints: self.endpoint_options(&snapshot.default_endpoint),
             global_in_flight: snapshot.global_in_flight,
             global_max_concurrent: snapshot.global_max_concurrent,
             per_account_default_max_concurrent: snapshot.per_account_default_max_concurrent,
@@ -168,6 +183,7 @@ impl AdminService {
             rate_limit_cooldown_ms: snapshot.rate_limit_cooldown_ms,
             transient_cooldown_ms: snapshot.transient_cooldown_ms,
             max_retry_accounts: snapshot.max_retry_accounts,
+            allow_over_usage: snapshot.allow_over_usage,
             model_capacity_cooldown_ms: snapshot.model_capacity_cooldown_ms,
             same_account_retry_rules: snapshot.same_account_retry_rules,
             token_auto_refresh_enabled: snapshot.token_auto_refresh_enabled,
@@ -233,6 +249,32 @@ impl AdminService {
         }
     }
 
+    fn endpoint_options(&self, default_endpoint: &str) -> Vec<EndpointOption> {
+        let mut names: Vec<&str> = self.known_endpoints.iter().map(|s| s.as_str()).collect();
+        names.sort();
+        names
+            .into_iter()
+            .map(|name| {
+                let api_url =
+                    endpoint_api_url(name, self.token_manager.config()).unwrap_or_default();
+                EndpointOption {
+                    name: name.to_string(),
+                    label: endpoint_label(name).unwrap_or(name).to_string(),
+                    api_url,
+                    is_default: name == default_endpoint,
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_endpoints(&self) -> EndpointConfigResponse {
+        let default_endpoint = self.token_manager.default_endpoint();
+        EndpointConfigResponse {
+            endpoints: self.endpoint_options(&default_endpoint),
+            default_endpoint,
+        }
+    }
+
     fn dynamic_proxy_bindings_map(
         &self,
     ) -> HashMap<u64, crate::kiro::dynamic_proxy::DynamicProxyBindingView> {
@@ -285,12 +327,69 @@ impl AdminService {
             .update_runtime_settings(req.clone())
             .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
         self.runtime_limiter.notify_capacity_available();
-        Ok(req)
+        Ok(self.token_manager.runtime_settings())
     }
 
     pub fn get_dynamic_proxy_bindings(&self) -> DynamicProxyBindingsResponse {
         DynamicProxyBindingsResponse {
             bindings: self.dynamic_proxy_bindings_map().into_values().collect(),
+        }
+    }
+
+    pub async fn test_endpoint_latency(
+        &self,
+        name: String,
+    ) -> Result<EndpointLatencyResponse, AdminServiceError> {
+        let endpoint = normalize_endpoint_name(&name);
+        if !self.known_endpoints.contains(&endpoint) {
+            return Err(AdminServiceError::InvalidCredential(format!(
+                "未知端点 \"{}\"",
+                name
+            )));
+        }
+
+        let api_url = endpoint_api_url(&endpoint, self.token_manager.config())
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))?;
+        let label = endpoint_label(&endpoint).unwrap_or(&endpoint).to_string();
+        let client = build_client(
+            self.token_manager.global_proxy().as_ref(),
+            10,
+            self.token_manager.config().tls_backend,
+        )
+        .map_err(|err| AdminServiceError::InternalError(err.to_string()))?;
+
+        let started_at = Instant::now();
+        let result = timeout(Duration::from_secs(10), client.get(&api_url).send()).await;
+        let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+
+        match result {
+            Ok(Ok(response)) => Ok(EndpointLatencyResponse {
+                endpoint,
+                label,
+                api_url,
+                network_ok: true,
+                status: Some(response.status().as_u16()),
+                latency_ms,
+                error: None,
+            }),
+            Ok(Err(err)) => Ok(EndpointLatencyResponse {
+                endpoint,
+                label,
+                api_url,
+                network_ok: false,
+                status: None,
+                latency_ms,
+                error: Some(err.to_string()),
+            }),
+            Err(_) => Ok(EndpointLatencyResponse {
+                endpoint,
+                label,
+                api_url,
+                network_ok: false,
+                status: None,
+                latency_ms,
+                error: Some("latency probe timed out after 10s".to_string()),
+            }),
         }
     }
 
@@ -426,6 +525,8 @@ impl AdminService {
         let policy = CredentialPolicy {
             max_concurrent_override: req.max_concurrent_override,
             rpm_override: req.rpm_override,
+            allow_overage: req.allow_overage,
+            overage_weight: req.overage_weight,
         };
         self.token_manager
             .set_policy(id, policy)
@@ -444,6 +545,8 @@ impl AdminService {
         let policy = CredentialPolicy {
             max_concurrent_override: req.max_concurrent_override,
             rpm_override: req.rpm_override,
+            allow_overage: req.allow_overage,
+            overage_weight: req.overage_weight,
         };
         self.token_manager
             .set_policy_batch(&req.ids, policy)
@@ -486,6 +589,13 @@ impl AdminService {
                 let now = Utc::now().timestamp() as f64;
                 if (now - cached.cached_at) < BALANCE_CACHE_TTL_SECS as f64 {
                     tracing::debug!("凭据 #{} 余额命中缓存", id);
+                    if let Err(err) = self.token_manager.update_usage_snapshot(
+                        id,
+                        cached.data.current_usage,
+                        cached.data.usage_limit,
+                    ) {
+                        tracing::warn!(credential_id = id, error = %err, "缓存余额同步到账号额度快照失败");
+                    }
                     return Ok(cached.data.clone());
                 }
             }
@@ -526,6 +636,12 @@ impl AdminService {
         } else {
             0.0
         };
+        if let Err(err) = self
+            .token_manager
+            .update_usage_snapshot(id, current_usage, usage_limit)
+        {
+            tracing::warn!(credential_id = id, error = %err, "更新账号额度快照失败");
+        }
 
         Ok(BalanceResponse {
             id,
@@ -544,7 +660,8 @@ impl AdminService {
         req: AddCredentialRequest,
     ) -> Result<AddCredentialResponse, AdminServiceError> {
         // 校验端点名：未指定则默认合法，指定则必须已注册
-        if let Some(ref name) = req.endpoint {
+        let endpoint = req.endpoint.as_deref().map(normalize_endpoint_name);
+        if let Some(ref name) = endpoint {
             if !self.known_endpoints.contains(name) {
                 let mut known: Vec<&str> =
                     self.known_endpoints.iter().map(|s| s.as_str()).collect();
@@ -579,7 +696,12 @@ impl AdminService {
             proxy_password: req.proxy_password,
             disabled: false, // 新添加的凭据默认启用
             kiro_api_key: req.kiro_api_key,
-            endpoint: req.endpoint,
+            endpoint,
+            allow_overage: false,
+            overage_weight: 0,
+            usage_current: 0.0,
+            usage_limit: 0.0,
+            overage_stopped: false,
         };
 
         // 调用 token_manager 添加凭据

@@ -52,8 +52,6 @@ pub struct KiroProvider {
     tls_backend: TlsBackend,
     /// 端点实现注册表（key: endpoint 名称）
     endpoints: HashMap<String, Arc<dyn KiroEndpoint>>,
-    /// 默认端点名称（凭据未指定 endpoint 时使用）
-    default_endpoint: String,
 }
 
 /// 上游 API 响应及其绑定的凭据占用守卫
@@ -630,7 +628,6 @@ impl KiroProvider {
             client_cache: Mutex::new(cache),
             tls_backend,
             endpoints,
-            default_endpoint,
         }
     }
 
@@ -654,10 +651,11 @@ impl KiroProvider {
 
     /// 根据凭据选择 endpoint 实现
     fn endpoint_for(&self, credentials: &KiroCredentials) -> anyhow::Result<Arc<dyn KiroEndpoint>> {
+        let runtime_default_endpoint = self.token_manager.default_endpoint();
         let name = credentials
             .endpoint
             .as_deref()
-            .unwrap_or(&self.default_endpoint);
+            .unwrap_or(runtime_default_endpoint.as_str());
         self.endpoints
             .get(name)
             .cloned()
@@ -767,6 +765,13 @@ impl KiroProvider {
 
             let url = endpoint.mcp_url(&rctx);
             let body = endpoint.transform_mcp_body(request_body, &rctx);
+            tracing::info!(
+                credential_id = ctx.id,
+                endpoint = endpoint.name(),
+                api_region = rctx.credentials.effective_api_region(config),
+                url = %url,
+                "kiro_mcp_request_endpoint"
+            );
 
             let base = self
                 .client_for(ctx.id, &ctx.credentials)?
@@ -824,6 +829,16 @@ impl KiroProvider {
                     anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
                 }
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
+                continue;
+            }
+
+            if status.as_u16() == 402 && endpoint.is_overage_limit(&body) {
+                self.token_manager.stop_overage_for(ctx.id);
+                last_error = Some(anyhow::anyhow!(
+                    "MCP 请求透支被上游拒绝: {} {}",
+                    status,
+                    body
+                ));
                 continue;
             }
 
@@ -1034,6 +1049,15 @@ impl KiroProvider {
 
             let url = endpoint.api_url(&rctx);
             let body = endpoint.transform_api_body(request_body, &rctx);
+            tracing::info!(
+                model = model_for_metrics.as_str(),
+                credential_id = ctx.id,
+                endpoint = endpoint.name(),
+                api_region = rctx.credentials.effective_api_region(config),
+                stream = is_stream,
+                url = %url,
+                "kiro_api_request_endpoint"
+            );
             if let Some(dump) = prompt_dump.as_ref() {
                 dump.write_text("upstream_request.json", &body);
             }
@@ -1267,6 +1291,28 @@ impl KiroProvider {
 
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败: {} {}",
+                    api_type,
+                    status,
+                    body
+                ));
+                excluded_credentials.insert(ctx.id);
+                continue;
+            }
+
+            if status.as_u16() == 402 && endpoint.is_overage_limit(&body) {
+                tracing::warn!(
+                    credential_id = ctx.id,
+                    attempted_credentials = ?attempted_credentials,
+                    excluded_credential_ids = ?excluded_credentials,
+                    "API 请求透支被上游拒绝，关闭账号级透支并切换，尝试账号 {}/{}: {} {}",
+                    attempted_credentials.len(),
+                    max_retry_accounts,
+                    status,
+                    body
+                );
+                self.token_manager.stop_overage_for(ctx.id);
+                last_error = Some(anyhow::anyhow!(
+                    "{} API 请求透支被上游拒绝: {} {}",
                     api_type,
                     status,
                     body

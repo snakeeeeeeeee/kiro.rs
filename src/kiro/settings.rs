@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::kiro::endpoint::{is_supported_endpoint_name, normalize_endpoint_name};
 use crate::model::config::Config;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +28,7 @@ fn default_same_account_retry_rule_respect_retry_after() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettings {
+    pub default_endpoint: String,
     pub global_max_concurrent: usize,
     pub per_account_default_max_concurrent: usize,
     pub queue_max_size: usize,
@@ -36,6 +38,7 @@ pub struct RuntimeSettings {
     pub rate_limit_cooldown_ms: u64,
     pub transient_cooldown_ms: u64,
     pub max_retry_accounts: usize,
+    pub allow_over_usage: bool,
     pub model_capacity_cooldown_ms: u64,
     pub same_account_retry_rules: Vec<SameAccountRetryRule>,
     pub token_auto_refresh_enabled: bool,
@@ -111,11 +114,14 @@ pub struct RuntimeSettings {
 pub struct CredentialPolicy {
     pub max_concurrent_override: Option<usize>,
     pub rpm_override: Option<u32>,
+    pub allow_overage: bool,
+    pub overage_weight: u32,
 }
 
 impl RuntimeSettings {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            default_endpoint: normalize_endpoint_name(&config.default_endpoint),
             global_max_concurrent: config.global_max_concurrent.max(1),
             per_account_default_max_concurrent: config.per_account_max_concurrent.max(1),
             queue_max_size: config.queue_max_size,
@@ -125,6 +131,7 @@ impl RuntimeSettings {
             rate_limit_cooldown_ms: config.rate_limit_cooldown_ms,
             transient_cooldown_ms: config.transient_cooldown_ms,
             max_retry_accounts: config.max_retry_accounts.max(1),
+            allow_over_usage: config.allow_over_usage,
             model_capacity_cooldown_ms: config.model_capacity_cooldown_ms,
             same_account_retry_rules: config.same_account_retry_rules.clone(),
             token_auto_refresh_enabled: config.token_auto_refresh_enabled,
@@ -229,6 +236,12 @@ impl RuntimeSettings {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
+        if self.default_endpoint.trim().is_empty() {
+            anyhow::bail!("defaultEndpoint 不能为空");
+        }
+        if !is_supported_endpoint_name(&self.default_endpoint) {
+            anyhow::bail!("defaultEndpoint 未知: {}", self.default_endpoint);
+        }
         validate_max_concurrent("globalMaxConcurrent", self.global_max_concurrent, 512)?;
         validate_max_concurrent(
             "perAccountDefaultMaxConcurrent",
@@ -468,6 +481,8 @@ impl CredentialPolicy {
         Self {
             max_concurrent_override: None,
             rpm_override: None,
+            allow_overage: false,
+            overage_weight: 1,
         }
     }
 
@@ -483,7 +498,10 @@ impl CredentialPolicy {
     }
 
     pub fn uses_default_policy(&self) -> bool {
-        self.max_concurrent_override.is_none() && self.rpm_override.is_none()
+        self.max_concurrent_override.is_none()
+            && self.rpm_override.is_none()
+            && !self.allow_overage
+            && self.effective_overage_weight() == 1
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -494,6 +512,10 @@ impl CredentialPolicy {
             validate_rpm("rpmOverride", value)?;
         }
         Ok(())
+    }
+
+    pub fn effective_overage_weight(&self) -> u32 {
+        self.overage_weight.clamp(1, 10)
     }
 }
 

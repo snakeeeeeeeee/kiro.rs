@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use kiro::dynamic_proxy::{DynamicProxyManager, spawn_dynamic_proxy_worker};
-use kiro::endpoint::{IdeEndpoint, KiroEndpoint};
+use kiro::endpoint::{KiroEndpoint, default_endpoints, normalize_endpoint_name};
 use kiro::model::credentials::{CredentialsConfig, KiroCredentials};
 use kiro::model_cooldown::ModelCooldownManager;
 use kiro::provider::KiroProvider;
@@ -117,7 +117,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let runtime_settings = store
+    let mut runtime_settings = store
         .load_runtime_settings(&default_runtime_settings)
         .unwrap_or_else(|e| {
             tracing::error!("加载运行时配置失败: {}", e);
@@ -159,21 +159,26 @@ async fn main() {
 
     // 构建端点注册表
     let mut endpoints: HashMap<String, Arc<dyn KiroEndpoint>> = HashMap::new();
-    {
-        let ide = IdeEndpoint::new();
-        endpoints.insert(ide.name().to_string(), Arc::new(ide));
+    for endpoint in default_endpoints() {
+        endpoints.insert(endpoint.name().to_string(), endpoint);
     }
 
+    runtime_settings.default_endpoint = normalize_endpoint_name(&runtime_settings.default_endpoint);
+
     // 校验默认端点存在
-    if !endpoints.contains_key(&config.default_endpoint) {
-        tracing::error!("默认端点 \"{}\" 未注册", config.default_endpoint);
+    if !endpoints.contains_key(&runtime_settings.default_endpoint) {
+        tracing::error!("默认端点 \"{}\" 未注册", runtime_settings.default_endpoint);
         std::process::exit(1);
     }
 
     // 校验所有凭据声明的端点都已注册
     for cred in &credentials_list {
-        let name = cred.endpoint.as_deref().unwrap_or(&config.default_endpoint);
-        if !endpoints.contains_key(name) {
+        let name = cred
+            .endpoint
+            .as_deref()
+            .map(normalize_endpoint_name)
+            .unwrap_or_else(|| runtime_settings.default_endpoint.clone());
+        if !endpoints.contains_key(&name) {
             tracing::error!(
                 "凭据 id={:?} 指定了未知端点 \"{}\"（已注册: {:?}）",
                 cred.id,
@@ -198,7 +203,7 @@ async fn main() {
         Some(credentials_path.into()),
         is_multiple_format,
         Some(store),
-        runtime_settings,
+        runtime_settings.clone(),
     )
     .unwrap_or_else(|e| {
         tracing::error!("创建 Token 管理器失败: {}", e);
@@ -214,7 +219,7 @@ async fn main() {
         model_cooldowns.clone(),
         proxy_config.clone(),
         endpoints,
-        config.default_endpoint.clone(),
+        runtime_settings.default_endpoint.clone(),
     );
     spawn_token_auto_refresh(token_manager.clone());
     spawn_dynamic_proxy_worker(dynamic_proxy_manager.clone(), token_manager.clone());

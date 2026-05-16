@@ -37,6 +37,24 @@ pub async fn get_runtime_settings(State(state): State<AdminState>) -> impl IntoR
     Json(response)
 }
 
+/// GET /api/admin/endpoints
+/// 获取可用端点和当前默认端点
+pub async fn get_endpoints(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_endpoints())
+}
+
+/// POST /api/admin/endpoints/:name/latency
+/// 测试端点基础网络延迟（不携带用户凭据）
+pub async fn test_endpoint_latency(
+    State(state): State<AdminState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    match state.service.test_endpoint_latency(name).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
 /// PUT /api/admin/settings/runtime
 /// 设置运行时调度配置
 pub async fn set_runtime_settings(

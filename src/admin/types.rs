@@ -52,6 +52,8 @@ pub struct CredentialStatusItem {
     pub masked_api_key: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
+    /// 订阅标题（本地缓存）
+    pub subscription_title: Option<String>,
     /// API 调用成功次数
     pub success_count: u64,
     /// 最后一次 API 调用时间（RFC3339 格式）
@@ -68,6 +70,20 @@ pub struct CredentialStatusItem {
     pub disabled_reason: Option<String>,
     /// 端点名称（决定该凭据走哪套 Kiro API，已回退到默认端点）
     pub endpoint: String,
+    /// 是否允许该账号在本地额度快照达到上限后继续调度
+    pub allow_overage: bool,
+    /// 透支后的调度权重（1-10）
+    pub overage_weight: u32,
+    /// 是否因上游 OVERAGE 拒绝而停止透支
+    pub overage_stopped: bool,
+    /// 本地缓存的当前额度使用量
+    pub usage_current: f64,
+    /// 本地缓存的额度上限
+    pub usage_limit: f64,
+    /// 本地缓存的额度使用比例
+    pub usage_percentage: f64,
+    /// 本地缓存是否显示已达到额度上限
+    pub is_over_usage_limit: bool,
     /// 当前正在处理的请求数
     pub in_flight: u32,
     /// 单账号最大并发数
@@ -98,6 +114,8 @@ pub struct CredentialStatusItem {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatusResponse {
+    pub default_endpoint: String,
+    pub endpoints: Vec<EndpointOption>,
     pub global_in_flight: usize,
     pub global_max_concurrent: usize,
     pub per_account_default_max_concurrent: usize,
@@ -109,6 +127,7 @@ pub struct RuntimeStatusResponse {
     pub rate_limit_cooldown_ms: u64,
     pub transient_cooldown_ms: u64,
     pub max_retry_accounts: usize,
+    pub allow_over_usage: bool,
     pub model_capacity_cooldown_ms: u64,
     pub same_account_retry_rules: Vec<crate::kiro::settings::SameAccountRetryRule>,
     pub token_auto_refresh_enabled: bool,
@@ -156,6 +175,34 @@ pub struct RuntimeStatusResponse {
     pub credentials: Vec<RuntimeCredentialStatus>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointOption {
+    pub name: String,
+    pub label: String,
+    pub api_url: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointConfigResponse {
+    pub default_endpoint: String,
+    pub endpoints: Vec<EndpointOption>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointLatencyResponse {
+    pub endpoint: String,
+    pub label: String,
+    pub api_url: String,
+    pub network_ok: bool,
+    pub status: Option<u16>,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeCredentialStatus {
@@ -197,6 +244,8 @@ pub struct SetPriorityRequest {
 pub struct SetCredentialPolicyRequest {
     pub max_concurrent_override: Option<usize>,
     pub rpm_override: Option<u32>,
+    pub allow_overage: bool,
+    pub overage_weight: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +254,8 @@ pub struct BatchCredentialPolicyRequest {
     pub ids: Vec<u64>,
     pub max_concurrent_override: Option<usize>,
     pub rpm_override: Option<u32>,
+    pub allow_overage: bool,
+    pub overage_weight: u32,
 }
 
 #[derive(Debug, Deserialize)]

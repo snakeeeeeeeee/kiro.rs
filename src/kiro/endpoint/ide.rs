@@ -14,6 +14,7 @@ use super::{KiroEndpoint, RequestContext};
 /// Kiro IDE 端点名称
 pub const IDE_ENDPOINT_NAME: &str = "ide";
 
+#[derive(Clone, Copy)]
 /// Kiro IDE 端点
 pub struct IdeEndpoint;
 
@@ -26,18 +27,18 @@ impl IdeEndpoint {
         ctx.credentials.effective_api_region(ctx.config)
     }
 
-    fn host(&self, ctx: &RequestContext<'_>) -> String {
+    pub(crate) fn host(&self, ctx: &RequestContext<'_>) -> String {
         format!("q.{}.amazonaws.com", self.api_region(ctx))
     }
 
-    fn x_amz_user_agent(&self, ctx: &RequestContext<'_>) -> String {
+    pub(crate) fn x_amz_user_agent(&self, ctx: &RequestContext<'_>) -> String {
         format!(
             "aws-sdk-js/1.0.34 KiroIDE-{}-{}",
             ctx.config.kiro_version, ctx.machine_id
         )
     }
 
-    fn user_agent(&self, ctx: &RequestContext<'_>) -> String {
+    pub(crate) fn user_agent(&self, ctx: &RequestContext<'_>) -> String {
         format!(
             "aws-sdk-js/1.0.34 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.34 m/E KiroIDE-{}-{}",
             ctx.config.system_version,
@@ -46,6 +47,25 @@ impl IdeEndpoint {
             ctx.machine_id
         )
     }
+}
+
+pub(crate) fn decorate_ide_mcp(req: RequestBuilder, ctx: &RequestContext<'_>) -> RequestBuilder {
+    let ide = IdeEndpoint::new();
+    let mut req = req
+        .header("x-amz-user-agent", ide.x_amz_user_agent(ctx))
+        .header("user-agent", ide.user_agent(ctx))
+        .header("host", ide.host(ctx))
+        .header("amz-sdk-invocation-id", Uuid::new_v4().to_string())
+        .header("amz-sdk-request", "attempt=1; max=3")
+        .header("Authorization", format!("Bearer {}", ctx.token));
+
+    if let Some(ref arn) = ctx.credentials.profile_arn {
+        req = req.header("x-amzn-kiro-profile-arn", arn);
+    }
+    if ctx.credentials.is_api_key_credential() {
+        req = req.header("tokentype", "API_KEY");
+    }
+    req
 }
 
 impl Default for IdeEndpoint {
@@ -88,21 +108,7 @@ impl KiroEndpoint for IdeEndpoint {
     }
 
     fn decorate_mcp(&self, req: RequestBuilder, ctx: &RequestContext<'_>) -> RequestBuilder {
-        let mut req = req
-            .header("x-amz-user-agent", self.x_amz_user_agent(ctx))
-            .header("user-agent", self.user_agent(ctx))
-            .header("host", self.host(ctx))
-            .header("amz-sdk-invocation-id", Uuid::new_v4().to_string())
-            .header("amz-sdk-request", "attempt=1; max=3")
-            .header("Authorization", format!("Bearer {}", ctx.token));
-
-        if let Some(ref arn) = ctx.credentials.profile_arn {
-            req = req.header("x-amzn-kiro-profile-arn", arn);
-        }
-        if ctx.credentials.is_api_key_credential() {
-            req = req.header("tokentype", "API_KEY");
-        }
-        req
+        decorate_ide_mcp(req, ctx)
     }
 
     fn transform_api_body(&self, body: &str, ctx: &RequestContext<'_>) -> String {
@@ -111,7 +117,7 @@ impl KiroEndpoint for IdeEndpoint {
 }
 
 /// 将 profile_arn 注入到请求体 JSON 根对象
-fn inject_profile_arn(request_body: &str, profile_arn: &Option<String>) -> String {
+pub(crate) fn inject_profile_arn(request_body: &str, profile_arn: &Option<String>) -> String {
     if let Some(arn) = profile_arn {
         if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(request_body) {
             json["profileArn"] = serde_json::Value::String(arn.clone());
