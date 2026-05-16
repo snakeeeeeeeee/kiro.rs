@@ -270,3 +270,10 @@
 - Kiro-Go account exports use `subscription.title` / `usage.current` / `usage.limit`, while local and KAM-style records may use `subscriptionTitle`, `usageCurrent`, and `usageLimit`. Import normalization needs to accept both shapes.
 - Kiro-Go `expiresAt` can be a Unix timestamp in seconds or milliseconds, while local exports use RFC3339 strings. The UI normalizer converts numeric timestamps to ISO strings before sending to Admin API.
 - The account table already prefers `email` as the account name. The missing piece was preserving imported email through `AddCredentialRequest` and the token manager add path.
+
+## 2026-05-16 CCTest LLM Fingerprint Log Review
+- `tmp/llm指纹没过的日志.txt` contains two Opus 4.7 stream requests. Both ended with `classification="signed_ok"` and `signature_seen=true/signature_exposed_to_client=true`, so this specific log does not show local signature swallowing.
+- The same log ran with `run_mode=custom` and `signed_thinking_mode=off`; that can still expose a current response `signature_delta`, but it does not enable the signed-thinking assistant-history replay path needed by multi-turn signature continuity probes.
+- The ANTML probe in the failed log had `model_antml_probe_compat_applied` but no `cleared_tool_count`, and the raw upstream body still included the large Claude Code tool schema. Current source now clears `userInputMessageContext.tools` for matched ANTML probes and logs `cleared_tool_count`.
+- Current source also strips leading XML thinking directives from matched ANTML visible text and normalizes a bare `<hex>` answer back to the requested `<antml:hex>` form. The local ANTML regression suite passed, so this failure appears to be from an older runtime or non-benchmark/custom runtime settings rather than the current source state.
+- Practical rerun requirement: use Opus 4.7 `benchmark` mode, or at minimum `cc_max_like + history_experiment + native thinking + flat usage + aggregator models`, with Prompt Dump/raw debug only for diagnosis. For this log class, look first for `cleared_tool_count`, `request_kind="antml_probe"`, and `classification="signed_ok"`.

@@ -36,6 +36,7 @@ export interface AccountColumn {
 
 interface AccountTableProps {
   credentials: CredentialStatusItem[]
+  allowOverUsage: boolean
   selectedIds: Set<number>
   columns: AccountColumn[]
   sortKey: AccountSortKey
@@ -143,8 +144,17 @@ function quotaView(credential: CredentialStatusItem, balance?: BalanceResponse) 
   }
 }
 
+function quotaStatusBadge(credential: CredentialStatusItem, allowOverUsage: boolean) {
+  if (!credential.isOverUsageLimit) return null
+  if (credential.overageStopped || (!credential.allowOverage && !allowOverUsage)) {
+    return <Badge variant="destructive">超额不可用</Badge>
+  }
+  return <Badge variant="warning">超额可用</Badge>
+}
+
 export function AccountTable({
   credentials,
+  allowOverUsage,
   selectedIds,
   columns,
   sortKey,
@@ -263,13 +273,12 @@ export function AccountTable({
                               </div>
                             )}
                             <div className="flex flex-wrap gap-1">
-                              {credential.isOverUsageLimit && (
-                                <Badge variant={credential.overageStopped ? 'destructive' : 'warning'}>
-                                  {credential.overageStopped ? '透支停止' : '已满'}
-                                </Badge>
-                              )}
+                              {quotaStatusBadge(credential, allowOverUsage)}
                               {credential.allowOverage && !credential.overageStopped && (
-                                <Badge variant="secondary">透支 x{credential.overageWeight}</Badge>
+                                <Badge variant="secondary">账号超额</Badge>
+                              )}
+                              {!credential.allowOverage && allowOverUsage && credential.isOverUsageLimit && !credential.overageStopped && (
+                                <Badge variant="secondary">全局超额</Badge>
                               )}
                               <Button
                                 size="sm"

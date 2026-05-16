@@ -500,3 +500,9 @@
 
 ## Latest Validation: Current-Page Balance Auto Refresh
 - `pnpm --dir admin-ui build`: passed.
+
+## Completed: 2026-05-16 CCTest LLM Fingerprint Log Review
+- Reviewed `tmp/llm指纹没过的日志.txt` plus prior `tmp/cctest提问和回答信息*.txt` diagnostics.
+- Found the latest provided failure log does not show signature loss: both recorded Opus 4.7 requests were `classification="signed_ok"` with signatures exposed to the client.
+- Identified two likely fingerprint causes in that run: runtime stayed in `custom` with effective `signed_thinking_mode=off`, and the ANTML probe still sent the full Claude Code tool schema upstream because the log predates the current `cleared_tool_count` ANTML cleanup.
+- Verified current source has the expected ANTML cleanup and tag normalization behavior with `cargo test antml -- --nocapture` and `cargo test opus47_signature_diagnostics_classifies_failure_modes -- --nocapture`; both passed.

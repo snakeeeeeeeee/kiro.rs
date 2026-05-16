@@ -1360,6 +1360,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
           <AccountTable
             credentials={currentCredentials}
+            allowOverUsage={runtimeStatus?.allowOverUsage ?? false}
             selectedIds={selectedIds}
             columns={activeColumns}
             sortKey={sortKey}

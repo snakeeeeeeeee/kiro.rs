@@ -1116,31 +1116,11 @@ impl MultiTokenManager {
         let idx = match mode {
             "balanced" => *available.iter().min_by_key(|idx| {
                 let e = &entries[**idx];
-                let overage_rank = if e.credentials.is_over_usage_limit() {
-                    10_u32.saturating_sub(e.credentials.effective_overage_weight())
-                } else {
-                    0
-                };
-                (
-                    overage_rank,
-                    e.in_flight,
-                    e.success_count,
-                    e.credentials.priority,
-                )
+                (e.in_flight, e.success_count, e.credentials.priority)
             })?,
             _ => *available.iter().min_by_key(|idx| {
                 let e = &entries[**idx];
-                let overage_rank = if e.credentials.is_over_usage_limit() {
-                    10_u32.saturating_sub(e.credentials.effective_overage_weight())
-                } else {
-                    0
-                };
-                (
-                    e.credentials.priority,
-                    overage_rank,
-                    e.in_flight,
-                    e.success_count,
-                )
+                (e.credentials.priority, e.in_flight, e.success_count)
             })?,
         };
 

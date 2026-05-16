@@ -90,7 +90,7 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
         <DialogHeader>
           <DialogTitle>{isBatch ? `批量调整 ${selectedIds.length} 个账号` : '账号调度策略'}</DialogTitle>
           <DialogDescription>
-            留空表示使用全局默认值；RPM 为 0 表示不限速。透支设置参考 Kiro-Go 的 allowOverage/overageWeight。
+            留空表示使用全局默认值；RPM 为 0 表示不限速。允许超额后，只要上游未拒绝，该账号按正常账号参与调度。
           </DialogDescription>
         </DialogHeader>
 
@@ -155,7 +155,7 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
               onChange={event => setOverageWeight(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              1-10；本地额度已满后使用，数值越大越容易被调度。
+              兼容导入字段保留；当前调度不再用该值降低超额账号权重。
             </p>
           </div>
         </div>
