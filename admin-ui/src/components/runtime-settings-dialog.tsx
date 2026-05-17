@@ -883,7 +883,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 }
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
               >
-                <option value="model">按模型累计</option>
+                <option value="model">单请求隔离</option>
                 <option value="none">不累计</option>
               </select>
             </div>

@@ -1913,7 +1913,6 @@ async fn handle_stream_request(
     let pending_usage = usage_manager.preview_usage(
         &settings,
         VirtualUsageInput {
-            credential_id,
             model: model.to_string(),
             session_key: usage_session_key,
             observed_total_input_tokens: input_tokens,
@@ -2831,7 +2830,6 @@ use super::converter::get_context_window_size;
 fn build_virtual_usage(
     usage_manager: &VirtualCacheUsageManager,
     settings: &crate::kiro::settings::RuntimeSettings,
-    credential_id: u64,
     model: &str,
     session_key: String,
     observed_total_input_tokens: i32,
@@ -2842,7 +2840,6 @@ fn build_virtual_usage(
     usage_manager.build_usage(
         settings,
         VirtualUsageInput {
-            credential_id,
             model: model.to_string(),
             session_key,
             observed_total_input_tokens,
@@ -3159,7 +3156,6 @@ async fn handle_non_stream_request(
     let usage = build_virtual_usage(
         &usage_manager,
         &settings,
-        credential_id,
         model,
         usage_session_key,
         final_input_tokens,
@@ -4658,7 +4654,6 @@ async fn handle_stream_request_buffered(
             let pending_usage = usage_manager.preview_usage(
                 &settings,
                 VirtualUsageInput {
-                    credential_id,
                     model: model.clone(),
                     session_key: usage_session_key,
                     observed_total_input_tokens: final_input_tokens,

@@ -329,7 +329,7 @@ The proxy can return Anthropic-compatible cache usage fields for downstream gate
 
 This is virtual accounting for your single-node pool. It is not a claim that Kiro upstream billed the exact same cache read/write tokens.
 
-The ledger is in memory and keyed by credential, model, and session. A stable `metadata.user_id` gives the most consistent read accumulation. When no metadata is present, `virtualCacheFallbackScope: "model"` lets repeated cctest/new-api checks for the same model share a fallback bucket.
+The ledger is in memory and keyed by model plus the client/session scope derived from `metadata.user_id`. Internal Kiro credential rotation does not reset the virtual cache ledger for the same client session. When no metadata is present, requests use an isolated fallback key instead of a shared model bucket to avoid cross-user accounting.
 
 By default the proxy keeps the older conservative accounting shape: `virtualCacheInputMode: "fixed"` uses `virtualCacheUncachedInputTokens`, and `virtualCacheCreationMode: "fixed"` uses the configured minimum/maximum creation range. For more natural downstream audit numbers, enable these in Admin runtime settings:
 

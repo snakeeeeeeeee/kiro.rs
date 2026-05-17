@@ -42,7 +42,6 @@ impl CacheTtl {
 
 #[derive(Debug, Clone)]
 pub struct VirtualUsageInput {
-    pub credential_id: u64,
     pub model: String,
     pub session_key: String,
     pub observed_total_input_tokens: i32,
@@ -116,7 +115,6 @@ impl AnthropicUsage {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct LedgerKey {
-    credential_id: u64,
     model: String,
     session_key: String,
 }
@@ -199,7 +197,6 @@ impl VirtualCacheUsageManager {
         }
 
         let key = LedgerKey {
-            credential_id: input.credential_id,
             model: input.model.clone(),
             session_key: input.session_key.clone(),
         };
@@ -424,7 +421,6 @@ fn deterministic_range_i32(
 
 fn stable_hash(input: &VirtualUsageInput, turn_count: u64, salt: &str) -> u64 {
     let mut hasher = Sha256::new();
-    hasher.update(input.credential_id.to_le_bytes());
     hasher.update(input.model.as_bytes());
     hasher.update(input.session_key.as_bytes());
     hasher.update(turn_count.to_le_bytes());
@@ -539,20 +535,52 @@ pub fn session_key_for_request(req: &MessagesRequest, model: &str, fallback_scop
         .as_ref()
         .and_then(|metadata| metadata.user_id.as_ref())
     {
-        if let Some(session_id) = extract_session_id(user_id) {
-            return session_id;
-        }
         let trimmed = user_id.trim();
         if !trimmed.is_empty() {
-            return trimmed.to_string();
+            return metadata_user_id_cache_key(trimmed);
         }
     }
 
-    if fallback_scope == "none" {
-        format!("fallback:none:{}", uuid::Uuid::new_v4())
+    let fallback_kind = if fallback_scope == "none" {
+        "none"
     } else {
-        format!("fallback:model:{}", model)
+        "missing-metadata"
+    };
+    format!("fallback:{fallback_kind}:{model}:{}", uuid::Uuid::new_v4())
+}
+
+fn metadata_user_id_cache_key(user_id: &str) -> String {
+    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(user_id) {
+        let device_id = map
+            .get("device_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        let account_uuid = map
+            .get("account_uuid")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        let user = map
+            .get("user_id")
+            .or_else(|| map.get("user"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        let session_id = extract_session_id(user_id).unwrap_or_default();
+
+        if !device_id.is_empty()
+            || !account_uuid.is_empty()
+            || !user.is_empty()
+            || !session_id.is_empty()
+        {
+            return format!(
+                "metadata:json:device={device_id}:account={account_uuid}:user={user}:session={session_id}"
+            );
+        }
     }
+
+    format!("metadata:user:{user_id}")
 }
 
 pub fn request_cache_ttl(req: &MessagesRequest, default_ttl: CacheTtl) -> CacheTtl {
@@ -644,7 +672,6 @@ mod tests {
 
     fn input(session: &str, observed: i32, ttl: CacheTtl) -> VirtualUsageInput {
         VirtualUsageInput {
-            credential_id: 1,
             model: "claude-sonnet-4-5-20250929".to_string(),
             session_key: session.to_string(),
             observed_total_input_tokens: observed,
@@ -671,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_models_and_credentials_are_isolated() {
+    fn sessions_and_models_are_isolated_but_credentials_share_client_cache() {
         let manager = VirtualCacheUsageManager::new();
         let settings = settings();
 
@@ -690,14 +717,82 @@ mod tests {
         );
         assert_eq!(other_model.cache_read_input_tokens, 0);
 
-        let other_credential = manager.build_usage(
+        let same_client_after_internal_credential_switch = manager.build_usage(
             &settings,
             VirtualUsageInput {
-                credential_id: 2,
-                ..input("session-a", 1000, CacheTtl::FiveMinutes)
+                ..input("session-a", 1100, CacheTtl::FiveMinutes)
             },
         );
-        assert_eq!(other_credential.cache_read_input_tokens, 0);
+        assert_eq!(
+            same_client_after_internal_credential_switch.cache_read_input_tokens,
+            999
+        );
+    }
+
+    fn request_with_metadata_user_id(user_id: &str) -> MessagesRequest {
+        serde_json::from_value(json!({
+            "model": "claude-sonnet-4-5-20250929",
+            "max_tokens": 100,
+            "metadata": {
+                "user_id": user_id
+            },
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn request_without_metadata() -> MessagesRequest {
+        serde_json::from_value(json!({
+            "model": "claude-sonnet-4-5-20250929",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn metadata_json_cache_key_keeps_user_scope_and_session_scope() {
+        let user_id = r#"{"session_id":"8bb5523b-ec7c-4540-a9ca-beb6d79f1552","account_uuid":"account-a","device_id":"device-a"}"#;
+        let request = request_with_metadata_user_id(user_id);
+
+        assert_eq!(
+            session_key_for_request(&request, &request.model, "model"),
+            "metadata:json:device=device-a:account=account-a:user=:session=8bb5523b-ec7c-4540-a9ca-beb6d79f1552"
+        );
+    }
+
+    #[test]
+    fn metadata_string_cache_key_keeps_full_user_id_not_only_session() {
+        let user_id = "user_device-a_account__session_8bb5523b-ec7c-4540-a9ca-beb6d79f1552";
+        let request = request_with_metadata_user_id(user_id);
+
+        assert_eq!(
+            session_key_for_request(&request, &request.model, "model"),
+            format!("metadata:user:{user_id}")
+        );
+    }
+
+    #[test]
+    fn missing_metadata_fallback_does_not_share_model_ledger() {
+        let first = request_without_metadata();
+        let second = request_without_metadata();
+
+        let first_key = session_key_for_request(&first, &first.model, "model");
+        let second_key = session_key_for_request(&second, &second.model, "model");
+
+        assert!(first_key.starts_with("fallback:missing-metadata:claude-sonnet-4-5-20250929:"));
+        assert!(second_key.starts_with("fallback:missing-metadata:claude-sonnet-4-5-20250929:"));
+        assert_ne!(first_key, second_key);
     }
 
     #[test]

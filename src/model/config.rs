@@ -321,7 +321,7 @@ pub struct Config {
     #[serde(default = "default_virtual_cache_burst_max_tokens")]
     pub virtual_cache_burst_max_tokens: u32,
 
-    /// 无 metadata 时的 fallback 范围："model" 或 "none"
+    /// 无 metadata 时的 fallback 策略："model" 为兼容旧配置的单请求隔离，"none" 为不累计
     #[serde(default = "default_virtual_cache_fallback_scope")]
     pub virtual_cache_fallback_scope: String,
 
