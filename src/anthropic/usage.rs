@@ -143,6 +143,7 @@ pub struct PendingVirtualUsage {
     creation_ttl: CacheTtl,
     creation_tokens: i32,
     observed_total_input_tokens: i32,
+    reset_ledger: bool,
 }
 
 impl PendingVirtualUsage {
@@ -193,6 +194,7 @@ impl VirtualCacheUsageManager {
                 creation_ttl: input.creation_ttl,
                 creation_tokens: 0,
                 observed_total_input_tokens: observed_total,
+                reset_ledger: false,
             };
         }
 
@@ -204,14 +206,25 @@ impl VirtualCacheUsageManager {
 
         let mut entry = self.ledgers.lock().get(&key).cloned().unwrap_or_default();
         expire_entry(&mut entry, now);
+        let reset_ledger = should_reset_for_context_shrink(&entry, observed_total);
+        if reset_ledger {
+            entry = LedgerEntry::default();
+        }
 
+        let uncached = compute_uncached_tokens(settings, &input, observed_total);
+        cap_entry_cached_tokens(&mut entry, observed_total.saturating_sub(uncached));
         let read_tokens = entry
             .cached_5m_tokens
             .saturating_add(entry.cached_1h_tokens);
-        let uncached = compute_uncached_tokens(settings, &input, observed_total);
 
-        let creation_tokens =
-            compute_creation_tokens(settings, &input, &entry, observed_total, uncached);
+        let creation_tokens = compute_creation_tokens(
+            settings,
+            &input,
+            &entry,
+            observed_total,
+            uncached,
+            reset_ledger,
+        );
 
         let (ephemeral_5m_input_tokens, ephemeral_1h_input_tokens) = match input.creation_ttl {
             CacheTtl::FiveMinutes => (creation_tokens, 0),
@@ -232,6 +245,7 @@ impl VirtualCacheUsageManager {
             creation_ttl: input.creation_ttl,
             creation_tokens,
             observed_total_input_tokens: observed_total,
+            reset_ledger,
         }
     }
 
@@ -242,7 +256,11 @@ impl VirtualCacheUsageManager {
 
         let mut ledgers = self.ledgers.lock();
         let entry = ledgers.entry(key).or_default();
-        expire_entry(entry, now);
+        if pending.reset_ledger {
+            *entry = LedgerEntry::default();
+        } else {
+            expire_entry(entry, now);
+        }
 
         match pending.creation_ttl {
             CacheTtl::FiveMinutes => {
@@ -258,9 +276,13 @@ impl VirtualCacheUsageManager {
                 entry.cached_1h_expires_at = Some(now + pending.creation_ttl.duration());
             }
         }
-        entry.last_observed_input_tokens = entry
-            .last_observed_input_tokens
-            .max(pending.observed_total_input_tokens);
+        cap_entry_cached_tokens(
+            entry,
+            pending
+                .observed_total_input_tokens
+                .saturating_sub(pending.usage.input_tokens),
+        );
+        entry.last_observed_input_tokens = pending.observed_total_input_tokens;
         entry.turn_count = entry.turn_count.saturating_add(1);
     }
 }
@@ -295,11 +317,15 @@ fn compute_creation_tokens(
     entry: &LedgerEntry,
     observed_total: i32,
     uncached: i32,
+    reset_ledger: bool,
 ) -> i32 {
     if entry.turn_count == 0 {
-        return observed_total
-            .saturating_sub(uncached)
-            .max(settings.virtual_cache_warmup_tokens as i32);
+        let cacheable_input = observed_total.saturating_sub(uncached);
+        return if reset_ledger {
+            cacheable_input
+        } else {
+            cacheable_input.max(settings.virtual_cache_warmup_tokens as i32)
+        };
     }
 
     let delta = observed_total.saturating_sub(entry.last_observed_input_tokens);
@@ -435,6 +461,38 @@ fn expire_entry(entry: &mut LedgerEntry, now: DateTime<Utc>) {
     if no_active_bucket {
         entry.turn_count = 0;
         entry.last_observed_input_tokens = 0;
+    }
+}
+
+fn should_reset_for_context_shrink(entry: &LedgerEntry, observed_total: i32) -> bool {
+    entry.turn_count > 0
+        && entry.last_observed_input_tokens > 0
+        && observed_total < entry.last_observed_input_tokens.saturating_mul(7) / 10
+}
+
+fn cap_entry_cached_tokens(entry: &mut LedgerEntry, max_total: i32) {
+    let max_total = max_total.max(0);
+    let total = entry
+        .cached_5m_tokens
+        .saturating_add(entry.cached_1h_tokens);
+    if total <= max_total {
+        return;
+    }
+
+    let mut excess = total.saturating_sub(max_total);
+    let trim_5m = entry.cached_5m_tokens.min(excess);
+    entry.cached_5m_tokens = entry.cached_5m_tokens.saturating_sub(trim_5m);
+    excess = excess.saturating_sub(trim_5m);
+    if entry.cached_5m_tokens == 0 {
+        entry.cached_5m_expires_at = None;
+    }
+
+    if excess > 0 {
+        let trim_1h = entry.cached_1h_tokens.min(excess);
+        entry.cached_1h_tokens = entry.cached_1h_tokens.saturating_sub(trim_1h);
+        if entry.cached_1h_tokens == 0 {
+            entry.cached_1h_expires_at = None;
+        }
     }
 }
 
@@ -597,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn same_session_accumulates_cache_read() {
+    fn same_session_cache_read_is_capped_by_observed_input() {
         let manager = VirtualCacheUsageManager::new();
         let settings = settings();
 
@@ -608,7 +666,7 @@ mod tests {
 
         let second =
             manager.build_usage(&settings, input("session-a", 1100, CacheTtl::FiveMinutes));
-        assert_eq!(second.cache_read_input_tokens, 18_000);
+        assert_eq!(second.cache_read_input_tokens, 999);
         assert_eq!(second.cache_creation_input_tokens, 128);
     }
 
@@ -672,7 +730,7 @@ mod tests {
 
         let after_commit =
             manager.preview_usage(&settings, input("session-a", 1100, CacheTtl::FiveMinutes));
-        assert_eq!(after_commit.usage().cache_read_input_tokens, 18_000);
+        assert_eq!(after_commit.usage().cache_read_input_tokens, 999);
     }
 
     #[test]
@@ -822,7 +880,7 @@ mod tests {
             input("session-a", 1100, CacheTtl::OneHour),
             now + Duration::seconds(1),
         );
-        assert_eq!(one_hour.usage().cache_read_input_tokens, 18_000);
+        assert_eq!(one_hour.usage().cache_read_input_tokens, 999);
         manager.commit_usage_at(one_hour, now + Duration::seconds(1));
 
         let after_five_minutes = manager.preview_usage_at(
@@ -831,6 +889,32 @@ mod tests {
             now + Duration::minutes(6),
         );
         assert_eq!(after_five_minutes.usage().cache_read_input_tokens, 128);
+    }
+
+    #[test]
+    fn compressed_history_reduces_virtual_cache_read() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+
+        let _ = manager.build_usage(
+            &settings,
+            input("session-compressed", 200_000, CacheTtl::FiveMinutes),
+        );
+
+        let compressed = manager.build_usage(
+            &settings,
+            input("session-compressed", 5_000, CacheTtl::FiveMinutes),
+        );
+        assert_eq!(compressed.input_tokens, 1);
+        assert_eq!(compressed.cache_read_input_tokens, 0);
+        assert_eq!(compressed.cache_creation_input_tokens, 4_999);
+
+        let next = manager.build_usage(
+            &settings,
+            input("session-compressed", 5_100, CacheTtl::FiveMinutes),
+        );
+        assert_eq!(next.cache_read_input_tokens, 4_999);
+        assert_eq!(next.cache_creation_input_tokens, 128);
     }
 
     #[test]
