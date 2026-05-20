@@ -1975,7 +1975,7 @@ async fn handle_stream_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     request_body: &str,
     model: &str,
-    input_tokens: i32,
+    _input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
     metadata_user_id: Option<String>,
@@ -2020,13 +2020,14 @@ async fn handle_stream_request(
     let credential_id = response.credential_id();
     let attempts = response.attempts();
     let settings = provider.token_manager().runtime_settings();
-    let pending_usage = usage_manager.preview_usage(
+    let initial_input_tokens = input_tokens_estimated_total.max(1);
+    let pending_usage = usage_manager.preview_usage_without_context_shrink_reset(
         &settings,
         VirtualUsageInput {
             model: model.to_string(),
             session_key: usage_session_key.clone(),
-            observed_total_input_tokens: input_tokens,
-            accounting_total_input_tokens: Some(input_tokens),
+            observed_total_input_tokens: initial_input_tokens,
+            accounting_total_input_tokens: Some(initial_input_tokens),
             estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
             output_tokens: 1,
             creation_ttl: request_ttl,
@@ -2036,7 +2037,7 @@ async fn handle_stream_request(
 
     let mut ctx = StreamContext::new_with_thinking(
         response_model,
-        input_tokens,
+        initial_input_tokens,
         client_thinking_enabled,
         tool_name_map,
     );
@@ -2069,7 +2070,7 @@ async fn handle_stream_request(
         settings,
         model,
         usage_session_key,
-        input_tokens,
+        initial_input_tokens,
         estimated_uncached_input_tokens,
         request_ttl,
         pending_usage,
@@ -3375,7 +3376,7 @@ async fn handle_non_stream_request(
         model,
         usage_session_key,
         final_input_tokens,
-        input_tokens,
+        input_tokens_estimated_total.max(1),
         estimated_uncached_input_tokens,
         output_tokens,
         request_ttl,
@@ -4816,7 +4817,7 @@ async fn handle_stream_request_buffered(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     request_body: &str,
     model: &str,
-    estimated_input_tokens: i32,
+    _estimated_input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
     metadata_user_id: Option<String>,
@@ -4862,11 +4863,12 @@ async fn handle_stream_request_buffered(
     let settings = provider.token_manager().runtime_settings();
     let model = model.to_string();
     let response_model = response_model.to_string();
+    let initial_input_tokens = input_tokens_estimated_total.max(1);
 
     // 创建缓冲流处理上下文
     let mut ctx = BufferedStreamContext::new(
         response_model.clone(),
-        estimated_input_tokens,
+        initial_input_tokens,
         client_thinking_enabled,
         tool_name_map,
     );
@@ -4901,7 +4903,7 @@ async fn handle_stream_request_buffered(
                     model: model.clone(),
                     session_key: usage_session_key,
                     observed_total_input_tokens: final_input_tokens,
-                    accounting_total_input_tokens: Some(estimated_input_tokens),
+                    accounting_total_input_tokens: Some(initial_input_tokens),
                     estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
                     output_tokens,
                     creation_ttl: request_ttl,

@@ -183,6 +183,14 @@ impl VirtualCacheUsageManager {
         self.preview_usage_at(settings, input, Utc::now())
     }
 
+    pub fn preview_usage_without_context_shrink_reset(
+        &self,
+        settings: &RuntimeSettings,
+        input: VirtualUsageInput,
+    ) -> PendingVirtualUsage {
+        self.preview_usage_at_with_options(settings, input, Utc::now(), false)
+    }
+
     pub fn commit_usage(&self, pending: PendingVirtualUsage) {
         self.commit_usage_at(pending, Utc::now());
     }
@@ -192,6 +200,16 @@ impl VirtualCacheUsageManager {
         settings: &RuntimeSettings,
         input: VirtualUsageInput,
         now: DateTime<Utc>,
+    ) -> PendingVirtualUsage {
+        self.preview_usage_at_with_options(settings, input, now, true)
+    }
+
+    fn preview_usage_at_with_options(
+        &self,
+        settings: &RuntimeSettings,
+        input: VirtualUsageInput,
+        now: DateTime<Utc>,
+        allow_context_shrink_reset: bool,
     ) -> PendingVirtualUsage {
         let observed_total = input.observed_total_input_tokens.max(0);
         if !settings.virtual_cache_usage_enabled || observed_total == 0 {
@@ -213,7 +231,8 @@ impl VirtualCacheUsageManager {
 
         let mut entry = self.ledgers.lock().get(&key).cloned().unwrap_or_default();
         expire_entry(&mut entry, now);
-        let reset_ledger = should_reset_for_context_shrink(&entry, observed_total);
+        let reset_ledger =
+            allow_context_shrink_reset && should_reset_for_context_shrink(&entry, observed_total);
         if reset_ledger {
             entry = LedgerEntry::default();
         }
@@ -1126,6 +1145,61 @@ mod tests {
             next.cache_read_input_tokens
         );
         assert_eq!(next.cache_creation_input_tokens, 1_000);
+    }
+
+    #[test]
+    fn initial_preview_does_not_reset_on_mixed_local_and_context_usage_units() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+
+        let first_final = manager.preview_usage(
+            &settings,
+            VirtualUsageInput {
+                observed_total_input_tokens: 30_660,
+                accounting_total_input_tokens: Some(30_660),
+                estimated_uncached_input_tokens: Some(806),
+                output_tokens: 80,
+                ..input("session-real-user", 30_660, CacheTtl::FiveMinutes)
+            },
+        );
+        manager.commit_usage(first_final);
+
+        let ordinary_preview = manager.preview_usage(
+            &settings,
+            VirtualUsageInput {
+                observed_total_input_tokens: 18_878,
+                accounting_total_input_tokens: Some(18_878),
+                estimated_uncached_input_tokens: Some(174),
+                output_tokens: 1,
+                ..input("session-real-user", 18_878, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(
+            ordinary_preview.usage().cache_read_input_tokens,
+            0,
+            "普通最终口径 preview 遇到真实 context shrink 仍应 reset"
+        );
+
+        let initial_preview = manager.preview_usage_without_context_shrink_reset(
+            &settings,
+            VirtualUsageInput {
+                observed_total_input_tokens: 18_878,
+                accounting_total_input_tokens: Some(18_878),
+                estimated_uncached_input_tokens: Some(174),
+                output_tokens: 1,
+                ..input("session-real-user", 18_878, CacheTtl::FiveMinutes)
+            },
+        );
+        assert!(
+            initial_preview.usage().cache_read_input_tokens > 0,
+            "initial preview must keep prior final context ledger cache_read, actual = {}",
+            initial_preview.usage().cache_read_input_tokens
+        );
+        assert!(
+            initial_preview.usage().cache_creation_input_tokens < 18_000,
+            "initial preview must not recreate the warmup-sized prompt cache, actual = {}",
+            initial_preview.usage().cache_creation_input_tokens
+        );
     }
 
     #[test]

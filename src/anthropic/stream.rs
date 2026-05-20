@@ -2983,6 +2983,94 @@ mod tests {
     }
 
     #[test]
+    fn stream_initial_message_start_preview_does_not_reset_after_final_context_commit() {
+        let manager = Arc::new(VirtualCacheUsageManager::new());
+        let mut settings = RuntimeSettings::from_config(&crate::model::config::Config::default());
+        settings.same_account_retry_rules.clear();
+        settings.virtual_cache_usage_enabled = true;
+        settings.virtual_cache_uncached_input_tokens = 1;
+        settings.virtual_cache_warmup_tokens = 18_000;
+        settings.virtual_cache_min_creation_tokens = 128;
+        settings.virtual_cache_max_creation_tokens = 1_200;
+
+        let first_initial = manager.preview_usage_without_context_shrink_reset(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-opus-4-7".to_string(),
+                session_key: "stream-real-user".to_string(),
+                observed_total_input_tokens: 18_455,
+                accounting_total_input_tokens: Some(18_455),
+                estimated_uncached_input_tokens: Some(2_500),
+                output_tokens: 1,
+                creation_ttl: CacheTtl::FiveMinutes,
+            },
+        );
+        let first_initial_usage = first_initial.usage().clone();
+
+        let mut first_ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 18_455, false, HashMap::new());
+        first_ctx.set_initial_usage(first_initial_usage);
+        first_ctx.set_pending_usage_commit_builder(
+            manager.clone(),
+            settings.clone(),
+            "claude-opus-4-7",
+            "stream-real-user",
+            18_455,
+            2_500,
+            CacheTtl::FiveMinutes,
+            first_initial,
+        );
+        let _ = first_ctx.generate_initial_events();
+
+        first_ctx.process_kiro_event(&Event::ContextUsage(
+            crate::kiro::model::events::ContextUsageEvent {
+                context_usage_percentage: 3.066,
+            },
+        ));
+        first_ctx.process_assistant_response("done");
+        let _ = first_ctx.generate_final_events_with_usage_commit();
+
+        let second_initial = manager.preview_usage_without_context_shrink_reset(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-opus-4-7".to_string(),
+                session_key: "stream-real-user".to_string(),
+                observed_total_input_tokens: 18_878,
+                accounting_total_input_tokens: Some(18_878),
+                estimated_uncached_input_tokens: Some(174),
+                output_tokens: 1,
+                creation_ttl: CacheTtl::FiveMinutes,
+            },
+        );
+        let second_initial_usage = second_initial.usage().clone();
+
+        let mut second_ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 18_878, false, HashMap::new());
+        second_ctx.set_initial_usage(second_initial_usage);
+        let message_start = second_ctx
+            .generate_initial_events()
+            .into_iter()
+            .find(|event| event.event == "message_start")
+            .expect("message_start event");
+        let usage = &message_start.data["message"]["usage"];
+        let cache_read = usage["cache_read_input_tokens"]
+            .as_i64()
+            .unwrap_or_default();
+        let cache_creation = usage["cache_creation_input_tokens"]
+            .as_i64()
+            .unwrap_or_default();
+
+        assert!(
+            cache_read > 0,
+            "second initial message_start must reuse the previous final context ledger cache_read, actual = {cache_read}"
+        );
+        assert!(
+            cache_creation < 18_000,
+            "second initial message_start must not recreate a warmup-sized cache, actual = {cache_creation}"
+        );
+    }
+
+    #[test]
     fn message_ids_use_anthropic_msg_01_prefix() {
         let ctx = StreamContext::new_with_thinking("test-model", 1, false, HashMap::new());
         assert!(ctx.message_id.starts_with("msg_01"));
