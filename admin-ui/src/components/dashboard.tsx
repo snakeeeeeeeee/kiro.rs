@@ -49,6 +49,13 @@ function formatMs(value?: number): string {
   return `${Math.round(value)}ms`
 }
 
+function formatRpm(value?: number): string {
+  if (value === undefined || value === null) return '-'
+  if (value >= 100) return Math.round(value).toString()
+  if (value >= 10) return value.toFixed(1)
+  return value.toFixed(2)
+}
+
 function toKamStyleExport(credential: ExportedCredential) {
   const authMethod = credential.authMethod || (credential.kiroApiKey ? 'api_key' : 'social')
   const isApiKey = authMethod === 'api_key' || Boolean(credential.kiroApiKey)
@@ -1049,7 +1056,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
       </header>
 
       <main className="w-full px-4 py-5 md:px-6">
-        <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">账号池</CardTitle>
@@ -1071,6 +1078,19 @@ export function Dashboard({ onLogout }: DashboardProps) {
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 队列 {runtimeStatus ? `${runtimeStatus.queueDepth} / ${runtimeStatus.queueMaxSize}` : '-'}
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">实际 RPM</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold tabular-nums">
+                {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.requestRpm) : '-'}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                成功 {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.successRpm) : '-'}，失败 {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.errorRpm) : '-'}
               </div>
             </CardContent>
           </Card>

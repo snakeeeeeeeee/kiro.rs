@@ -36,6 +36,9 @@ pub struct RuntimeMetricsSnapshot {
     pub request_count: usize,
     pub success_count: usize,
     pub error_count: usize,
+    pub request_rpm: f64,
+    pub success_rpm: f64,
+    pub error_rpm: f64,
     pub stream_count: usize,
     pub retry_count: usize,
     pub avg_queue_ms: u64,
@@ -129,6 +132,9 @@ fn build_snapshot<'a>(
         .filter(|sample| sample.outcome == UpstreamOutcome::Success)
         .count();
     let error_count = request_count.saturating_sub(success_count);
+    let request_rpm = rpm_for_count(request_count, WINDOW_SECS);
+    let success_rpm = rpm_for_count(success_count, WINDOW_SECS);
+    let error_rpm = rpm_for_count(error_count, WINDOW_SECS);
     let stream_count = samples.iter().filter(|sample| sample.stream).count();
     let retry_count = samples.iter().filter(|sample| sample.attempts > 1).count();
 
@@ -178,6 +184,9 @@ fn build_snapshot<'a>(
         request_count,
         success_count,
         error_count,
+        request_rpm,
+        success_rpm,
+        error_rpm,
         stream_count,
         retry_count,
         avg_queue_ms: average(&queue),
@@ -233,6 +242,13 @@ fn average(values: &[u64]) -> u64 {
     values.iter().sum::<u64>() / values.len() as u64
 }
 
+fn rpm_for_count(count: usize, window_secs: i64) -> f64 {
+    if window_secs <= 0 {
+        return 0.0;
+    }
+    (count as f64) * 60.0 / (window_secs as f64)
+}
+
 fn percentile(values: &[u64], percentile: usize) -> u64 {
     if values.is_empty() {
         return 0;
@@ -281,6 +297,9 @@ mod tests {
         let snapshot = recorder.snapshot();
         assert_eq!(snapshot.request_count, 2);
         assert_eq!(snapshot.success_count, 2);
+        assert!((snapshot.request_rpm - 0.4).abs() < f64::EPSILON);
+        assert!((snapshot.success_rpm - 0.4).abs() < f64::EPSILON);
+        assert!((snapshot.error_rpm - 0.0).abs() < f64::EPSILON);
         assert_eq!(snapshot.slow_models[0].model, "claude-opus-4.7");
         assert_eq!(snapshot.status_counts[0].status, "200");
         assert_eq!(snapshot.credential_counts[0].credential_id, 1);
