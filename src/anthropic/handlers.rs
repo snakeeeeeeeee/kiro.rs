@@ -125,6 +125,13 @@ fn local_text_tokens(text: &str) -> i32 {
     token::count_tokens(text).min(i32::MAX as u64) as i32
 }
 
+fn metadata_user_id_for_log(payload: &MessagesRequest) -> Option<String> {
+    payload
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.user_id.clone())
+}
+
 /// GET /healthz
 pub async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
@@ -1731,6 +1738,13 @@ pub async fn post_messages(
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
     );
+    tracing::info!(
+        model = %payload.model,
+        metadata_user_id = metadata_user_id_for_log(&payload).as_deref().unwrap_or(""),
+        metadata_user_id_present = payload.metadata.as_ref().and_then(|metadata| metadata.user_id.as_ref()).is_some(),
+        usage_session_key = %usage_session_key,
+        "message_identity_diagnostics"
+    );
     let request_ttl =
         request_cache_ttl(&payload, CacheTtl::from_runtime_default(&runtime_settings));
     let estimated_uncached_input_tokens = estimate_latest_user_input_tokens(&payload);
@@ -1892,6 +1906,7 @@ pub async fn post_messages(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
+            metadata_user_id_for_log(&payload),
             estimated_uncached_input_tokens,
             client_thinking_enabled,
             client_requested_thinking,
@@ -1926,6 +1941,7 @@ pub async fn post_messages(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
+            metadata_user_id_for_log(&payload),
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
@@ -1962,6 +1978,7 @@ async fn handle_stream_request(
     input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
+    metadata_user_id: Option<String>,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
     client_requested_thinking: bool,
@@ -2026,6 +2043,8 @@ async fn handle_stream_request(
     ctx.set_request_input_diagnostics(
         input_tokens_estimated_total,
         request_payload_bytes_estimated,
+        metadata_user_id,
+        usage_session_key.clone(),
     );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
@@ -2312,6 +2331,8 @@ fn create_sse_stream(
                                 true,
                                 &stream_model,
                                 credential_id,
+                                ctx.metadata_user_id.as_deref(),
+                                &ctx.usage_session_key,
                                 ctx.input_tokens_estimated_total,
                                 ctx.request_payload_bytes_estimated,
                                 ctx.context_input_tokens,
@@ -2372,6 +2393,8 @@ fn create_sse_stream(
                                 true,
                                 &stream_model,
                                 credential_id,
+                                ctx.metadata_user_id.as_deref(),
+                                &ctx.usage_session_key,
                                 ctx.input_tokens_estimated_total,
                                 ctx.request_payload_bytes_estimated,
                                 ctx.context_input_tokens,
@@ -2468,6 +2491,8 @@ fn log_message_usage_diagnostics(
     stream: bool,
     model: &str,
     credential_id: u64,
+    metadata_user_id: Option<&str>,
+    usage_session_key: &str,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
     context_usage_input_tokens: Option<i32>,
@@ -2489,6 +2514,9 @@ fn log_message_usage_diagnostics(
         stream,
         model = %model,
         credential_id,
+        metadata_user_id = metadata_user_id.unwrap_or(""),
+        metadata_user_id_present = metadata_user_id.is_some(),
+        usage_session_key,
         input_tokens_estimated_total,
         request_payload_bytes_estimated,
         context_usage_input_tokens,
@@ -3029,6 +3057,7 @@ async fn handle_non_stream_request(
     input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
+    metadata_user_id: Option<String>,
     estimated_uncached_input_tokens: i32,
     extract_thinking: bool,
     client_thinking_enabled: bool,
@@ -3330,6 +3359,8 @@ async fn handle_non_stream_request(
         false,
         model,
         credential_id,
+        metadata_user_id.as_deref(),
+        &usage_session_key,
         input_tokens_estimated_total,
         request_payload_bytes_estimated,
         context_input_tokens,
@@ -4546,6 +4577,13 @@ pub async fn post_messages_cc(
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
     );
+    tracing::info!(
+        model = %payload.model,
+        metadata_user_id = metadata_user_id_for_log(&payload).as_deref().unwrap_or(""),
+        metadata_user_id_present = payload.metadata.as_ref().and_then(|metadata| metadata.user_id.as_ref()).is_some(),
+        usage_session_key = %usage_session_key,
+        "message_identity_diagnostics"
+    );
     let request_ttl =
         request_cache_ttl(&payload, CacheTtl::from_runtime_default(&runtime_settings));
     let estimated_uncached_input_tokens = estimate_latest_user_input_tokens(&payload);
@@ -4706,6 +4744,7 @@ pub async fn post_messages_cc(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
+            metadata_user_id_for_log(&payload),
             estimated_uncached_input_tokens,
             client_thinking_enabled,
             client_requested_thinking,
@@ -4740,6 +4779,7 @@ pub async fn post_messages_cc(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
+            metadata_user_id_for_log(&payload),
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
@@ -4779,6 +4819,7 @@ async fn handle_stream_request_buffered(
     estimated_input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
+    metadata_user_id: Option<String>,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
     client_requested_thinking: bool,
@@ -4832,6 +4873,8 @@ async fn handle_stream_request_buffered(
     ctx.set_request_input_diagnostics(
         input_tokens_estimated_total,
         request_payload_bytes_estimated,
+        metadata_user_id,
+        usage_session_key.clone(),
     );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
@@ -5116,6 +5159,8 @@ fn create_buffered_sse_stream(
                                     true,
                                     &stream_model,
                                     credential_id,
+                                    ctx.metadata_user_id(),
+                                    ctx.usage_session_key(),
                                     ctx.input_tokens_estimated_total(),
                                     ctx.request_payload_bytes_estimated(),
                                     ctx.context_input_tokens(),
@@ -5179,6 +5224,8 @@ fn create_buffered_sse_stream(
                                     true,
                                     &stream_model,
                                     credential_id,
+                                    ctx.metadata_user_id(),
+                                    ctx.usage_session_key(),
                                     ctx.input_tokens_estimated_total(),
                                     ctx.request_payload_bytes_estimated(),
                                     ctx.context_input_tokens(),

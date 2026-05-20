@@ -740,6 +740,10 @@ pub struct StreamContext {
     pub input_tokens_estimated_total: i32,
     /// 仅用于日志诊断的原始请求 payload 字节数估算
     pub request_payload_bytes_estimated: usize,
+    /// 仅用于日志诊断的原始 metadata.user_id
+    pub metadata_user_id: Option<String>,
+    /// 仅用于日志诊断的虚拟缓存账本 key
+    pub usage_session_key: String,
     /// message_start 初始 usage 覆盖
     pub initial_usage: Option<AnthropicUsage>,
     /// usage 字段输出形态
@@ -809,6 +813,8 @@ impl StreamContext {
             input_tokens,
             input_tokens_estimated_total: input_tokens,
             request_payload_bytes_estimated: 0,
+            metadata_user_id: None,
+            usage_session_key: String::new(),
             initial_usage: None,
             usage_shape: "anthropic".to_string(),
             pending_usage_commit: None,
@@ -890,9 +896,13 @@ impl StreamContext {
         &mut self,
         input_tokens_estimated_total: i32,
         request_payload_bytes_estimated: usize,
+        metadata_user_id: Option<String>,
+        usage_session_key: impl Into<String>,
     ) {
         self.input_tokens_estimated_total = input_tokens_estimated_total;
         self.request_payload_bytes_estimated = request_payload_bytes_estimated;
+        self.metadata_user_id = metadata_user_id;
+        self.usage_session_key = usage_session_key.into();
     }
 
     pub fn set_pending_usage_commit_builder(
@@ -1716,10 +1726,14 @@ impl BufferedStreamContext {
         &mut self,
         input_tokens_estimated_total: i32,
         request_payload_bytes_estimated: usize,
+        metadata_user_id: Option<String>,
+        usage_session_key: impl Into<String>,
     ) {
         self.inner.set_request_input_diagnostics(
             input_tokens_estimated_total,
             request_payload_bytes_estimated,
+            metadata_user_id,
+            usage_session_key,
         );
     }
 
@@ -1729,6 +1743,14 @@ impl BufferedStreamContext {
 
     pub fn request_payload_bytes_estimated(&self) -> usize {
         self.inner.request_payload_bytes_estimated
+    }
+
+    pub fn metadata_user_id(&self) -> Option<&str> {
+        self.inner.metadata_user_id.as_deref()
+    }
+
+    pub fn usage_session_key(&self) -> &str {
+        &self.inner.usage_session_key
     }
 
     pub fn context_input_tokens(&self) -> Option<i32> {
