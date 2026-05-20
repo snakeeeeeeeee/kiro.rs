@@ -45,7 +45,7 @@ For one account, seed conservatively:
   "virtualCacheBurstEveryTurns": 7,
   "virtualCacheBurstMinTokens": 1500,
   "virtualCacheBurstMaxTokens": 3000,
-  "virtualCacheFallbackScope": "model",
+  "virtualCacheFallbackScope": "none",
   "shutdownDrainTimeoutSecs": 60
 }
 ```
@@ -232,6 +232,25 @@ scripts/load-test.sh
 ```
 
 For one account, keep `CONCURRENCY` at or below `perAccountMaxConcurrent` for baseline tests. Increase it only when validating `429` behavior.
+
+Account-pool RPM test:
+
+```bash
+BASE_URL=http://127.0.0.1:8990 \
+API_KEY='your-api-key' \
+ADMIN_API_KEY='your-admin-api-key' \
+python3 scripts/pool-rpm-test.py \
+  --model claude-opus-4-7 \
+  --profile mixed-agent \
+  --start-rpm 10 \
+  --step-rpm 10 \
+  --max-rpm 100 \
+  --step-seconds 120 \
+  --sessions 100 \
+  --stream
+```
+
+The RPM test sends stable `metadata.user_id` values across many simulated sessions, samples `/api/admin/runtime`, and writes `summary.json`, `summary.csv`, `requests.csv`, `runtime.csv`, and `failures.jsonl` under `tmp/pool-rpm-*/`. Use the reported `recommended_safe_rpm` as the first production limit, then adjust with real traffic data.
 
 ## Operations
 

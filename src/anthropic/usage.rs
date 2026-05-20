@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 use crate::kiro::settings::{RuntimeSettings, normalize_virtual_cache_ttl};
 use crate::token;
 
-use super::converter::extract_session_id;
 use super::types::MessagesRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -570,7 +569,11 @@ fn estimate_json_tokens(value: &Value) -> i32 {
         .unwrap_or(0)
 }
 
-pub fn session_key_for_request(req: &MessagesRequest, model: &str, fallback_scope: &str) -> String {
+pub fn session_key_for_request(
+    req: &MessagesRequest,
+    model: &str,
+    _fallback_scope: &str,
+) -> String {
     if let Some(user_id) = req
         .metadata
         .as_ref()
@@ -578,49 +581,49 @@ pub fn session_key_for_request(req: &MessagesRequest, model: &str, fallback_scop
     {
         let trimmed = user_id.trim();
         if !trimmed.is_empty() {
-            return metadata_user_id_cache_key(trimmed);
+            return metadata_user_id_cache_key(trimmed)
+                .unwrap_or_else(|| request_isolated_fallback_key(model));
         }
     }
 
-    if fallback_scope == "none" {
-        format!("fallback:none:{model}:{}", uuid::Uuid::new_v4())
-    } else {
-        format!("fallback:model:{model}")
-    }
+    request_isolated_fallback_key(model)
 }
 
-fn metadata_user_id_cache_key(user_id: &str) -> String {
+fn metadata_user_id_cache_key(user_id: &str) -> Option<String> {
     if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(user_id) {
-        let device_id = map
-            .get("device_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim();
-        let account_uuid = map
-            .get("account_uuid")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim();
-        let user = map
-            .get("user_id")
-            .or_else(|| map.get("user"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim();
-        let session_id = extract_session_id(user_id).unwrap_or_default();
+        let device_id = json_string_field(&map, "device_id").unwrap_or_default();
+        let account_uuid = json_string_field(&map, "account_uuid").unwrap_or_default();
+        let user = json_string_field(&map, "user_id")
+            .or_else(|| json_string_field(&map, "user"))
+            .unwrap_or_default();
+        let session_id = json_string_field(&map, "session_id").unwrap_or_default();
 
         if !device_id.is_empty()
             || !account_uuid.is_empty()
             || !user.is_empty()
             || !session_id.is_empty()
         {
-            return format!(
+            return Some(format!(
                 "metadata:json:device={device_id}:account={account_uuid}:user={user}:session={session_id}"
-            );
+            ));
         }
+
+        return None;
     }
 
-    format!("metadata:user:{user_id}")
+    Some(format!("metadata:user:{user_id}"))
+}
+
+fn request_isolated_fallback_key(model: &str) -> String {
+    format!("fallback:none:{model}:{}", uuid::Uuid::new_v4())
+}
+
+fn json_string_field(map: &serde_json::Map<String, Value>, field: &str) -> Option<String> {
+    map.get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub fn request_cache_ttl(req: &MessagesRequest, default_ttl: CacheTtl) -> CacheTtl {
@@ -706,7 +709,6 @@ mod tests {
         settings.virtual_cache_burst_every_turns = 7;
         settings.virtual_cache_burst_min_tokens = 1_500;
         settings.virtual_cache_burst_max_tokens = 3_000;
-        settings.virtual_cache_fallback_scope = "model".to_string();
         settings
     }
 
@@ -813,6 +815,56 @@ mod tests {
     }
 
     #[test]
+    fn metadata_json_with_empty_identity_fields_uses_request_isolation() {
+        let first = request_with_metadata_user_id(
+            r#"{"session_id":"","account_uuid":"","device_id":"","user":""}"#,
+        );
+        let second = request_with_metadata_user_id(
+            r#"{"session_id":"","account_uuid":"","device_id":"","user":""}"#,
+        );
+
+        let first_key = session_key_for_request(&first, &first.model, "model");
+        let second_key = session_key_for_request(&second, &second.model, "model");
+
+        assert!(first_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
+        assert!(second_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
+        assert_ne!(first_key, second_key);
+    }
+
+    #[test]
+    fn metadata_json_with_only_session_id_keeps_stable_session_scope() {
+        let user_id = r#"{"session_id":"8bb5523b-ec7c-4540-a9ca-beb6d79f1552","account_uuid":"","device_id":"","user":""}"#;
+        let first = request_with_metadata_user_id(user_id);
+        let second = request_with_metadata_user_id(user_id);
+
+        let first_key = session_key_for_request(&first, &first.model, "model");
+        let second_key = session_key_for_request(&second, &second.model, "model");
+
+        assert_eq!(
+            first_key,
+            "metadata:json:device=:account=:user=:session=8bb5523b-ec7c-4540-a9ca-beb6d79f1552"
+        );
+        assert_eq!(second_key, first_key);
+    }
+
+    #[test]
+    fn metadata_json_with_non_uuid_session_id_still_keeps_stable_session_scope() {
+        let user_id =
+            r#"{"session_id":"cctest-session-a","account_uuid":"","device_id":"","user":""}"#;
+        let first = request_with_metadata_user_id(user_id);
+        let second = request_with_metadata_user_id(user_id);
+
+        let first_key = session_key_for_request(&first, &first.model, "model");
+        let second_key = session_key_for_request(&second, &second.model, "model");
+
+        assert_eq!(
+            first_key,
+            "metadata:json:device=:account=:user=:session=cctest-session-a"
+        );
+        assert_eq!(second_key, first_key);
+    }
+
+    #[test]
     fn metadata_string_cache_key_keeps_full_user_id_not_only_session() {
         let user_id = "user_device-a_account__session_8bb5523b-ec7c-4540-a9ca-beb6d79f1552";
         let request = request_with_metadata_user_id(user_id);
@@ -824,15 +876,22 @@ mod tests {
     }
 
     #[test]
-    fn missing_metadata_model_fallback_uses_model_ledger_key() {
+    fn missing_metadata_default_fallback_uses_request_isolation() {
         let first = request_without_metadata();
         let second = request_without_metadata();
 
-        let first_key = session_key_for_request(&first, &first.model, "model");
-        let second_key = session_key_for_request(&second, &second.model, "model");
+        let settings = RuntimeSettings::from_config(&Config::default());
+        let first_key =
+            session_key_for_request(&first, &first.model, &settings.virtual_cache_fallback_scope);
+        let second_key = session_key_for_request(
+            &second,
+            &second.model,
+            &settings.virtual_cache_fallback_scope,
+        );
 
-        assert_eq!(first_key, "fallback:model:claude-sonnet-4-5-20250929");
-        assert_eq!(second_key, first_key);
+        assert!(first_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
+        assert!(second_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
+        assert_ne!(first_key, second_key);
     }
 
     #[test]
@@ -849,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_metadata_model_fallback_accumulates_virtual_cache() {
+    fn missing_metadata_model_fallback_still_uses_request_isolation() {
         let manager = VirtualCacheUsageManager::new();
         let settings = settings();
         let first = request_without_metadata();
@@ -874,11 +933,43 @@ mod tests {
                 ..input("unused", 31_000, CacheTtl::FiveMinutes)
             },
         );
-        assert!(
-            second_usage.cache_read_input_tokens > 25_000,
-            "model fallback should reuse the previous virtual cache ledger, actual = {}",
-            second_usage.cache_read_input_tokens
+        assert_eq!(second_usage.cache_read_input_tokens, 0);
+        assert_eq!(second_usage.cache_creation_input_tokens, 30_999);
+    }
+
+    #[test]
+    fn missing_metadata_default_fallback_does_not_accumulate_virtual_cache() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let first = request_without_metadata();
+        let second = request_without_metadata();
+
+        let first_key =
+            session_key_for_request(&first, &first.model, &settings.virtual_cache_fallback_scope);
+        let second_key = session_key_for_request(
+            &second,
+            &second.model,
+            &settings.virtual_cache_fallback_scope,
         );
+
+        let first_usage = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                session_key: first_key,
+                ..input("unused", 30_000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(first_usage.cache_read_input_tokens, 0);
+
+        let second_usage = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                session_key: second_key,
+                ..input("unused", 31_000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(second_usage.cache_read_input_tokens, 0);
+        assert_eq!(second_usage.cache_creation_input_tokens, 30_999);
     }
 
     #[test]

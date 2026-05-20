@@ -662,7 +662,7 @@ fn default_virtual_cache_burst_max_tokens() -> u32 {
 }
 
 fn default_virtual_cache_fallback_scope() -> String {
-    "model".to_string()
+    "none".to_string()
 }
 
 fn default_dynamic_proxy_provider() -> String {

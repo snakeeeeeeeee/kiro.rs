@@ -50,9 +50,7 @@ impl RequestLogContext {
             client_account_uuid: parsed
                 .as_ref()
                 .and_then(|value| json_string_field(value, "account_uuid")),
-            client_user: parsed
-                .as_ref()
-                .and_then(|value| json_string_field(value, "user")),
+            client_user: parsed.as_ref().and_then(json_user_field),
             client_session_id: parsed
                 .as_ref()
                 .and_then(|value| json_string_field(value, "session_id")),
@@ -87,7 +85,16 @@ impl RequestLogContext {
 }
 
 fn json_string_field(value: &Value, field: &str) -> Option<String> {
-    value.get(field).and_then(Value::as_str).map(str::to_string)
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn json_user_field(value: &Value) -> Option<String> {
+    json_string_field(value, "user_id").or_else(|| json_string_field(value, "user"))
 }
 
 fn short_uuid() -> String {
