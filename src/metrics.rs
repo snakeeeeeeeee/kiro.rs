@@ -6,6 +6,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 
 const WINDOW_SECS: i64 = 300;
+const RPM_1M_WINDOW_SECS: i64 = 60;
 const MAX_SAMPLES: usize = 2_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,12 @@ pub struct RuntimeMetricsSnapshot {
     pub request_rpm: f64,
     pub success_rpm: f64,
     pub error_rpm: f64,
+    pub request_rpm_1m: f64,
+    pub success_rpm_1m: f64,
+    pub error_rpm_1m: f64,
+    pub request_rpm_5m: f64,
+    pub success_rpm_5m: f64,
+    pub error_rpm_5m: f64,
     pub stream_count: usize,
     pub retry_count: usize,
     pub avg_queue_ms: u64,
@@ -100,7 +107,7 @@ impl MetricsRecorder {
         let mut samples = self.samples.lock();
         let now = Utc::now();
         prune_samples(&mut samples, now);
-        build_snapshot(samples.iter())
+        build_snapshot(samples.iter(), now)
     }
 }
 
@@ -124,6 +131,7 @@ fn prune_samples(samples: &mut VecDeque<RequestTimingSample>, now: DateTime<Utc>
 
 fn build_snapshot<'a>(
     samples: impl Iterator<Item = &'a RequestTimingSample>,
+    now: DateTime<Utc>,
 ) -> RuntimeMetricsSnapshot {
     let samples: Vec<&RequestTimingSample> = samples.collect();
     let request_count = samples.len();
@@ -135,6 +143,21 @@ fn build_snapshot<'a>(
     let request_rpm = rpm_for_count(request_count, WINDOW_SECS);
     let success_rpm = rpm_for_count(success_count, WINDOW_SECS);
     let error_rpm = rpm_for_count(error_count, WINDOW_SECS);
+    let one_minute_cutoff = now - Duration::seconds(RPM_1M_WINDOW_SECS);
+    let one_minute_samples: Vec<&RequestTimingSample> = samples
+        .iter()
+        .copied()
+        .filter(|sample| sample.completed_at >= one_minute_cutoff)
+        .collect();
+    let request_count_1m = one_minute_samples.len();
+    let success_count_1m = one_minute_samples
+        .iter()
+        .filter(|sample| sample.outcome == UpstreamOutcome::Success)
+        .count();
+    let error_count_1m = request_count_1m.saturating_sub(success_count_1m);
+    let request_rpm_1m = rpm_for_count(request_count_1m, RPM_1M_WINDOW_SECS);
+    let success_rpm_1m = rpm_for_count(success_count_1m, RPM_1M_WINDOW_SECS);
+    let error_rpm_1m = rpm_for_count(error_count_1m, RPM_1M_WINDOW_SECS);
     let stream_count = samples.iter().filter(|sample| sample.stream).count();
     let retry_count = samples.iter().filter(|sample| sample.attempts > 1).count();
 
@@ -187,6 +210,12 @@ fn build_snapshot<'a>(
         request_rpm,
         success_rpm,
         error_rpm,
+        request_rpm_1m,
+        success_rpm_1m,
+        error_rpm_1m,
+        request_rpm_5m: request_rpm,
+        success_rpm_5m: success_rpm,
+        error_rpm_5m: error_rpm,
         stream_count,
         retry_count,
         avg_queue_ms: average(&queue),
@@ -300,6 +329,10 @@ mod tests {
         assert!((snapshot.request_rpm - 0.4).abs() < f64::EPSILON);
         assert!((snapshot.success_rpm - 0.4).abs() < f64::EPSILON);
         assert!((snapshot.error_rpm - 0.0).abs() < f64::EPSILON);
+        assert!((snapshot.request_rpm_1m - 2.0).abs() < f64::EPSILON);
+        assert!((snapshot.success_rpm_1m - 2.0).abs() < f64::EPSILON);
+        assert!((snapshot.error_rpm_1m - 0.0).abs() < f64::EPSILON);
+        assert!((snapshot.request_rpm_5m - 0.4).abs() < f64::EPSILON);
         assert_eq!(snapshot.slow_models[0].model, "claude-opus-4.7");
         assert_eq!(snapshot.status_counts[0].status, "200");
         assert_eq!(snapshot.credential_counts[0].credential_id, 1);

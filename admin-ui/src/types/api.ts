@@ -148,6 +148,12 @@ export interface RuntimeMetricsSnapshot {
   requestRpm: number
   successRpm: number
   errorRpm: number
+  requestRpm1m: number
+  successRpm1m: number
+  errorRpm1m: number
+  requestRpm5m: number
+  successRpm5m: number
+  errorRpm5m: number
   streamCount: number
   retryCount: number
   avgQueueMs: number

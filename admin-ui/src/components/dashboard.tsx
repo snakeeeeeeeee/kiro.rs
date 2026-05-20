@@ -1087,10 +1087,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold tabular-nums">
-                {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.requestRpm) : '-'}
+                {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.requestRpm1m) : '-'}
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
-                成功 {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.successRpm) : '-'}，失败 {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.errorRpm) : '-'}
+                1m 成功 {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.successRpm1m) : '-'}，5m {runtimeStatus ? formatRpm(runtimeStatus.requestMetrics.requestRpm5m) : '-'}
               </div>
             </CardContent>
           </Card>
