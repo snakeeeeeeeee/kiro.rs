@@ -2,6 +2,7 @@
 
 use std::{borrow::Cow, convert::Infallible, sync::Arc, time::Instant};
 
+use crate::common::request_log::RequestLogContext;
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::conversation::ConversationState;
 use crate::kiro::model::requests::kiro::KiroRequest;
@@ -1686,8 +1687,25 @@ pub async fn post_messages(
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
     let input_diagnostics = request_input_diagnostics(&payload);
+    let route = "/v1/messages";
+    let request_id = RequestLogContext::new_request_id();
+    let metadata_user_id = metadata_user_id_for_log(&payload);
+    let initial_request_log = RequestLogContext::new_with_request_id(
+        route,
+        metadata_user_id.clone(),
+        String::new(),
+        request_id,
+    );
 
     tracing::info!(
+        request_id = %initial_request_log.request_id,
+        route = initial_request_log.route,
+        metadata_user_id = initial_request_log.metadata_user_id_for_log(),
+        metadata_user_id_present = initial_request_log.metadata_user_id_present(),
+        client_device_id = initial_request_log.client_device_id_for_log(),
+        client_account_uuid = initial_request_log.client_account_uuid_for_log(),
+        client_user = initial_request_log.client_user_for_log(),
+        client_session_id = initial_request_log.client_session_id_for_log(),
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
@@ -1715,7 +1733,6 @@ pub async fn post_messages(
 
     let requested_model = payload.model.clone();
     let runtime_settings = provider.token_manager().runtime_settings();
-    let route = "/v1/messages";
     let prompt_dump = PromptDump::maybe_create(
         &runtime_settings,
         route,
@@ -1738,11 +1755,22 @@ pub async fn post_messages(
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
     );
+    let request_log = RequestLogContext::new(route, metadata_user_id, usage_session_key);
+    let request_log = RequestLogContext {
+        request_id: initial_request_log.request_id,
+        ..request_log
+    };
     tracing::info!(
+        request_id = %request_log.request_id,
+        route = request_log.route,
         model = %payload.model,
-        metadata_user_id = metadata_user_id_for_log(&payload).as_deref().unwrap_or(""),
-        metadata_user_id_present = payload.metadata.as_ref().and_then(|metadata| metadata.user_id.as_ref()).is_some(),
-        usage_session_key = %usage_session_key,
+        metadata_user_id = request_log.metadata_user_id_for_log(),
+        metadata_user_id_present = request_log.metadata_user_id_present(),
+        client_device_id = request_log.client_device_id_for_log(),
+        client_account_uuid = request_log.client_account_uuid_for_log(),
+        client_user = request_log.client_user_for_log(),
+        client_session_id = request_log.client_session_id_for_log(),
+        usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
     );
     let request_ttl =
@@ -1836,6 +1864,7 @@ pub async fn post_messages(
         &payload,
     );
     log_opus47_request_thinking_state(
+        &request_log,
         &requested_model,
         &payload,
         client_requested_thinking,
@@ -1884,7 +1913,6 @@ pub async fn post_messages(
     let tool_name_map = conversion_result.tool_name_map;
     let pdf_debug = conversion_result.pdf_debug;
     let request_kind = classify_opus47_request_kind(&payload, pdf_debug.is_some());
-    let route = "/v1/messages";
     let signed_thinking_mode =
         crate::kiro::settings::effective_opus47_signed_thinking_preservation(&runtime_settings);
 
@@ -1906,7 +1934,7 @@ pub async fn post_messages(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
-            metadata_user_id_for_log(&payload),
+            request_log.clone(),
             estimated_uncached_input_tokens,
             client_thinking_enabled,
             client_requested_thinking,
@@ -1921,7 +1949,7 @@ pub async fn post_messages(
             antml_probe_tag.clone(),
             tool_name_map,
             Some(session_affinity_key.as_str()),
-            usage_session_key,
+            request_log.usage_session_key.clone(),
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
@@ -1941,7 +1969,7 @@ pub async fn post_messages(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
-            metadata_user_id_for_log(&payload),
+            request_log.clone(),
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
@@ -1957,7 +1985,7 @@ pub async fn post_messages(
             antml_probe_tag,
             tool_name_map,
             Some(session_affinity_key.as_str()),
-            usage_session_key,
+            request_log.usage_session_key.clone(),
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
@@ -1978,7 +2006,7 @@ async fn handle_stream_request(
     _input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
-    metadata_user_id: Option<String>,
+    request_log: RequestLogContext,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
     client_requested_thinking: bool,
@@ -2009,6 +2037,7 @@ async fn handle_stream_request(
             session_id,
             permit.queue_ms(),
             prompt_dump.clone(),
+            Some(request_log.clone()),
         )
         .await
     {
@@ -2044,8 +2073,7 @@ async fn handle_stream_request(
     ctx.set_request_input_diagnostics(
         input_tokens_estimated_total,
         request_payload_bytes_estimated,
-        metadata_user_id,
-        usage_session_key.clone(),
+        request_log,
     );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
@@ -2249,6 +2277,13 @@ fn create_sse_stream(
                                                 first_event_logged = true;
                                                 tracing::info!(
                                                     target: "kiro_rs::metrics",
+                                                    request_id = ctx.request_log.as_ref().map_or("", |log| log.request_id.as_str()),
+                                                    route = ctx.request_log.as_ref().map_or(route, |log| log.route),
+                                                    client_device_id = ctx.request_log.as_ref().map_or("", RequestLogContext::client_device_id_for_log),
+                                                    client_account_uuid = ctx.request_log.as_ref().map_or("", RequestLogContext::client_account_uuid_for_log),
+                                                    client_user = ctx.request_log.as_ref().map_or("", RequestLogContext::client_user_for_log),
+                                                    client_session_id = ctx.request_log.as_ref().map_or("", RequestLogContext::client_session_id_for_log),
+                                                    usage_session_key = ctx.request_log.as_ref().map_or("", |log| log.usage_session_key.as_str()),
                                                     model = %stream_model,
                                                     stream = true,
                                                     credential_id,
@@ -2328,6 +2363,7 @@ fn create_sse_stream(
                             };
                             final_events.extend(ctx.generate_final_events());
                             log_message_usage_diagnostics(
+                                ctx.request_log.as_ref(),
                                 route,
                                 true,
                                 &stream_model,
@@ -2339,6 +2375,8 @@ fn create_sse_stream(
                                 ctx.context_input_tokens,
                                 ctx.output_tokens,
                                 false,
+                                ctx.last_returned_usage(),
+                                ctx.last_committed_usage(),
                                 stream_started_at,
                             );
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
@@ -2390,6 +2428,7 @@ fn create_sse_stream(
                             };
                             final_events.extend(ctx.generate_final_events_with_usage_commit());
                             log_message_usage_diagnostics(
+                                ctx.request_log.as_ref(),
                                 route,
                                 true,
                                 &stream_model,
@@ -2401,6 +2440,8 @@ fn create_sse_stream(
                                 ctx.context_input_tokens,
                                 ctx.output_tokens,
                                 true,
+                                ctx.last_returned_usage(),
+                                ctx.last_committed_usage(),
                                 stream_started_at,
                             );
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
@@ -2488,6 +2529,7 @@ fn log_opus47_stream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: In
 }
 
 fn log_message_usage_diagnostics(
+    request_log: Option<&RequestLogContext>,
     route: &str,
     stream: bool,
     model: &str,
@@ -2499,6 +2541,8 @@ fn log_message_usage_diagnostics(
     context_usage_input_tokens: Option<i32>,
     output_tokens: i32,
     usage_committed: bool,
+    returned_usage: Option<&AnthropicUsage>,
+    committed_usage: Option<&AnthropicUsage>,
     started_at: Instant,
 ) {
     let context_usage_input_tokens_present = context_usage_input_tokens.is_some();
@@ -2508,10 +2552,25 @@ fn log_message_usage_diagnostics(
     } else {
         input_tokens_estimated_total
     };
+    let usage_input_tokens = returned_usage.map_or(-1, |usage| usage.input_tokens);
+    let usage_cache_read_input_tokens =
+        returned_usage.map_or(-1, |usage| usage.cache_read_input_tokens);
+    let usage_cache_creation_input_tokens =
+        returned_usage.map_or(-1, |usage| usage.cache_creation_input_tokens);
+    let committed_usage_input_tokens = committed_usage.map_or(-1, |usage| usage.input_tokens);
+    let committed_usage_cache_read_input_tokens =
+        committed_usage.map_or(-1, |usage| usage.cache_read_input_tokens);
+    let committed_usage_cache_creation_input_tokens =
+        committed_usage.map_or(-1, |usage| usage.cache_creation_input_tokens);
 
     tracing::info!(
         target: "kiro_rs::metrics",
-        route,
+        request_id = request_log.map_or("", |log| log.request_id.as_str()),
+        route = request_log.map_or(route, |log| log.route),
+        client_device_id = request_log.map_or("", RequestLogContext::client_device_id_for_log),
+        client_account_uuid = request_log.map_or("", RequestLogContext::client_account_uuid_for_log),
+        client_user = request_log.map_or("", RequestLogContext::client_user_for_log),
+        client_session_id = request_log.map_or("", RequestLogContext::client_session_id_for_log),
         stream,
         model = %model,
         credential_id,
@@ -2525,6 +2584,12 @@ fn log_message_usage_diagnostics(
         final_input_tokens,
         output_tokens,
         usage_committed,
+        usage_input_tokens,
+        usage_cache_read_input_tokens,
+        usage_cache_creation_input_tokens,
+        committed_usage_input_tokens,
+        committed_usage_cache_read_input_tokens,
+        committed_usage_cache_creation_input_tokens,
         duration_ms = crate::metrics::duration_ms(started_at.elapsed()),
         "message_usage_diagnostics"
     );
@@ -3058,7 +3123,7 @@ async fn handle_non_stream_request(
     input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
-    metadata_user_id: Option<String>,
+    request_log: RequestLogContext,
     estimated_uncached_input_tokens: i32,
     extract_thinking: bool,
     client_thinking_enabled: bool,
@@ -3091,6 +3156,7 @@ async fn handle_non_stream_request(
             session_id,
             _permit.queue_ms(),
             prompt_dump.clone(),
+            Some(request_log.clone()),
         )
         .await
     {
@@ -3355,31 +3421,34 @@ async fn handle_non_stream_request(
 
     // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
     let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
+    let settings = provider.token_manager().runtime_settings();
+    let usage = build_virtual_usage(
+        &usage_manager,
+        &settings,
+        model,
+        usage_session_key.clone(),
+        final_input_tokens,
+        input_tokens_estimated_total.max(1),
+        estimated_uncached_input_tokens,
+        output_tokens,
+        request_ttl,
+    );
     log_message_usage_diagnostics(
+        Some(&request_log),
         route,
         false,
         model,
         credential_id,
-        metadata_user_id.as_deref(),
+        request_log.metadata_user_id.as_deref(),
         &usage_session_key,
         input_tokens_estimated_total,
         request_payload_bytes_estimated,
         context_input_tokens,
         output_tokens,
         true,
+        Some(&usage),
+        Some(&usage),
         request_started_at,
-    );
-    let settings = provider.token_manager().runtime_settings();
-    let usage = build_virtual_usage(
-        &usage_manager,
-        &settings,
-        model,
-        usage_session_key,
-        final_input_tokens,
-        input_tokens_estimated_total.max(1),
-        estimated_uncached_input_tokens,
-        output_tokens,
-        request_ttl,
     );
 
     let response_body = json!({
@@ -3515,6 +3584,7 @@ fn normalize_opus47_client_thinking(
 }
 
 fn log_opus47_request_thinking_state(
+    request_log: &RequestLogContext,
     requested_model: &str,
     payload: &MessagesRequest,
     client_requested_thinking: bool,
@@ -3539,6 +3609,13 @@ fn log_opus47_request_thinking_state(
     let thinking_directives_present = current_content.contains("<thinking_mode>");
 
     tracing::info!(
+        request_id = %request_log.request_id,
+        route = request_log.route,
+        client_device_id = request_log.client_device_id_for_log(),
+        client_account_uuid = request_log.client_account_uuid_for_log(),
+        client_user = request_log.client_user_for_log(),
+        client_session_id = request_log.client_session_id_for_log(),
+        usage_session_key = %request_log.usage_session_key,
         model = %requested_model,
         effective_model = %payload.model,
         thinking_type = payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
@@ -4525,8 +4602,25 @@ pub async fn post_messages_cc(
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
     let input_diagnostics = request_input_diagnostics(&payload);
+    let route = "/cc/v1/messages";
+    let request_id = RequestLogContext::new_request_id();
+    let metadata_user_id = metadata_user_id_for_log(&payload);
+    let initial_request_log = RequestLogContext::new_with_request_id(
+        route,
+        metadata_user_id.clone(),
+        String::new(),
+        request_id,
+    );
 
     tracing::info!(
+        request_id = %initial_request_log.request_id,
+        route = initial_request_log.route,
+        metadata_user_id = initial_request_log.metadata_user_id_for_log(),
+        metadata_user_id_present = initial_request_log.metadata_user_id_present(),
+        client_device_id = initial_request_log.client_device_id_for_log(),
+        client_account_uuid = initial_request_log.client_account_uuid_for_log(),
+        client_user = initial_request_log.client_user_for_log(),
+        client_session_id = initial_request_log.client_session_id_for_log(),
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
@@ -4555,7 +4649,6 @@ pub async fn post_messages_cc(
 
     let requested_model = payload.model.clone();
     let runtime_settings = provider.token_manager().runtime_settings();
-    let route = "/cc/v1/messages";
     let prompt_dump = PromptDump::maybe_create(
         &runtime_settings,
         route,
@@ -4578,11 +4671,22 @@ pub async fn post_messages_cc(
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
     );
+    let request_log = RequestLogContext::new(route, metadata_user_id, usage_session_key);
+    let request_log = RequestLogContext {
+        request_id: initial_request_log.request_id,
+        ..request_log
+    };
     tracing::info!(
+        request_id = %request_log.request_id,
+        route = request_log.route,
         model = %payload.model,
-        metadata_user_id = metadata_user_id_for_log(&payload).as_deref().unwrap_or(""),
-        metadata_user_id_present = payload.metadata.as_ref().and_then(|metadata| metadata.user_id.as_ref()).is_some(),
-        usage_session_key = %usage_session_key,
+        metadata_user_id = request_log.metadata_user_id_for_log(),
+        metadata_user_id_present = request_log.metadata_user_id_present(),
+        client_device_id = request_log.client_device_id_for_log(),
+        client_account_uuid = request_log.client_account_uuid_for_log(),
+        client_user = request_log.client_user_for_log(),
+        client_session_id = request_log.client_session_id_for_log(),
+        usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
     );
     let request_ttl =
@@ -4676,6 +4780,7 @@ pub async fn post_messages_cc(
         &payload,
     );
     log_opus47_request_thinking_state(
+        &request_log,
         &requested_model,
         &payload,
         client_requested_thinking,
@@ -4745,7 +4850,7 @@ pub async fn post_messages_cc(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
-            metadata_user_id_for_log(&payload),
+            request_log.clone(),
             estimated_uncached_input_tokens,
             client_thinking_enabled,
             client_requested_thinking,
@@ -4760,7 +4865,7 @@ pub async fn post_messages_cc(
             antml_probe_tag.clone(),
             tool_name_map,
             Some(session_affinity_key.as_str()),
-            usage_session_key,
+            request_log.usage_session_key.clone(),
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
@@ -4780,7 +4885,7 @@ pub async fn post_messages_cc(
             input_tokens,
             input_diagnostics.input_tokens_estimated_total,
             input_diagnostics.request_payload_bytes_estimated,
-            metadata_user_id_for_log(&payload),
+            request_log.clone(),
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
@@ -4796,7 +4901,7 @@ pub async fn post_messages_cc(
             antml_probe_tag,
             tool_name_map,
             Some(session_affinity_key.as_str()),
-            usage_session_key,
+            request_log.usage_session_key.clone(),
             state.virtual_cache_usage.clone(),
             request_ttl,
             pdf_debug,
@@ -4820,7 +4925,7 @@ async fn handle_stream_request_buffered(
     _estimated_input_tokens: i32,
     input_tokens_estimated_total: i32,
     request_payload_bytes_estimated: usize,
-    metadata_user_id: Option<String>,
+    request_log: RequestLogContext,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
     client_requested_thinking: bool,
@@ -4851,6 +4956,7 @@ async fn handle_stream_request_buffered(
             session_id,
             permit.queue_ms(),
             prompt_dump.clone(),
+            Some(request_log.clone()),
         )
         .await
     {
@@ -4875,8 +4981,7 @@ async fn handle_stream_request_buffered(
     ctx.set_request_input_diagnostics(
         input_tokens_estimated_total,
         request_payload_bytes_estimated,
-        metadata_user_id,
-        usage_session_key.clone(),
+        request_log,
     );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
@@ -5087,6 +5192,13 @@ fn create_buffered_sse_stream(
                                                     first_event_logged = true;
                                                     tracing::info!(
                                                         target: "kiro_rs::metrics",
+                                                        request_id = ctx.request_log().map_or("", |log| log.request_id.as_str()),
+                                                        route = ctx.request_log().map_or(route, |log| log.route),
+                                                        client_device_id = ctx.request_log().map_or("", RequestLogContext::client_device_id_for_log),
+                                                        client_account_uuid = ctx.request_log().map_or("", RequestLogContext::client_account_uuid_for_log),
+                                                        client_user = ctx.request_log().map_or("", RequestLogContext::client_user_for_log),
+                                                        client_session_id = ctx.request_log().map_or("", RequestLogContext::client_session_id_for_log),
+                                                        usage_session_key = ctx.request_log().map_or("", |log| log.usage_session_key.as_str()),
                                                         model = %stream_model,
                                                         stream = true,
                                                         credential_id,
@@ -5157,6 +5269,7 @@ fn create_buffered_sse_stream(
                                 }
                                 let all_events = ctx.finish_and_get_all_events();
                                 log_message_usage_diagnostics(
+                                    ctx.request_log(),
                                     route,
                                     true,
                                     &stream_model,
@@ -5168,6 +5281,8 @@ fn create_buffered_sse_stream(
                                     ctx.context_input_tokens(),
                                     ctx.output_tokens(),
                                     false,
+                                    ctx.last_returned_usage(),
+                                    ctx.last_committed_usage(),
                                     stream_started_at,
                                 );
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
@@ -5222,6 +5337,7 @@ fn create_buffered_sse_stream(
                                 }
                                 let all_events = ctx.finish_and_get_all_events_with_usage_commit();
                                 log_message_usage_diagnostics(
+                                    ctx.request_log(),
                                     route,
                                     true,
                                     &stream_model,
@@ -5233,6 +5349,8 @@ fn create_buffered_sse_stream(
                                     ctx.context_input_tokens(),
                                     ctx.output_tokens(),
                                     true,
+                                    ctx.last_returned_usage(),
+                                    ctx.last_committed_usage(),
                                     stream_started_at,
                                 );
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);

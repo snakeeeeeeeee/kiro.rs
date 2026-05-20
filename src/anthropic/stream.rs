@@ -7,6 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::common::request_log::RequestLogContext;
 use crate::kiro::model::events::Event;
 use crate::kiro::settings::RuntimeSettings;
 
@@ -744,8 +745,14 @@ pub struct StreamContext {
     pub metadata_user_id: Option<String>,
     /// 仅用于日志诊断的虚拟缓存账本 key
     pub usage_session_key: String,
+    /// 仅用于贯穿请求链路日志的上下文
+    pub request_log: Option<RequestLogContext>,
     /// message_start 初始 usage 覆盖
     pub initial_usage: Option<AnthropicUsage>,
+    /// 最近一次返回给客户端的 usage，用于日志诊断
+    last_returned_usage: Option<AnthropicUsage>,
+    /// 最近一次提交到虚拟缓存账本的 usage，用于日志诊断
+    last_committed_usage: Option<AnthropicUsage>,
     /// usage 字段输出形态
     usage_shape: String,
     /// 等流正常结束后提交的虚拟缓存 usage 账本
@@ -815,7 +822,10 @@ impl StreamContext {
             request_payload_bytes_estimated: 0,
             metadata_user_id: None,
             usage_session_key: String::new(),
+            request_log: None,
             initial_usage: None,
+            last_returned_usage: None,
+            last_committed_usage: None,
             usage_shape: "anthropic".to_string(),
             pending_usage_commit: None,
             context_input_tokens: None,
@@ -885,7 +895,16 @@ impl StreamContext {
     }
 
     pub fn set_initial_usage(&mut self, usage: AnthropicUsage) {
+        self.last_returned_usage = Some(usage.clone());
         self.initial_usage = Some(usage);
+    }
+
+    pub fn last_returned_usage(&self) -> Option<&AnthropicUsage> {
+        self.last_returned_usage.as_ref()
+    }
+
+    pub fn last_committed_usage(&self) -> Option<&AnthropicUsage> {
+        self.last_committed_usage.as_ref()
     }
 
     pub fn set_usage_shape(&mut self, usage_shape: impl Into<String>) {
@@ -896,13 +915,13 @@ impl StreamContext {
         &mut self,
         input_tokens_estimated_total: i32,
         request_payload_bytes_estimated: usize,
-        metadata_user_id: Option<String>,
-        usage_session_key: impl Into<String>,
+        request_log: RequestLogContext,
     ) {
         self.input_tokens_estimated_total = input_tokens_estimated_total;
         self.request_payload_bytes_estimated = request_payload_bytes_estimated;
-        self.metadata_user_id = metadata_user_id;
-        self.usage_session_key = usage_session_key.into();
+        self.metadata_user_id = request_log.metadata_user_id.clone();
+        self.usage_session_key = request_log.usage_session_key.clone();
+        self.request_log = Some(request_log);
     }
 
     pub fn set_pending_usage_commit_builder(
@@ -1597,7 +1616,8 @@ impl StreamContext {
 
         if commit_usage {
             if let Some(pending_usage) = self.pending_usage_commit.take() {
-                pending_usage.commit(final_input_tokens, self.output_tokens);
+                let committed_usage = pending_usage.commit(final_input_tokens, self.output_tokens);
+                self.last_committed_usage = Some(committed_usage);
             }
         }
         events
@@ -1605,7 +1625,7 @@ impl StreamContext {
 }
 
 impl PendingStreamUsageCommit {
-    fn commit(self, final_observed_input_tokens: i32, output_tokens: i32) {
+    fn commit(self, final_observed_input_tokens: i32, output_tokens: i32) -> AnthropicUsage {
         let final_observed_input_tokens = final_observed_input_tokens.max(0);
         let initial_observed_input_tokens = self
             .initial_pending
@@ -1615,8 +1635,9 @@ impl PendingStreamUsageCommit {
 
         if final_observed_input_tokens == initial_observed_input_tokens {
             if let Some(pending) = self.initial_pending {
+                let usage = pending.usage().clone();
                 self.manager.commit_usage(pending);
-                return;
+                return usage;
             }
         }
 
@@ -1632,7 +1653,9 @@ impl PendingStreamUsageCommit {
                 creation_ttl: self.creation_ttl,
             },
         );
+        let usage = pending.usage().clone();
         self.manager.commit_usage(pending);
+        usage
     }
 }
 
@@ -1726,14 +1749,12 @@ impl BufferedStreamContext {
         &mut self,
         input_tokens_estimated_total: i32,
         request_payload_bytes_estimated: usize,
-        metadata_user_id: Option<String>,
-        usage_session_key: impl Into<String>,
+        request_log: RequestLogContext,
     ) {
         self.inner.set_request_input_diagnostics(
             input_tokens_estimated_total,
             request_payload_bytes_estimated,
-            metadata_user_id,
-            usage_session_key,
+            request_log,
         );
     }
 
@@ -1753,12 +1774,24 @@ impl BufferedStreamContext {
         &self.inner.usage_session_key
     }
 
+    pub fn request_log(&self) -> Option<&RequestLogContext> {
+        self.inner.request_log.as_ref()
+    }
+
     pub fn context_input_tokens(&self) -> Option<i32> {
         self.inner.context_input_tokens
     }
 
     pub fn output_tokens(&self) -> i32 {
         self.inner.output_tokens
+    }
+
+    pub fn last_returned_usage(&self) -> Option<&AnthropicUsage> {
+        self.inner.last_returned_usage()
+    }
+
+    pub fn last_committed_usage(&self) -> Option<&AnthropicUsage> {
+        self.inner.last_committed_usage()
     }
 
     /// 处理 Kiro 事件并缓冲结果
@@ -1820,6 +1853,12 @@ impl BufferedStreamContext {
             .usage_builder
             .take()
             .map(|builder| builder(final_input_tokens, 1, commit_usage));
+        if let Some(final_usage) = &final_usage {
+            self.inner.last_returned_usage = Some(final_usage.clone());
+            if commit_usage {
+                self.inner.last_committed_usage = Some(final_usage.clone());
+            }
+        }
 
         // 更正 message_start 和 message_delta 事件中的 input_tokens / usage
         for event in &mut self.event_buffer {

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use uuid::Uuid;
 
+use crate::common::request_log::RequestLogContext;
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::dynamic_proxy::is_proxy_error;
 use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
@@ -78,6 +79,7 @@ struct ApiTimingRecord {
     acquire_ms: u64,
     upstream_ms: u64,
     total_ms: u64,
+    request_log: Option<RequestLogContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ struct StreamTimingLogContext {
     acquire_ms: u64,
     header_ms: u64,
     total_started_at: Instant,
+    request_log: Option<RequestLogContext>,
 }
 
 #[derive(Debug)]
@@ -167,8 +170,16 @@ impl ResponseTimingGuard {
         self.first_chunk_logged = true;
 
         if let Some(context) = &self.stream_log {
+            let request_log = context.request_log.as_ref();
             tracing::info!(
                 target: "kiro_rs::metrics",
+                request_id = request_log.map_or("", |log| log.request_id.as_str()),
+                route = request_log.map_or("", |log| log.route),
+                client_device_id = request_log.map_or("", RequestLogContext::client_device_id_for_log),
+                client_account_uuid = request_log.map_or("", RequestLogContext::client_account_uuid_for_log),
+                client_user = request_log.map_or("", RequestLogContext::client_user_for_log),
+                client_session_id = request_log.map_or("", RequestLogContext::client_session_id_for_log),
+                usage_session_key = request_log.map_or("", |log| log.usage_session_key.as_str()),
                 model = %context.model,
                 stream = true,
                 credential_id = context.credential_id,
@@ -329,8 +340,16 @@ impl LeasedResponse {
 }
 
 fn record_api_timing(metrics: &MetricsRecorder, record: ApiTimingRecord) {
+    let request_log = record.request_log.as_ref();
     tracing::info!(
         target: "kiro_rs::metrics",
+        request_id = request_log.map_or("", |log| log.request_id.as_str()),
+        route = request_log.map_or("", |log| log.route),
+        client_device_id = request_log.map_or("", RequestLogContext::client_device_id_for_log),
+        client_account_uuid = request_log.map_or("", RequestLogContext::client_account_uuid_for_log),
+        client_user = request_log.map_or("", RequestLogContext::client_user_for_log),
+        client_session_id = request_log.map_or("", RequestLogContext::client_session_id_for_log),
+        usage_session_key = request_log.map_or("", |log| log.usage_session_key.as_str()),
         model = %record.model,
         stream = record.is_stream,
         credential_id = record.credential_id,
@@ -667,7 +686,7 @@ impl KiroProvider {
     /// 支持多凭据故障转移（见 [`Self::call_api_with_retry`]）
     #[allow(dead_code)]
     pub async fn call_api(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, false, None, 0, None)
+        self.call_api_with_retry(request_body, false, None, 0, None, None)
             .await
     }
 
@@ -677,15 +696,23 @@ impl KiroProvider {
         session_id: Option<&str>,
         queue_ms: u64,
         prompt_dump: Option<PromptDump>,
+        request_log: Option<RequestLogContext>,
     ) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, false, session_id, queue_ms, prompt_dump)
-            .await
+        self.call_api_with_retry(
+            request_body,
+            false,
+            session_id,
+            queue_ms,
+            prompt_dump,
+            request_log,
+        )
+        .await
     }
 
     /// 发送流式 API 请求
     #[allow(dead_code)]
     pub async fn call_api_stream(&self, request_body: &str) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, true, None, 0, None)
+        self.call_api_with_retry(request_body, true, None, 0, None, None)
             .await
     }
 
@@ -695,9 +722,17 @@ impl KiroProvider {
         session_id: Option<&str>,
         queue_ms: u64,
         prompt_dump: Option<PromptDump>,
+        request_log: Option<RequestLogContext>,
     ) -> anyhow::Result<LeasedResponse> {
-        self.call_api_with_retry(request_body, true, session_id, queue_ms, prompt_dump)
-            .await
+        self.call_api_with_retry(
+            request_body,
+            true,
+            session_id,
+            queue_ms,
+            prompt_dump,
+            request_log,
+        )
+        .await
     }
 
     /// 发送 MCP API 请求（WebSearch 等工具调用）
@@ -924,6 +959,7 @@ impl KiroProvider {
         session_id: Option<&str>,
         queue_ms: u64,
         prompt_dump: Option<PromptDump>,
+        request_log: Option<RequestLogContext>,
     ) -> anyhow::Result<LeasedResponse> {
         let total_started_at = Instant::now();
         let total_credentials = self.token_manager.total_count();
@@ -957,6 +993,7 @@ impl KiroProvider {
                 acquire_ms: 0,
                 upstream_ms: 0,
                 total_ms,
+                request_log: request_log.clone(),
             });
             return Err(provider_rate_limit_error(
                 format!(
@@ -1049,7 +1086,15 @@ impl KiroProvider {
 
             let url = endpoint.api_url(&rctx);
             let body = endpoint.transform_api_body(request_body, &rctx);
+            let request_log_ref = request_log.as_ref();
             tracing::info!(
+                request_id = request_log_ref.map_or("", |log| log.request_id.as_str()),
+                route = request_log_ref.map_or("", |log| log.route),
+                client_device_id = request_log_ref.map_or("", RequestLogContext::client_device_id_for_log),
+                client_account_uuid = request_log_ref.map_or("", RequestLogContext::client_account_uuid_for_log),
+                client_user = request_log_ref.map_or("", RequestLogContext::client_user_for_log),
+                client_session_id = request_log_ref.map_or("", RequestLogContext::client_session_id_for_log),
+                usage_session_key = request_log_ref.map_or("", |log| log.usage_session_key.as_str()),
                 model = model_for_metrics.as_str(),
                 credential_id = ctx.id,
                 endpoint = endpoint.name(),
@@ -1079,6 +1124,18 @@ impl KiroProvider {
             if config.request_diagnostics_enabled {
                 let request_diagnostics = Self::diagnose_api_request_body(&body);
                 tracing::info!(
+                    request_id = request_log_ref.map_or("", |log| log.request_id.as_str()),
+                    route = request_log_ref.map_or("", |log| log.route),
+                    client_device_id =
+                        request_log_ref.map_or("", RequestLogContext::client_device_id_for_log),
+                    client_account_uuid =
+                        request_log_ref.map_or("", RequestLogContext::client_account_uuid_for_log),
+                    client_user =
+                        request_log_ref.map_or("", RequestLogContext::client_user_for_log),
+                    client_session_id =
+                        request_log_ref.map_or("", RequestLogContext::client_session_id_for_log),
+                    usage_session_key =
+                        request_log_ref.map_or("", |log| log.usage_session_key.as_str()),
                     model = request_diagnostics.model.as_deref().unwrap_or("unknown"),
                     external_model = model_for_metrics.as_str(),
                     credential_id = ctx.id,
@@ -1162,6 +1219,7 @@ impl KiroProvider {
                         acquire_ms: acquire_ms_total,
                         upstream_ms: upstream_ms_total,
                         total_ms: 0,
+                        request_log: request_log.clone(),
                     },
                     total_started_at,
                     Instant::now(),
@@ -1176,6 +1234,7 @@ impl KiroProvider {
                         acquire_ms: acquire_ms_total,
                         header_ms: upstream_ms_total,
                         total_started_at,
+                        request_log: request_log.clone(),
                     });
                 }
                 return Ok(LeasedResponse::new(
@@ -1238,6 +1297,18 @@ impl KiroProvider {
                         rule.delay_ms
                     };
                     tracing::info!(
+                        request_id = request_log_ref.map_or("", |log| log.request_id.as_str()),
+                        route = request_log_ref.map_or("", |log| log.route),
+                        client_device_id =
+                            request_log_ref.map_or("", RequestLogContext::client_device_id_for_log),
+                        client_account_uuid = request_log_ref
+                            .map_or("", RequestLogContext::client_account_uuid_for_log),
+                        client_user =
+                            request_log_ref.map_or("", RequestLogContext::client_user_for_log),
+                        client_session_id = request_log_ref
+                            .map_or("", RequestLogContext::client_session_id_for_log),
+                        usage_session_key =
+                            request_log_ref.map_or("", |log| log.usage_session_key.as_str()),
                         credential_id = ctx.id,
                         status = status.as_u16(),
                         upstream_reason = upstream_error.reason.as_deref(),
@@ -1280,6 +1351,7 @@ impl KiroProvider {
                         acquire_ms: acquire_ms_total,
                         upstream_ms: upstream_ms_total,
                         total_ms,
+                        request_log: request_log.clone(),
                     });
                     anyhow::bail!(
                         "{} API 请求失败（所有凭据已用尽）: {} {}",
@@ -1335,6 +1407,7 @@ impl KiroProvider {
                     acquire_ms: acquire_ms_total,
                     upstream_ms: upstream_ms_total,
                     total_ms,
+                    request_log: request_log.clone(),
                 });
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
             }
@@ -1384,6 +1457,7 @@ impl KiroProvider {
                         acquire_ms: acquire_ms_total,
                         upstream_ms: upstream_ms_total,
                         total_ms,
+                        request_log: request_log.clone(),
                     });
                     anyhow::bail!(
                         "{} API 请求失败（所有凭据已用尽）: {} {}",
@@ -1464,6 +1538,7 @@ impl KiroProvider {
                     acquire_ms: acquire_ms_total,
                     upstream_ms: upstream_ms_total,
                     total_ms,
+                    request_log: request_log.clone(),
                 });
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
             }
@@ -1532,6 +1607,7 @@ impl KiroProvider {
             acquire_ms: acquire_ms_total,
             upstream_ms: upstream_ms_total,
             total_ms,
+            request_log: request_log.clone(),
         });
         Err(error)
     }
