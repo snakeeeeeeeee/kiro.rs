@@ -20,7 +20,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::time::interval;
 
@@ -42,6 +42,88 @@ use super::usage::{
     estimate_latest_user_input_tokens, request_cache_ttl, session_key_for_request,
 };
 use super::websearch;
+
+#[derive(Clone, Copy)]
+struct RequestInputDiagnostics {
+    input_tokens_estimated_total: i32,
+    latest_user_input_tokens_estimated: i32,
+    request_payload_bytes_estimated: usize,
+}
+
+fn request_input_diagnostics(payload: &MessagesRequest) -> RequestInputDiagnostics {
+    let mut total = 0i32;
+
+    if let Some(system) = &payload.system {
+        for msg in system {
+            total = total.saturating_add(local_text_tokens(&msg.text));
+        }
+    }
+
+    for message in &payload.messages {
+        total = total.saturating_add(local_value_tokens_deep(&message.content));
+    }
+
+    if let Some(tools) = &payload.tools {
+        for tool in tools {
+            if let Ok(value) = serde_json::to_value(tool) {
+                total = total.saturating_add(local_value_tokens_deep(&value));
+            }
+        }
+    }
+
+    if let Some(tool_choice) = &payload.tool_choice {
+        total = total.saturating_add(local_value_tokens_deep(tool_choice));
+    }
+
+    if let Some(response_format) = &payload.response_format {
+        if let Ok(value) = serde_json::to_value(response_format) {
+            total = total.saturating_add(local_value_tokens_deep(&value));
+        }
+    }
+
+    let latest_user_input_tokens_estimated = payload
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| local_value_tokens_deep(&message.content))
+        .unwrap_or(0)
+        .max(1);
+
+    let request_payload_bytes_estimated = serde_json::to_vec(payload)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+
+    RequestInputDiagnostics {
+        input_tokens_estimated_total: total.max(1),
+        latest_user_input_tokens_estimated,
+        request_payload_bytes_estimated,
+    }
+}
+
+fn local_value_tokens_deep(value: &Value) -> i32 {
+    match value {
+        Value::String(text) => local_text_tokens(text),
+        Value::Number(_) | Value::Bool(_) => local_text_tokens(&value.to_string()),
+        Value::Array(items) => items
+            .iter()
+            .fold(items.len().min(i32::MAX as usize) as i32, |sum, item| {
+                sum.saturating_add(local_value_tokens_deep(item))
+            }),
+        Value::Object(map) => map.iter().fold(
+            map.len().min(i32::MAX as usize) as i32,
+            |sum, (key, item)| {
+                sum.saturating_add(local_text_tokens(key))
+                    .saturating_add(local_value_tokens_deep(item))
+            },
+        ),
+        Value::Null => 0,
+    }
+}
+
+fn local_text_tokens(text: &str) -> i32 {
+    token::count_tokens(text).min(i32::MAX as u64) as i32
+}
 
 /// GET /healthz
 pub async fn healthz() -> impl IntoResponse {
@@ -1596,11 +1678,16 @@ pub async fn post_messages(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    let input_diagnostics = request_input_diagnostics(&payload);
+
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
+        input_tokens_estimated_total = input_diagnostics.input_tokens_estimated_total,
+        latest_user_input_tokens_estimated = input_diagnostics.latest_user_input_tokens_estimated,
+        request_payload_bytes_estimated = input_diagnostics.request_payload_bytes_estimated,
         "Received POST /v1/messages request"
     );
     // 检查 KiroProvider 是否可用
@@ -1803,6 +1890,8 @@ pub async fn post_messages(
             &request_body,
             &payload.model,
             input_tokens,
+            input_diagnostics.input_tokens_estimated_total,
+            input_diagnostics.request_payload_bytes_estimated,
             estimated_uncached_input_tokens,
             client_thinking_enabled,
             client_requested_thinking,
@@ -1835,6 +1924,8 @@ pub async fn post_messages(
             &request_body,
             &payload.model,
             input_tokens,
+            input_diagnostics.input_tokens_estimated_total,
+            input_diagnostics.request_payload_bytes_estimated,
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
@@ -1869,6 +1960,8 @@ async fn handle_stream_request(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    input_tokens_estimated_total: i32,
+    request_payload_bytes_estimated: usize,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
     client_requested_thinking: bool,
@@ -1914,8 +2007,9 @@ async fn handle_stream_request(
         &settings,
         VirtualUsageInput {
             model: model.to_string(),
-            session_key: usage_session_key,
+            session_key: usage_session_key.clone(),
             observed_total_input_tokens: input_tokens,
+            accounting_total_input_tokens: Some(input_tokens),
             estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
             output_tokens: 1,
             creation_ttl: request_ttl,
@@ -1928,6 +2022,10 @@ async fn handle_stream_request(
         input_tokens,
         client_thinking_enabled,
         tool_name_map,
+    );
+    ctx.set_request_input_diagnostics(
+        input_tokens_estimated_total,
+        request_payload_bytes_estimated,
     );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
@@ -1947,7 +2045,16 @@ async fn handle_stream_request(
     );
     ctx.set_usage_shape(usage_shape);
     ctx.set_initial_usage(initial_usage);
-    ctx.set_pending_usage_commit(usage_manager, pending_usage);
+    ctx.set_pending_usage_commit_builder(
+        usage_manager,
+        settings,
+        model,
+        usage_session_key,
+        input_tokens,
+        estimated_uncached_input_tokens,
+        request_ttl,
+        pending_usage,
+    );
 
     // 生成初始事件
     let initial_events = ctx.generate_initial_events();
@@ -2200,6 +2307,18 @@ fn create_sse_stream(
                                 Vec::new()
                             };
                             final_events.extend(ctx.generate_final_events());
+                            log_message_usage_diagnostics(
+                                route,
+                                true,
+                                &stream_model,
+                                credential_id,
+                                ctx.input_tokens_estimated_total,
+                                ctx.request_payload_bytes_estimated,
+                                ctx.context_input_tokens,
+                                ctx.output_tokens,
+                                false,
+                                stream_started_at,
+                            );
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                             if identity_probe_applied {
                                 log_identity_fingerprint_diagnostics(ctx.opus47_diagnostics(), &assistant_text);
@@ -2248,6 +2367,18 @@ fn create_sse_stream(
                                 Vec::new()
                             };
                             final_events.extend(ctx.generate_final_events_with_usage_commit());
+                            log_message_usage_diagnostics(
+                                route,
+                                true,
+                                &stream_model,
+                                credential_id,
+                                ctx.input_tokens_estimated_total,
+                                ctx.request_payload_bytes_estimated,
+                                ctx.context_input_tokens,
+                                ctx.output_tokens,
+                                true,
+                                stream_started_at,
+                            );
                             log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                             if identity_probe_applied {
                                 log_identity_fingerprint_diagnostics(ctx.opus47_diagnostics(), &assistant_text);
@@ -2330,6 +2461,44 @@ fn log_opus47_stream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: In
         "opus47_stream_diagnostics"
     );
     log_opus47_signature_diagnostics(diagnostics, diagnostics.signature_exposed_to_client);
+}
+
+fn log_message_usage_diagnostics(
+    route: &str,
+    stream: bool,
+    model: &str,
+    credential_id: u64,
+    input_tokens_estimated_total: i32,
+    request_payload_bytes_estimated: usize,
+    context_usage_input_tokens: Option<i32>,
+    output_tokens: i32,
+    usage_committed: bool,
+    started_at: Instant,
+) {
+    let context_usage_input_tokens_present = context_usage_input_tokens.is_some();
+    let context_usage_input_tokens = context_usage_input_tokens.unwrap_or(-1);
+    let final_input_tokens = if context_usage_input_tokens_present {
+        context_usage_input_tokens
+    } else {
+        input_tokens_estimated_total
+    };
+
+    tracing::info!(
+        target: "kiro_rs::metrics",
+        route,
+        stream,
+        model = %model,
+        credential_id,
+        input_tokens_estimated_total,
+        request_payload_bytes_estimated,
+        context_usage_input_tokens,
+        context_usage_input_tokens_present,
+        final_input_tokens,
+        output_tokens,
+        usage_committed,
+        duration_ms = crate::metrics::duration_ms(started_at.elapsed()),
+        "message_usage_diagnostics"
+    );
 }
 
 fn log_opus47_nonstream_diagnostics(diagnostics: &Opus47Diagnostics, started_at: Instant) {
@@ -2833,6 +3002,7 @@ fn build_virtual_usage(
     model: &str,
     session_key: String,
     observed_total_input_tokens: i32,
+    accounting_total_input_tokens: i32,
     estimated_uncached_input_tokens: i32,
     output_tokens: i32,
     creation_ttl: CacheTtl,
@@ -2843,6 +3013,7 @@ fn build_virtual_usage(
             model: model.to_string(),
             session_key,
             observed_total_input_tokens,
+            accounting_total_input_tokens: Some(accounting_total_input_tokens),
             estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
             output_tokens,
             creation_ttl,
@@ -2856,6 +3027,8 @@ async fn handle_non_stream_request(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    input_tokens_estimated_total: i32,
+    request_payload_bytes_estimated: usize,
     estimated_uncached_input_tokens: i32,
     extract_thinking: bool,
     client_thinking_enabled: bool,
@@ -3152,6 +3325,18 @@ async fn handle_non_stream_request(
 
     // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
     let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
+    log_message_usage_diagnostics(
+        route,
+        false,
+        model,
+        credential_id,
+        input_tokens_estimated_total,
+        request_payload_bytes_estimated,
+        context_input_tokens,
+        output_tokens,
+        true,
+        request_started_at,
+    );
     let settings = provider.token_manager().runtime_settings();
     let usage = build_virtual_usage(
         &usage_manager,
@@ -3159,6 +3344,7 @@ async fn handle_non_stream_request(
         model,
         usage_session_key,
         final_input_tokens,
+        input_tokens,
         estimated_uncached_input_tokens,
         output_tokens,
         request_ttl,
@@ -4306,11 +4492,16 @@ pub async fn post_messages_cc(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    let input_diagnostics = request_input_diagnostics(&payload);
+
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
+        input_tokens_estimated_total = input_diagnostics.input_tokens_estimated_total,
+        latest_user_input_tokens_estimated = input_diagnostics.latest_user_input_tokens_estimated,
+        request_payload_bytes_estimated = input_diagnostics.request_payload_bytes_estimated,
         "Received POST /cc/v1/messages request"
     );
 
@@ -4513,6 +4704,8 @@ pub async fn post_messages_cc(
             &request_body,
             &payload.model,
             input_tokens,
+            input_diagnostics.input_tokens_estimated_total,
+            input_diagnostics.request_payload_bytes_estimated,
             estimated_uncached_input_tokens,
             client_thinking_enabled,
             client_requested_thinking,
@@ -4545,6 +4738,8 @@ pub async fn post_messages_cc(
             &request_body,
             &payload.model,
             input_tokens,
+            input_diagnostics.input_tokens_estimated_total,
+            input_diagnostics.request_payload_bytes_estimated,
             estimated_uncached_input_tokens,
             extract_thinking,
             client_thinking_enabled,
@@ -4582,6 +4777,8 @@ async fn handle_stream_request_buffered(
     request_body: &str,
     model: &str,
     estimated_input_tokens: i32,
+    input_tokens_estimated_total: i32,
+    request_payload_bytes_estimated: usize,
     estimated_uncached_input_tokens: i32,
     client_thinking_enabled: bool,
     client_requested_thinking: bool,
@@ -4632,6 +4829,10 @@ async fn handle_stream_request_buffered(
         client_thinking_enabled,
         tool_name_map,
     );
+    ctx.set_request_input_diagnostics(
+        input_tokens_estimated_total,
+        request_payload_bytes_estimated,
+    );
     ctx.set_opus47_diagnostics(Opus47Diagnostics::new(
         opus47_diagnostics_enabled,
         response_model.as_str(),
@@ -4657,6 +4858,7 @@ async fn handle_stream_request_buffered(
                     model: model.clone(),
                     session_key: usage_session_key,
                     observed_total_input_tokens: final_input_tokens,
+                    accounting_total_input_tokens: Some(estimated_input_tokens),
                     estimated_uncached_input_tokens: Some(estimated_uncached_input_tokens),
                     output_tokens,
                     creation_ttl: request_ttl,
@@ -4909,6 +5111,18 @@ fn create_buffered_sse_stream(
                                     ctx.process_text_and_buffer(&assistant_text);
                                 }
                                 let all_events = ctx.finish_and_get_all_events();
+                                log_message_usage_diagnostics(
+                                    route,
+                                    true,
+                                    &stream_model,
+                                    credential_id,
+                                    ctx.input_tokens_estimated_total(),
+                                    ctx.request_payload_bytes_estimated(),
+                                    ctx.context_input_tokens(),
+                                    ctx.output_tokens(),
+                                    false,
+                                    stream_started_at,
+                                );
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                                 if identity_probe_applied {
                                     log_identity_fingerprint_diagnostics(ctx.opus47_diagnostics(), &assistant_text);
@@ -4960,6 +5174,18 @@ fn create_buffered_sse_stream(
                                     ctx.process_text_and_buffer(&assistant_text);
                                 }
                                 let all_events = ctx.finish_and_get_all_events_with_usage_commit();
+                                log_message_usage_diagnostics(
+                                    route,
+                                    true,
+                                    &stream_model,
+                                    credential_id,
+                                    ctx.input_tokens_estimated_total(),
+                                    ctx.request_payload_bytes_estimated(),
+                                    ctx.context_input_tokens(),
+                                    ctx.output_tokens(),
+                                    true,
+                                    stream_started_at,
+                                );
                                 log_opus47_stream_diagnostics(ctx.opus47_diagnostics(), stream_started_at);
                                 if identity_probe_applied {
                                     log_identity_fingerprint_diagnostics(ctx.opus47_diagnostics(), &assistant_text);

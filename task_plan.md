@@ -187,3 +187,9 @@ Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibili
 ## Account Balance Auto Refresh Decisions
 - Auto refresh is page-scoped: only the currently visible page of accounts is queried, so opening the Admin page does not sweep every account in the pool.
 - Auto refresh is frontend-driven and stops when the Admin page is closed. It does not run as a detached backend scheduler.
+
+## Virtual Cache Compression Reset Investigation
+- [completed] Trace virtual cache ledger reset and compression accounting paths.
+- [completed] Patch stream usage commit so compressed context sizes update the ledger.
+- [completed] Add regression coverage for compressed stream context reset.
+- [completed] Run targeted and broader validation.

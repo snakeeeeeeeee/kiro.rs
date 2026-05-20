@@ -44,7 +44,10 @@ impl CacheTtl {
 pub struct VirtualUsageInput {
     pub model: String,
     pub session_key: String,
+    /// Upstream context size observed from Kiro. Used to detect context shrink/compression.
     pub observed_total_input_tokens: i32,
+    /// Synthetic billing/accounting input size. Defaults to `observed_total_input_tokens`.
+    pub accounting_total_input_tokens: Option<i32>,
     pub estimated_uncached_input_tokens: Option<i32>,
     pub output_tokens: i32,
     pub creation_ttl: CacheTtl,
@@ -126,6 +129,7 @@ struct LedgerEntry {
     cached_1h_tokens: i32,
     cached_1h_expires_at: Option<DateTime<Utc>>,
     last_observed_input_tokens: i32,
+    last_accounting_input_tokens: i32,
     turn_count: u64,
 }
 
@@ -141,12 +145,17 @@ pub struct PendingVirtualUsage {
     creation_ttl: CacheTtl,
     creation_tokens: i32,
     observed_total_input_tokens: i32,
+    accounting_total_input_tokens: i32,
     reset_ledger: bool,
 }
 
 impl PendingVirtualUsage {
     pub fn usage(&self) -> &AnthropicUsage {
         &self.usage
+    }
+
+    pub fn observed_total_input_tokens(&self) -> i32 {
+        self.observed_total_input_tokens
     }
 }
 
@@ -192,6 +201,7 @@ impl VirtualCacheUsageManager {
                 creation_ttl: input.creation_ttl,
                 creation_tokens: 0,
                 observed_total_input_tokens: observed_total,
+                accounting_total_input_tokens: observed_total,
                 reset_ledger: false,
             };
         }
@@ -208,8 +218,9 @@ impl VirtualCacheUsageManager {
             entry = LedgerEntry::default();
         }
 
-        let uncached = compute_uncached_tokens(settings, &input, observed_total);
-        cap_entry_cached_tokens(&mut entry, observed_total.saturating_sub(uncached));
+        let accounting_total = compute_accounting_total(&input, observed_total);
+        let uncached = compute_uncached_tokens(settings, &input, accounting_total);
+        cap_entry_cached_tokens(&mut entry, accounting_total.saturating_sub(uncached));
         let read_tokens = entry
             .cached_5m_tokens
             .saturating_add(entry.cached_1h_tokens);
@@ -218,7 +229,7 @@ impl VirtualCacheUsageManager {
             settings,
             &input,
             &entry,
-            observed_total,
+            accounting_total,
             uncached,
             reset_ledger,
         );
@@ -242,6 +253,7 @@ impl VirtualCacheUsageManager {
             creation_ttl: input.creation_ttl,
             creation_tokens,
             observed_total_input_tokens: observed_total,
+            accounting_total_input_tokens: accounting_total,
             reset_ledger,
         }
     }
@@ -276,12 +288,21 @@ impl VirtualCacheUsageManager {
         cap_entry_cached_tokens(
             entry,
             pending
-                .observed_total_input_tokens
+                .accounting_total_input_tokens
                 .saturating_sub(pending.usage.input_tokens),
         );
         entry.last_observed_input_tokens = pending.observed_total_input_tokens;
+        entry.last_accounting_input_tokens = pending.accounting_total_input_tokens;
         entry.turn_count = entry.turn_count.saturating_add(1);
     }
+}
+
+fn compute_accounting_total(input: &VirtualUsageInput, observed_total: i32) -> i32 {
+    input
+        .accounting_total_input_tokens
+        .unwrap_or(observed_total)
+        .max(observed_total)
+        .max(0)
 }
 
 fn compute_uncached_tokens(
@@ -325,7 +346,7 @@ fn compute_creation_tokens(
         };
     }
 
-    let delta = observed_total.saturating_sub(entry.last_observed_input_tokens);
+    let delta = observed_total.saturating_sub(entry.last_accounting_input_tokens);
     if settings.virtual_cache_creation_mode != "dynamic" {
         return delta
             .max(settings.virtual_cache_min_creation_tokens as i32)
@@ -457,6 +478,7 @@ fn expire_entry(entry: &mut LedgerEntry, now: DateTime<Utc>) {
     if no_active_bucket {
         entry.turn_count = 0;
         entry.last_observed_input_tokens = 0;
+        entry.last_accounting_input_tokens = 0;
     }
 }
 
@@ -541,12 +563,11 @@ pub fn session_key_for_request(req: &MessagesRequest, model: &str, fallback_scop
         }
     }
 
-    let fallback_kind = if fallback_scope == "none" {
-        "none"
+    if fallback_scope == "none" {
+        format!("fallback:none:{model}:{}", uuid::Uuid::new_v4())
     } else {
-        "missing-metadata"
-    };
-    format!("fallback:{fallback_kind}:{model}:{}", uuid::Uuid::new_v4())
+        format!("fallback:model:{model}")
+    }
 }
 
 fn metadata_user_id_cache_key(user_id: &str) -> String {
@@ -675,6 +696,7 @@ mod tests {
             model: "claude-sonnet-4-5-20250929".to_string(),
             session_key: session.to_string(),
             observed_total_input_tokens: observed,
+            accounting_total_input_tokens: None,
             estimated_uncached_input_tokens: None,
             output_tokens: 7,
             creation_ttl: ttl,
@@ -783,16 +805,61 @@ mod tests {
     }
 
     #[test]
-    fn missing_metadata_fallback_does_not_share_model_ledger() {
+    fn missing_metadata_model_fallback_uses_model_ledger_key() {
         let first = request_without_metadata();
         let second = request_without_metadata();
 
         let first_key = session_key_for_request(&first, &first.model, "model");
         let second_key = session_key_for_request(&second, &second.model, "model");
 
-        assert!(first_key.starts_with("fallback:missing-metadata:claude-sonnet-4-5-20250929:"));
-        assert!(second_key.starts_with("fallback:missing-metadata:claude-sonnet-4-5-20250929:"));
+        assert_eq!(first_key, "fallback:model:claude-sonnet-4-5-20250929");
+        assert_eq!(second_key, first_key);
+    }
+
+    #[test]
+    fn missing_metadata_none_fallback_uses_request_isolation() {
+        let first = request_without_metadata();
+        let second = request_without_metadata();
+
+        let first_key = session_key_for_request(&first, &first.model, "none");
+        let second_key = session_key_for_request(&second, &second.model, "none");
+
+        assert!(first_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
+        assert!(second_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
         assert_ne!(first_key, second_key);
+    }
+
+    #[test]
+    fn missing_metadata_model_fallback_accumulates_virtual_cache() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let first = request_without_metadata();
+        let second = request_without_metadata();
+
+        let first_key = session_key_for_request(&first, &first.model, "model");
+        let second_key = session_key_for_request(&second, &second.model, "model");
+
+        let first_usage = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                session_key: first_key,
+                ..input("unused", 30_000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(first_usage.cache_read_input_tokens, 0);
+
+        let second_usage = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                session_key: second_key,
+                ..input("unused", 31_000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert!(
+            second_usage.cache_read_input_tokens > 25_000,
+            "model fallback should reuse the previous virtual cache ledger, actual = {}",
+            second_usage.cache_read_input_tokens
+        );
     }
 
     #[test]
@@ -1010,6 +1077,55 @@ mod tests {
         );
         assert_eq!(next.cache_read_input_tokens, 4_999);
         assert_eq!(next.cache_creation_input_tokens, 128);
+    }
+
+    #[test]
+    fn compressed_context_reset_keeps_virtual_accounting_total() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+
+        let _ = manager.build_usage(
+            &settings,
+            input(
+                "session-compressed-accounting",
+                200_000,
+                CacheTtl::FiveMinutes,
+            ),
+        );
+
+        let compressed = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                observed_total_input_tokens: 50_000,
+                accounting_total_input_tokens: Some(200_000),
+                ..input(
+                    "session-compressed-accounting",
+                    50_000,
+                    CacheTtl::FiveMinutes,
+                )
+            },
+        );
+        assert_eq!(compressed.cache_read_input_tokens, 0);
+        assert_eq!(compressed.cache_creation_input_tokens, 199_999);
+
+        let next = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                observed_total_input_tokens: 51_000,
+                accounting_total_input_tokens: Some(201_000),
+                ..input(
+                    "session-compressed-accounting",
+                    51_000,
+                    CacheTtl::FiveMinutes,
+                )
+            },
+        );
+        assert!(
+            next.cache_read_input_tokens > 50_000,
+            "虚拟 cache_read 不应被压缩后的上游 context usage 永久限制在 5w 附近，实际值 = {}",
+            next.cache_read_input_tokens
+        );
+        assert_eq!(next.cache_creation_input_tokens, 1_000);
     }
 
     #[test]

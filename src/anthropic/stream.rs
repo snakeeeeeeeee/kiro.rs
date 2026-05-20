@@ -8,9 +8,12 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
+use crate::kiro::settings::RuntimeSettings;
 
 use super::signed_thinking::{SignedThinkingCache, SignedThinkingMode};
-use super::usage::{AnthropicUsage, PendingVirtualUsage, VirtualCacheUsageManager};
+use super::usage::{
+    AnthropicUsage, CacheTtl, PendingVirtualUsage, VirtualCacheUsageManager, VirtualUsageInput,
+};
 
 pub fn generate_anthropic_message_id() -> String {
     let id = Uuid::new_v4().to_string().replace('-', "");
@@ -733,12 +736,16 @@ pub struct StreamContext {
     pub message_id: String,
     /// 输入 tokens（估算值）
     pub input_tokens: i32,
+    /// 仅用于日志诊断的本地深度估算输入 tokens
+    pub input_tokens_estimated_total: i32,
+    /// 仅用于日志诊断的原始请求 payload 字节数估算
+    pub request_payload_bytes_estimated: usize,
     /// message_start 初始 usage 覆盖
     pub initial_usage: Option<AnthropicUsage>,
     /// usage 字段输出形态
     usage_shape: String,
     /// 等流正常结束后提交的虚拟缓存 usage 账本
-    pending_usage_commit: Option<(Arc<VirtualCacheUsageManager>, PendingVirtualUsage)>,
+    pending_usage_commit: Option<PendingStreamUsageCommit>,
     /// 从 contextUsageEvent 计算的实际输入 tokens
     pub context_input_tokens: Option<i32>,
     /// 输出 tokens 累计
@@ -776,6 +783,17 @@ pub struct StreamContext {
     upstream_pending_signature: Option<String>,
 }
 
+struct PendingStreamUsageCommit {
+    manager: Arc<VirtualCacheUsageManager>,
+    settings: RuntimeSettings,
+    model: String,
+    session_key: String,
+    accounting_total_input_tokens: i32,
+    estimated_uncached_input_tokens: i32,
+    creation_ttl: CacheTtl,
+    initial_pending: Option<PendingVirtualUsage>,
+}
+
 impl StreamContext {
     /// 创建启用thinking的StreamContext
     pub fn new_with_thinking(
@@ -789,6 +807,8 @@ impl StreamContext {
             model: model.into(),
             message_id: generate_anthropic_message_id(),
             input_tokens,
+            input_tokens_estimated_total: input_tokens,
+            request_payload_bytes_estimated: 0,
             initial_usage: None,
             usage_shape: "anthropic".to_string(),
             pending_usage_commit: None,
@@ -866,12 +886,36 @@ impl StreamContext {
         self.usage_shape = usage_shape.into();
     }
 
-    pub fn set_pending_usage_commit(
+    pub fn set_request_input_diagnostics(
+        &mut self,
+        input_tokens_estimated_total: i32,
+        request_payload_bytes_estimated: usize,
+    ) {
+        self.input_tokens_estimated_total = input_tokens_estimated_total;
+        self.request_payload_bytes_estimated = request_payload_bytes_estimated;
+    }
+
+    pub fn set_pending_usage_commit_builder(
         &mut self,
         manager: Arc<VirtualCacheUsageManager>,
-        pending_usage: PendingVirtualUsage,
+        settings: RuntimeSettings,
+        model: impl Into<String>,
+        session_key: impl Into<String>,
+        accounting_total_input_tokens: i32,
+        estimated_uncached_input_tokens: i32,
+        creation_ttl: CacheTtl,
+        initial_pending: PendingVirtualUsage,
     ) {
-        self.pending_usage_commit = Some((manager, pending_usage));
+        self.pending_usage_commit = Some(PendingStreamUsageCommit {
+            manager,
+            settings,
+            model: model.into(),
+            session_key: session_key.into(),
+            accounting_total_input_tokens,
+            estimated_uncached_input_tokens,
+            creation_ttl,
+            initial_pending: Some(initial_pending),
+        });
     }
 
     /// 生成初始事件序列。
@@ -1542,11 +1586,43 @@ impl StreamContext {
         );
 
         if commit_usage {
-            if let Some((manager, pending_usage)) = self.pending_usage_commit.take() {
-                manager.commit_usage(pending_usage);
+            if let Some(pending_usage) = self.pending_usage_commit.take() {
+                pending_usage.commit(final_input_tokens, self.output_tokens);
             }
         }
         events
+    }
+}
+
+impl PendingStreamUsageCommit {
+    fn commit(self, final_observed_input_tokens: i32, output_tokens: i32) {
+        let final_observed_input_tokens = final_observed_input_tokens.max(0);
+        let initial_observed_input_tokens = self
+            .initial_pending
+            .as_ref()
+            .map(|pending| pending.observed_total_input_tokens())
+            .unwrap_or(final_observed_input_tokens);
+
+        if final_observed_input_tokens == initial_observed_input_tokens {
+            if let Some(pending) = self.initial_pending {
+                self.manager.commit_usage(pending);
+                return;
+            }
+        }
+
+        let pending = self.manager.preview_usage(
+            &self.settings,
+            VirtualUsageInput {
+                model: self.model,
+                session_key: self.session_key,
+                observed_total_input_tokens: final_observed_input_tokens,
+                accounting_total_input_tokens: Some(self.accounting_total_input_tokens),
+                estimated_uncached_input_tokens: Some(self.estimated_uncached_input_tokens),
+                output_tokens,
+                creation_ttl: self.creation_ttl,
+            },
+        );
+        self.manager.commit_usage(pending);
     }
 }
 
@@ -1634,6 +1710,33 @@ impl BufferedStreamContext {
 
     pub fn model(&self) -> &str {
         &self.inner.model
+    }
+
+    pub fn set_request_input_diagnostics(
+        &mut self,
+        input_tokens_estimated_total: i32,
+        request_payload_bytes_estimated: usize,
+    ) {
+        self.inner.set_request_input_diagnostics(
+            input_tokens_estimated_total,
+            request_payload_bytes_estimated,
+        );
+    }
+
+    pub fn input_tokens_estimated_total(&self) -> i32 {
+        self.inner.input_tokens_estimated_total
+    }
+
+    pub fn request_payload_bytes_estimated(&self) -> usize {
+        self.inner.request_payload_bytes_estimated
+    }
+
+    pub fn context_input_tokens(&self) -> Option<i32> {
+        self.inner.context_input_tokens
+    }
+
+    pub fn output_tokens(&self) -> i32 {
+        self.inner.output_tokens
     }
 
     /// 处理 Kiro 事件并缓冲结果
@@ -2774,6 +2877,87 @@ mod tests {
                 && e.data["delta"]["type"] == "text_delta"
                 && e.data["delta"]["text"] == "answer"
         }));
+    }
+
+    #[test]
+    fn stream_usage_commit_rebuilds_with_final_compressed_context() {
+        let manager = Arc::new(VirtualCacheUsageManager::new());
+        let mut settings = RuntimeSettings::from_config(&crate::model::config::Config::default());
+        settings.same_account_retry_rules.clear();
+        settings.virtual_cache_usage_enabled = true;
+        settings.virtual_cache_uncached_input_tokens = 1;
+        settings.virtual_cache_warmup_tokens = 18_000;
+        settings.virtual_cache_min_creation_tokens = 128;
+        settings.virtual_cache_max_creation_tokens = 1_200;
+
+        let first = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-opus-4-7".to_string(),
+                session_key: "stream-compressed".to_string(),
+                observed_total_input_tokens: 200_000,
+                accounting_total_input_tokens: Some(200_000),
+                estimated_uncached_input_tokens: Some(1),
+                output_tokens: 7,
+                creation_ttl: CacheTtl::FiveMinutes,
+            },
+        );
+        assert_eq!(first.cache_creation_input_tokens, 199_999);
+
+        let initial_pending = manager.preview_usage(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-opus-4-7".to_string(),
+                session_key: "stream-compressed".to_string(),
+                observed_total_input_tokens: 200_000,
+                accounting_total_input_tokens: Some(200_000),
+                estimated_uncached_input_tokens: Some(1),
+                output_tokens: 1,
+                creation_ttl: CacheTtl::FiveMinutes,
+            },
+        );
+        let initial_usage = initial_pending.usage().clone();
+
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 200_000, false, HashMap::new());
+        ctx.set_initial_usage(initial_usage);
+        ctx.set_pending_usage_commit_builder(
+            manager.clone(),
+            settings.clone(),
+            "claude-opus-4-7",
+            "stream-compressed",
+            200_000,
+            1,
+            CacheTtl::FiveMinutes,
+            initial_pending,
+        );
+        let _ = ctx.generate_initial_events();
+
+        ctx.process_kiro_event(&Event::ContextUsage(
+            crate::kiro::model::events::ContextUsageEvent {
+                context_usage_percentage: 5.0,
+            },
+        ));
+        ctx.process_assistant_response("done");
+        let _ = ctx.generate_final_events_with_usage_commit();
+
+        let next = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-opus-4-7".to_string(),
+                session_key: "stream-compressed".to_string(),
+                observed_total_input_tokens: 51_000,
+                accounting_total_input_tokens: Some(201_000),
+                estimated_uncached_input_tokens: Some(1),
+                output_tokens: 7,
+                creation_ttl: CacheTtl::FiveMinutes,
+            },
+        );
+        assert!(
+            next.cache_read_input_tokens > 50_000,
+            "stream commit should reset on compressed observed context but keep virtual accounting total, actual = {}",
+            next.cache_read_input_tokens
+        );
     }
 
     #[test]

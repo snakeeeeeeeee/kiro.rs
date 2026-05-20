@@ -507,3 +507,13 @@
 - Found the latest provided failure log does not show signature loss: both recorded Opus 4.7 requests were `classification="signed_ok"` with signatures exposed to the client.
 - Identified two likely fingerprint causes in that run: runtime stayed in `custom` with effective `signed_thinking_mode=off`, and the ANTML probe still sent the full Claude Code tool schema upstream because the log predates the current `cleared_tool_count` ANTML cleanup.
 - Verified current source has the expected ANTML cleanup and tag normalization behavior with `cargo test antml -- --nocapture` and `cargo test opus47_signature_diagnostics_classifies_failure_modes -- --nocapture`; both passed.
+## 2026-05-20 Virtual Cache Compression Reset Investigation
+- Inspected `src/anthropic/usage.rs`, `src/anthropic/handlers.rs`, and `src/anthropic/stream.rs`.
+- Found likely bug in plain streaming virtual-cache accounting: `PendingVirtualUsage` is created before final `contextUsageEvent` input tokens are known and committed unchanged at stream end.
+- Non-stream and buffered stream paths already rebuild usage from final input tokens before commit.
+- Implemented separate observed vs accounting totals for virtual cache usage so compressed upstream context can reset the ledger without capping synthetic cache reads around the compressed size.
+- Updated plain `/v1/messages` streaming commit to rebuild pending usage with final `contextUsageEvent` input tokens when they differ from the initial estimate.
+- Added regressions `compressed_context_reset_keeps_virtual_accounting_total` and `stream_usage_commit_rebuilds_with_final_compressed_context`.
+- Validation passed: `cargo test compressed_context_reset_keeps_virtual_accounting_total -- --nocapture`, `cargo test stream_usage_commit_rebuilds_with_final_compressed_context -- --nocapture`, `cargo test anthropic::usage::tests -- --nocapture`, `cargo test anthropic::stream::tests -- --nocapture`, and `cargo check`.
+- Follow-up from screenshot: fixed missing-metadata `virtualCacheFallbackScope: "model"` to reuse `fallback:model:{model}` instead of appending a random UUID. Added `missing_metadata_model_fallback_accumulates_virtual_cache` and `missing_metadata_none_fallback_uses_request_isolation`.
+- Final validation after fallback fix passed: `cargo test anthropic::usage::tests -- --nocapture`, `cargo test anthropic::stream::tests -- --nocapture`, `cargo check`, and full `cargo test` (341 tests).
