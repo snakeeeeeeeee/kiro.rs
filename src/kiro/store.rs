@@ -500,6 +500,10 @@ fn runtime_settings_pairs(
             settings.token_auto_refresh_window_secs.to_string(),
         ),
         (
+            "sessionAffinityEnabled",
+            settings.session_affinity_enabled.to_string(),
+        ),
+        (
             "sessionAffinityTtlSecs",
             settings.session_affinity_ttl_secs.to_string(),
         ),
@@ -758,6 +762,7 @@ fn apply_runtime_setting(
         "tokenAutoRefreshWindowSecs" => {
             settings.token_auto_refresh_window_secs = parse_u64(key, value)?
         }
+        "sessionAffinityEnabled" => settings.session_affinity_enabled = parse_bool(key, value)?,
         "sessionAffinityTtlSecs" => settings.session_affinity_ttl_secs = parse_u64(key, value)?,
         "opus47PlainStabilizationMode" => {
             settings.opus47_plain_stabilization_mode =
@@ -1148,6 +1153,7 @@ mod tests {
         updated.global_max_concurrent = 11;
         updated.global_max_concurrent_limit = 128;
         updated.per_account_default_max_concurrent = 4;
+        updated.session_affinity_enabled = false;
         updated.session_affinity_ttl_secs = 900;
         updated.same_account_retry_rules = vec![SameAccountRetryRule {
             enabled: true,
@@ -1191,6 +1197,7 @@ mod tests {
         assert_eq!(loaded.global_max_concurrent, 11);
         assert_eq!(loaded.global_max_concurrent_limit, 128);
         assert_eq!(loaded.per_account_default_max_concurrent, 4);
+        assert!(!loaded.session_affinity_enabled);
         assert_eq!(loaded.session_affinity_ttl_secs, 900);
         assert_eq!(loaded.same_account_retry_rules.len(), 1);
         assert_eq!(loaded.same_account_retry_rules[0].status, "408,500-599");

@@ -18,6 +18,8 @@
   "maxRetryAccounts": 3,
   "allowOverUsage": false,
   "modelCapacityCooldownMs": 10000,
+  "sessionAffinityEnabled": true,
+  "sessionAffinityTtlSecs": 3600,
   "sameAccountRetryRules": [
     {
       "enabled": true,

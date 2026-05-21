@@ -624,6 +624,8 @@ pub struct ManagerSnapshot {
     pub token_auto_refresh_interval_secs: u64,
     /// Token 距离过期多少秒内触发后台刷新
     pub token_auto_refresh_window_secs: u64,
+    /// 是否启用会话到账号的软亲和绑定
+    pub session_affinity_enabled: bool,
     /// 会话亲和绑定 TTL
     pub session_affinity_ttl_secs: u64,
     pub allow_over_usage: bool,
@@ -1208,9 +1210,13 @@ impl MultiTokenManager {
     ) -> Option<(u64, KiroCredentials)> {
         let session_key = Self::normalize_session_key(session_id)?;
         let now = Utc::now();
-        self.cleanup_session_affinity(now);
 
         let settings = self.runtime_settings.lock().clone();
+        if !settings.session_affinity_enabled {
+            return None;
+        }
+
+        self.cleanup_session_affinity(now);
         let is_opus = model
             .map(|m| m.to_lowercase().contains("opus"))
             .unwrap_or(false);
@@ -1378,9 +1384,13 @@ impl MultiTokenManager {
                 }
             };
 
-            if let Some(session_key) = Self::normalize_session_key(session_id) {
-                let settings = self.runtime_settings.lock().clone();
-                self.bind_session_affinity(&session_key, id, Utc::now(), &settings);
+            let latest_settings = self.runtime_settings.lock().clone();
+            if latest_settings.session_affinity_enabled {
+                if let Some(session_key) = Self::normalize_session_key(session_id) {
+                    self.bind_session_affinity(&session_key, id, Utc::now(), &latest_settings);
+                }
+            } else {
+                self.session_affinity.lock().clear();
             }
 
             // 尝试获取/刷新 Token
@@ -2352,6 +2362,7 @@ impl MultiTokenManager {
             token_auto_refresh_enabled: settings.token_auto_refresh_enabled,
             token_auto_refresh_interval_secs: settings.token_auto_refresh_interval_secs,
             token_auto_refresh_window_secs: settings.token_auto_refresh_window_secs,
+            session_affinity_enabled: settings.session_affinity_enabled,
             session_affinity_ttl_secs: settings.session_affinity_ttl_secs,
             opus47_plain_stabilization_mode: settings.opus47_plain_stabilization_mode,
             opus47_antml_probe_compat: settings.opus47_antml_probe_compat,
@@ -2918,6 +2929,10 @@ impl MultiTokenManager {
                 *self.runtime_settings.lock() = previous;
                 return Err(err);
             }
+        }
+
+        if !settings.session_affinity_enabled {
+            self.session_affinity.lock().clear();
         }
 
         tracing::info!("运行时调度配置已更新");
@@ -3545,6 +3560,85 @@ mod tests {
             .find(|entry| entry.id == first_id)
             .unwrap();
         assert_eq!(bound.session_affinity_bindings, 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_affinity_can_be_disabled_for_balanced_dispatch() {
+        let mut config = Config::default();
+        config.load_balancing_mode = "balanced".to_string();
+        config.session_affinity_enabled = false;
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("token-1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("token-2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = Arc::new(
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap(),
+        );
+
+        let first = manager
+            .acquire_context_with_session(None, Some("session-disabled"))
+            .await
+            .unwrap();
+        let first_id = first.id;
+
+        let second = manager
+            .acquire_context_with_session(None, Some("session-disabled"))
+            .await
+            .unwrap();
+        assert_ne!(second.id, first_id);
+        drop(second);
+        drop(first);
+
+        assert_eq!(manager.snapshot().session_affinity_bindings, 0);
+    }
+
+    #[tokio::test]
+    async fn test_disabling_session_affinity_clears_existing_bindings() {
+        let mut config = Config::default();
+        config.load_balancing_mode = "balanced".to_string();
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("token-1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("token-2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = Arc::new(
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap(),
+        );
+
+        let first = manager
+            .acquire_context_with_session(None, Some("session-toggle"))
+            .await
+            .unwrap();
+        drop(first);
+        assert_eq!(manager.snapshot().session_affinity_bindings, 1);
+
+        let mut settings = manager.runtime_settings();
+        settings.session_affinity_enabled = false;
+        manager.update_runtime_settings(settings).unwrap();
+
+        let disabled_snapshot = manager.snapshot();
+        assert!(!disabled_snapshot.session_affinity_enabled);
+        assert_eq!(disabled_snapshot.session_affinity_bindings, 0);
+
+        let mut settings = manager.runtime_settings();
+        settings.session_affinity_enabled = true;
+        manager.update_runtime_settings(settings).unwrap();
+
+        let rebound = manager
+            .acquire_context_with_session(None, Some("session-toggle"))
+            .await
+            .unwrap();
+        drop(rebound);
+        let enabled_snapshot = manager.snapshot();
+        assert!(enabled_snapshot.session_affinity_enabled);
+        assert_eq!(enabled_snapshot.session_affinity_bindings, 1);
     }
 
     #[tokio::test]

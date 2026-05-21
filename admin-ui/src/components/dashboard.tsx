@@ -1124,7 +1124,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
                   {runtimeStatus?.endpoints.find(endpoint => endpoint.name === runtimeStatus.defaultEndpoint)?.label || runtimeStatus?.defaultEndpoint || '-'}
                 </Badge>
                 <Badge variant="outline">默认并发 {runtimeStatus?.perAccountDefaultMaxConcurrent ?? '-'}</Badge>
-                <Badge variant="outline">会话亲和 {runtimeStatus?.sessionAffinityBindings ?? 0}</Badge>
+                <Badge variant={runtimeStatus?.sessionAffinityEnabled === false ? 'secondary' : 'outline'}>
+                  会话亲和 {runtimeStatus?.sessionAffinityEnabled === false ? '关闭' : runtimeStatus?.sessionAffinityBindings ?? 0}
+                </Badge>
               </div>
               <div className="mt-2 text-xs text-muted-foreground">
                 全局 RPM {runtimeStatus?.globalRpm || '不限'}，账号 RPM {runtimeStatus?.perAccountDefaultRpm || '不限'}

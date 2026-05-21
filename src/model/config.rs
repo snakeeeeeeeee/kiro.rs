@@ -161,6 +161,10 @@ pub struct Config {
     #[serde(default = "default_token_auto_refresh_window_secs")]
     pub token_auto_refresh_window_secs: u64,
 
+    /// 是否启用会话到账号的软亲和绑定
+    #[serde(default = "default_session_affinity_enabled")]
+    pub session_affinity_enabled: bool,
+
     /// 会话亲和绑定 TTL（秒）
     #[serde(default = "default_session_affinity_ttl_secs")]
     pub session_affinity_ttl_secs: u64,
@@ -521,6 +525,10 @@ fn default_token_auto_refresh_window_secs() -> u64 {
     1_800
 }
 
+fn default_session_affinity_enabled() -> bool {
+    true
+}
+
 fn default_session_affinity_ttl_secs() -> u64 {
     3_600
 }
@@ -780,6 +788,7 @@ impl Default for Config {
             token_auto_refresh_enabled: default_token_auto_refresh_enabled(),
             token_auto_refresh_interval_secs: default_token_auto_refresh_interval_secs(),
             token_auto_refresh_window_secs: default_token_auto_refresh_window_secs(),
+            session_affinity_enabled: default_session_affinity_enabled(),
             session_affinity_ttl_secs: default_session_affinity_ttl_secs(),
             opus47_plain_stabilization_mode: default_opus47_plain_stabilization_mode(),
             opus47_antml_probe_compat: default_opus47_antml_probe_compat(),

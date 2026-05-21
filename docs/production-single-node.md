@@ -276,6 +276,7 @@ Important fields:
 - `dispatchAvailableCredentials`: credentials available for new dispatch
 - `coolingDownCredentials`: credentials temporarily skipped due to upstream errors
 - `credentials[].inFlight`: active requests for each account
+- `sessionAffinityEnabled`: whether soft session-to-account affinity is enabled
 - `sessionAffinityBindings`: in-memory session-to-account bindings used to improve upstream cache locality
 
 ## Cache And Session Affinity
@@ -289,6 +290,7 @@ For better upstream prompt-cache locality, keep the client session stable:
 - The proxy extracts that UUID and keeps a runtime-only soft binding from session to Kiro account for 12 hours.
 - When the bound account is full, cooling down, disabled, RPM-limited, or incompatible with the requested model, the binding is removed and dispatch falls back to another available account.
 - Bindings are not persisted to SQLite and are cleared on process restart.
+- You can disable this routing behavior with `sessionAffinityEnabled=false` in runtime settings. This only changes account dispatch; virtual usage/cache accounting still uses the stable usage session key.
 
 For highest cache hit rate, route retries and follow-up turns from the same external conversation through the same `metadata.user_id`. Avoid generating a new session UUID for every request. If your client has worker queues, partition by conversation/session ID so concurrent turns from one conversation do not scatter across accounts.
 

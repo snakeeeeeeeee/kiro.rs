@@ -212,6 +212,8 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `maxRetryAccounts` | number | `3` | 单个请求最多尝试的不同账号数，`1` 表示不换号 |
 | `allowOverUsage` | boolean | `false` | 全局透支开关。本地额度快照显示账号已满时，仍允许账号参与调度；如果上游返回 `402 OVERAGE`，会停止该账号透支而不是禁用账号 |
 | `modelCapacityCooldownMs` | number | `10000` | 所有尝试账号都遇到 `INSUFFICIENT_MODEL_CAPACITY` 后的模型级冷却时间 |
+| `sessionAffinityEnabled` | boolean | `true` | 会话到账号的软亲和开关。开启后同一 `metadata.user_id`/session 优先复用上次账号；关闭后只按负载策略调度，不影响虚拟 usage 账本 |
+| `sessionAffinityTtlSecs` | number | `3600` | 会话软亲和绑定 TTL，范围 `300..43200` 秒 |
 | `sameAccountRetryRules` | array | 见示例 | 单号重试规则。命中规则时先用当前账号重试，耗尽后才进入账号冷却或换号 |
 | `opus47PlainStabilizationMode` | string | `off` | Opus 4.7 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
 | `opus47AntmlProbeCompat` | string | `off` | Opus 4.7 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
@@ -271,6 +273,8 @@ docker compose -f docker-compose-dev.yml up -d --build
    "transientCooldownMs": 10000,
    "maxRetryAccounts": 3,
    "modelCapacityCooldownMs": 10000,
+   "sessionAffinityEnabled": true,
+   "sessionAffinityTtlSecs": 3600,
    "sameAccountRetryRules": [
       {
          "enabled": true,
