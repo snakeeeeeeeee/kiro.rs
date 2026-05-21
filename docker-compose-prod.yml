@@ -26,5 +26,5 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "${KIRO_RS_CPU_LIMIT:-2.0}"
-          memory: "${KIRO_RS_MEMORY_LIMIT:-1g}"
+          cpus: "${KIRO_RS_CPU_LIMIT:-4.0}"
+          memory: "${KIRO_RS_MEMORY_LIMIT:-10g}"
