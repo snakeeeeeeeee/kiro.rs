@@ -25,7 +25,8 @@ const numberFields: Array<{
   label: string
   hint: string
 }> = [
-  { key: 'globalMaxConcurrent', label: '全局并发', hint: '1-512' },
+  { key: 'globalMaxConcurrent', label: '全局并发', hint: '1-全局并发上限' },
+  { key: 'globalMaxConcurrentLimit', label: '全局并发上限', hint: '默认 512，最大 65536' },
   { key: 'perAccountDefaultMaxConcurrent', label: '默认账号并发', hint: '1-64' },
   { key: 'queueMaxSize', label: '队列长度', hint: '0-10000' },
   { key: 'queueTimeoutMs', label: '队列超时 ms', hint: '1000-300000' },

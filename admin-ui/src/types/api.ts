@@ -296,6 +296,7 @@ export interface SetPriorityRequest {
 export interface RuntimeSettings {
   defaultEndpoint: EndpointName
   globalMaxConcurrent: number
+  globalMaxConcurrentLimit: number
   perAccountDefaultMaxConcurrent: number
   queueMaxSize: number
   queueTimeoutMs: number

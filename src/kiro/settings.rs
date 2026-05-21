@@ -30,6 +30,7 @@ fn default_same_account_retry_rule_respect_retry_after() -> bool {
 pub struct RuntimeSettings {
     pub default_endpoint: String,
     pub global_max_concurrent: usize,
+    pub global_max_concurrent_limit: usize,
     pub per_account_default_max_concurrent: usize,
     pub queue_max_size: usize,
     pub queue_timeout_ms: u64,
@@ -120,6 +121,7 @@ impl RuntimeSettings {
         Self {
             default_endpoint: normalize_endpoint_name(&config.default_endpoint),
             global_max_concurrent: config.global_max_concurrent.max(1),
+            global_max_concurrent_limit: config.global_max_concurrent_limit.max(1),
             per_account_default_max_concurrent: config.per_account_max_concurrent.max(1),
             queue_max_size: config.queue_max_size,
             queue_timeout_ms: config.queue_timeout_ms.max(1_000),
@@ -236,7 +238,16 @@ impl RuntimeSettings {
         if !is_supported_endpoint_name(&self.default_endpoint) {
             anyhow::bail!("defaultEndpoint 未知: {}", self.default_endpoint);
         }
-        validate_max_concurrent("globalMaxConcurrent", self.global_max_concurrent, 512)?;
+        validate_max_concurrent(
+            "globalMaxConcurrentLimit",
+            self.global_max_concurrent_limit,
+            65_536,
+        )?;
+        validate_max_concurrent(
+            "globalMaxConcurrent",
+            self.global_max_concurrent,
+            self.global_max_concurrent_limit,
+        )?;
         validate_max_concurrent(
             "perAccountDefaultMaxConcurrent",
             self.per_account_default_max_concurrent,
@@ -1004,6 +1015,17 @@ mod tests {
         assert!(settings.validate().is_err());
 
         settings.prompt_dump_max_bytes = 10_000;
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn global_max_concurrent_limit_controls_global_concurrent_validation() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.global_max_concurrent = 513;
+        settings.global_max_concurrent_limit = 512;
+        assert!(settings.validate().is_err());
+
+        settings.global_max_concurrent_limit = 1024;
         assert!(settings.validate().is_ok());
     }
 

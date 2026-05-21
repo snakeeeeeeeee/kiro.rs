@@ -455,6 +455,10 @@ fn runtime_settings_pairs(
             settings.global_max_concurrent.to_string(),
         ),
         (
+            "globalMaxConcurrentLimit",
+            settings.global_max_concurrent_limit.to_string(),
+        ),
+        (
             "perAccountDefaultMaxConcurrent",
             settings.per_account_default_max_concurrent.to_string(),
         ),
@@ -719,6 +723,9 @@ fn apply_runtime_setting(
     match key {
         "defaultEndpoint" => settings.default_endpoint = normalize_endpoint_name(value),
         "globalMaxConcurrent" => settings.global_max_concurrent = parse_usize(key, value)?,
+        "globalMaxConcurrentLimit" => {
+            settings.global_max_concurrent_limit = parse_usize(key, value)?
+        }
         "perAccountDefaultMaxConcurrent" => {
             settings.per_account_default_max_concurrent = parse_usize(key, value)?
         }
@@ -1134,10 +1141,12 @@ mod tests {
         let store = KiroStore::open(&path).unwrap();
         let mut defaults = RuntimeSettings::from_config(&Config::default());
         defaults.global_max_concurrent = 7;
+        defaults.global_max_concurrent_limit = 64;
 
         store.initialize_runtime_settings(&defaults).unwrap();
         let mut updated = defaults.clone();
         updated.global_max_concurrent = 11;
+        updated.global_max_concurrent_limit = 128;
         updated.per_account_default_max_concurrent = 4;
         updated.session_affinity_ttl_secs = 900;
         updated.same_account_retry_rules = vec![SameAccountRetryRule {
@@ -1180,6 +1189,7 @@ mod tests {
 
         let loaded = store.load_runtime_settings(&defaults).unwrap();
         assert_eq!(loaded.global_max_concurrent, 11);
+        assert_eq!(loaded.global_max_concurrent_limit, 128);
         assert_eq!(loaded.per_account_default_max_concurrent, 4);
         assert_eq!(loaded.session_affinity_ttl_secs, 900);
         assert_eq!(loaded.same_account_retry_rules.len(), 1);

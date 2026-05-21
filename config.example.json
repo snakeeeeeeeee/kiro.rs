@@ -7,6 +7,7 @@
   "adminApiKey": "sk-admin-your-secret-key",
   "_runtimeSettingsNote": "These scheduling fields seed SQLite on first startup. Manage them from Admin UI afterward.",
   "globalMaxConcurrent": 32,
+  "globalMaxConcurrentLimit": 512,
   "perAccountMaxConcurrent": 3,
   "queueMaxSize": 128,
   "queueTimeoutMs": 30000,

@@ -201,6 +201,7 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `adminApiKey` | string | - | Admin API 密钥，配置后启用凭据管理 API 和 Web 管理界面 |
 | `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
 | `globalMaxConcurrent` | number | `32` | 全局最大并发请求数，超过后进入等待队列 |
+| `globalMaxConcurrentLimit` | number | `512` | `globalMaxConcurrent` 的安全上限，大账号池可按需调高 |
 | `perAccountMaxConcurrent` | number | `3` | 单个凭据最大并发请求数，达到上限后调度会跳过该凭据 |
 | `queueMaxSize` | number | `128` | 全局并发满时的最大等待队列长度，队列满返回 `429` |
 | `queueTimeoutMs` | number | `30000` | 等待队列超时时间，超时返回 `429` |
@@ -260,6 +261,7 @@ docker compose -f docker-compose-dev.yml up -d --build
    "adminApiKey": "sk-admin-your-secret-key",
    "loadBalancingMode": "priority",
    "globalMaxConcurrent": 32,
+   "globalMaxConcurrentLimit": 512,
    "perAccountMaxConcurrent": 3,
    "queueMaxSize": 128,
    "queueTimeoutMs": 30000,

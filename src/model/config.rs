@@ -101,6 +101,10 @@ pub struct Config {
     #[serde(default = "default_global_max_concurrent")]
     pub global_max_concurrent: usize,
 
+    /// 全局最大并发配置上限
+    #[serde(default = "default_global_max_concurrent_limit")]
+    pub global_max_concurrent_limit: usize,
+
     /// 单个凭据最大并发请求数
     #[serde(default = "default_per_account_max_concurrent")]
     pub per_account_max_concurrent: usize,
@@ -462,6 +466,10 @@ fn default_global_max_concurrent() -> usize {
     32
 }
 
+fn default_global_max_concurrent_limit() -> usize {
+    512
+}
+
 fn default_per_account_max_concurrent() -> usize {
     3
 }
@@ -757,6 +765,7 @@ impl Default for Config {
             admin_api_key: None,
             load_balancing_mode: default_load_balancing_mode(),
             global_max_concurrent: default_global_max_concurrent(),
+            global_max_concurrent_limit: default_global_max_concurrent_limit(),
             per_account_max_concurrent: default_per_account_max_concurrent(),
             queue_max_size: default_queue_max_size(),
             queue_timeout_ms: default_queue_timeout_ms(),

@@ -24,6 +24,7 @@ For one account, seed conservatively:
 ```json
 {
   "globalMaxConcurrent": 3,
+  "globalMaxConcurrentLimit": 512,
   "perAccountMaxConcurrent": 3,
   "queueMaxSize": 64,
   "queueTimeoutMs": 30000,
@@ -53,6 +54,7 @@ For one account, seed conservatively:
 For more accounts:
 
 - `globalMaxConcurrent`: start with `account_count * perAccountMaxConcurrent`
+- `globalMaxConcurrentLimit`: safety cap for `globalMaxConcurrent`; raise it for large account pools after checking OS file descriptor and upstream limits
 - `perAccountMaxConcurrent`: start with `2` or `3`
 - `queueMaxSize`: start with `64` or `128`
 - `rateLimitCooldownMs`: keep `60000` unless upstream 429 is rare
