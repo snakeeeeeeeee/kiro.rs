@@ -15,6 +15,7 @@ use crate::kiro::dynamic_proxy::DynamicProxyManager;
 use crate::kiro::endpoint::{endpoint_api_url, endpoint_label, normalize_endpoint_name};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownManager;
+use crate::kiro::provider::KiroProvider;
 use crate::kiro::settings::CredentialPolicy;
 use crate::kiro::token_manager::MultiTokenManager;
 use crate::metrics::MetricsRecorder;
@@ -23,12 +24,13 @@ use crate::runtime::RuntimeLimiter;
 use super::error::AdminServiceError;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, BatchCredentialIdsRequest,
-    BatchCredentialPolicyRequest, CredentialStatusItem, CredentialsStatusResponse,
-    DynamicProxyActionResponse, DynamicProxyBatchActionResponse, DynamicProxyBindingsResponse,
-    EndpointConfigResponse, EndpointLatencyResponse, EndpointOption, ExportCredentialsRequest,
-    ExportCredentialsResponse, LoadBalancingModeResponse, RuntimeCredentialStatus,
-    RuntimeSettingsResponse, RuntimeStatusResponse, SetCredentialPolicyRequest,
-    SetLoadBalancingModeRequest, SetRuntimeSettingsRequest,
+    BatchCredentialPolicyRequest, CredentialStatusItem, CredentialTestRequest,
+    CredentialTestResponse, CredentialsStatusResponse, DynamicProxyActionResponse,
+    DynamicProxyBatchActionResponse, DynamicProxyBindingsResponse, EndpointConfigResponse,
+    EndpointLatencyResponse, EndpointOption, ExportCredentialsRequest, ExportCredentialsResponse,
+    LoadBalancingModeResponse, RuntimeCredentialStatus, RuntimeSettingsResponse,
+    RuntimeStatusResponse, SetCredentialPolicyRequest, SetLoadBalancingModeRequest,
+    SetRuntimeSettingsRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -48,6 +50,7 @@ struct CachedBalance {
 /// 封装所有 Admin API 的业务逻辑
 pub struct AdminService {
     token_manager: Arc<MultiTokenManager>,
+    provider: Arc<KiroProvider>,
     runtime_limiter: Arc<RuntimeLimiter>,
     metrics: Arc<MetricsRecorder>,
     model_cooldowns: Arc<ModelCooldownManager>,
@@ -61,6 +64,7 @@ pub struct AdminService {
 impl AdminService {
     pub fn new(
         token_manager: Arc<MultiTokenManager>,
+        provider: Arc<KiroProvider>,
         runtime_limiter: Arc<RuntimeLimiter>,
         metrics: Arc<MetricsRecorder>,
         model_cooldowns: Arc<ModelCooldownManager>,
@@ -75,6 +79,7 @@ impl AdminService {
 
         Self {
             token_manager,
+            provider,
             runtime_limiter,
             metrics,
             model_cooldowns,
@@ -332,6 +337,45 @@ impl AdminService {
         DynamicProxyBindingsResponse {
             bindings: self.dynamic_proxy_bindings_map().into_values().collect(),
         }
+    }
+
+    pub async fn test_credential(
+        &self,
+        id: u64,
+        req: CredentialTestRequest,
+    ) -> Result<CredentialTestResponse, AdminServiceError> {
+        let model = req.model.trim();
+        if model.is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "测试模型不能为空".to_string(),
+            ));
+        }
+        let prompt = req.prompt.unwrap_or_else(|| "hi".to_string());
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "测试消息不能为空".to_string(),
+            ));
+        }
+
+        let result = timeout(
+            Duration::from_secs(60),
+            self.provider.test_credential_message(id, model, prompt),
+        )
+        .await
+        .map_err(|_| AdminServiceError::UpstreamError("账号测试超时".to_string()))?
+        .map_err(|err| self.classify_test_error(err, id))?;
+
+        Ok(CredentialTestResponse {
+            credential_id: result.credential_id,
+            model: result.model,
+            prompt: result.prompt,
+            response_text: result.response_text,
+            status: result.status,
+            latency_ms: result.latency_ms,
+            endpoint: result.endpoint,
+            api_region: result.api_region,
+        })
     }
 
     pub async fn test_endpoint_latency(
@@ -868,6 +912,17 @@ impl AdminService {
             AdminServiceError::NotFound { id }
         } else {
             AdminServiceError::InternalError(msg)
+        }
+    }
+
+    fn classify_test_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
+        let msg = e.to_string();
+        if msg.contains("不存在") {
+            AdminServiceError::NotFound { id }
+        } else if msg.contains("不支持的测试模型") {
+            AdminServiceError::InvalidCredential(msg)
+        } else {
+            AdminServiceError::UpstreamError(msg)
         }
     }
 

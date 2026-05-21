@@ -213,14 +213,14 @@ async fn main() {
     let runtime_limiter = Arc::new(RuntimeLimiter::new(&config));
     let metrics = Arc::new(MetricsRecorder::new());
     let model_cooldowns = Arc::new(ModelCooldownManager::new());
-    let kiro_provider = KiroProvider::with_proxy(
+    let kiro_provider = Arc::new(KiroProvider::with_proxy(
         token_manager.clone(),
         metrics.clone(),
         model_cooldowns.clone(),
         proxy_config.clone(),
         endpoints,
         runtime_settings.default_endpoint.clone(),
-    );
+    ));
     spawn_token_auto_refresh(token_manager.clone());
     spawn_dynamic_proxy_worker(dynamic_proxy_manager.clone(), token_manager.clone());
 
@@ -236,7 +236,7 @@ async fn main() {
     // 构建 Anthropic API 路由（profile_arn 由 provider 层根据实际凭据动态注入）
     let anthropic_app = anthropic::create_router_with_provider(
         &api_key,
-        Some(kiro_provider),
+        Some(kiro_provider.clone()),
         config.extract_thinking,
         runtime_limiter.clone(),
     );
@@ -256,6 +256,7 @@ async fn main() {
         } else {
             let admin_service = admin::AdminService::new(
                 token_manager.clone(),
+                kiro_provider.clone(),
                 runtime_limiter.clone(),
                 metrics.clone(),
                 model_cooldowns.clone(),
@@ -295,6 +296,7 @@ async fn main() {
         tracing::info!("  POST /api/admin/credentials/:index/disabled");
         tracing::info!("  POST /api/admin/credentials/:index/priority");
         tracing::info!("  POST /api/admin/credentials/:index/reset");
+        tracing::info!("  POST /api/admin/credentials/:index/test");
         tracing::info!("  GET  /api/admin/credentials/:index/balance");
         tracing::info!("Admin UI:");
         tracing::info!("  GET  /admin");

@@ -10,9 +10,9 @@ use super::{
     middleware::AdminState,
     types::{
         AddCredentialRequest, BatchCredentialIdsRequest, BatchCredentialPolicyRequest,
-        ExportCredentialsRequest, SetCredentialPolicyRequest, SetDisabledRequest,
-        SetLoadBalancingModeRequest, SetPriorityRequest, SetRuntimeSettingsRequest,
-        SuccessResponse,
+        CredentialTestRequest, ExportCredentialsRequest, SetCredentialPolicyRequest,
+        SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
+        SetRuntimeSettingsRequest, SuccessResponse,
     },
 };
 
@@ -201,6 +201,19 @@ pub async fn set_credential_policy_batch(
             count
         )))
         .into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credentials/:id/test
+/// 使用指定凭据发送一条测试消息
+pub async fn test_credential_connection(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<CredentialTestRequest>,
+) -> impl IntoResponse {
+    match state.service.test_credential(id, payload).await {
+        Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }

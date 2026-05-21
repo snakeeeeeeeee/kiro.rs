@@ -8,6 +8,8 @@ import type {
   SetPriorityRequest,
   AddCredentialRequest,
   AddCredentialResponse,
+  CredentialTestRequest,
+  CredentialTestResponse,
   ExportCredentialsResponse,
   RuntimeStatusResponse,
   RuntimeSettings,
@@ -85,6 +87,14 @@ export async function forceRefreshToken(
 // 获取凭据余额
 export async function getCredentialBalance(id: number): Promise<BalanceResponse> {
   const { data } = await api.get<BalanceResponse>(`/credentials/${id}/balance`)
+  return data
+}
+
+export async function testCredentialConnection(
+  id: number,
+  req: CredentialTestRequest
+): Promise<CredentialTestResponse> {
+  const { data } = await api.post<CredentialTestResponse>(`/credentials/${id}/test`, req)
   return data
 }
 

@@ -1,4 +1,4 @@
-import { Edit3, Globe2, RefreshCw, RotateCw, Snowflake, Trash2 } from 'lucide-react'
+import { Edit3, Globe2, Play, RefreshCw, RotateCw, Snowflake, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -48,6 +48,7 @@ interface AccountTableProps {
   onToggleSelectAll: () => void
   onViewBalance: (id: number) => void
   onRefreshBalance: (id: number) => void
+  onTestConnection: (credential: CredentialStatusItem) => void
   onEditPolicy: (credential: CredentialStatusItem) => void
   onToggleDisabled: (credential: CredentialStatusItem) => void
   onClearCooldown: (credential: CredentialStatusItem) => void
@@ -166,6 +167,7 @@ export function AccountTable({
   onToggleSelectAll,
   onViewBalance,
   onRefreshBalance,
+  onTestConnection,
   onEditPolicy,
   onToggleDisabled,
   onClearCooldown,
@@ -357,6 +359,9 @@ export function AccountTable({
                         )}
                         {column.key === 'actions' && (
                           <div className="flex items-center gap-1">
+                            <Button size="sm" variant="ghost" onClick={() => onTestConnection(credential)} title="测试连接">
+                              <Play className="h-4 w-4" />
+                            </Button>
                             <Button size="sm" variant="ghost" onClick={() => onEditPolicy(credential)} title="策略">
                               <Edit3 className="h-4 w-4" />
                             </Button>

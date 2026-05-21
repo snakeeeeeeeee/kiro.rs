@@ -48,6 +48,22 @@ export interface CredentialStatusItem {
   dynamicProxy?: DynamicProxyBindingView | null
 }
 
+export interface CredentialTestRequest {
+  model: string
+  prompt?: string
+}
+
+export interface CredentialTestResponse {
+  credentialId: number
+  model: string
+  prompt: string
+  responseText: string
+  status: number
+  latencyMs: number
+  endpoint: string
+  apiRegion: string
+}
+
 export interface RuntimeStatusResponse {
   defaultEndpoint: EndpointName
   endpoints: EndpointOption[]

@@ -6,6 +6,7 @@ import {
   resetCredentialFailure,
   forceRefreshToken,
   getCredentialBalance,
+  testCredentialConnection,
   addCredential,
   deleteCredential,
   getLoadBalancingMode,
@@ -24,7 +25,7 @@ import {
   clearDynamicProxy,
   dynamicProxyBatchAction,
 } from '@/api/credentials'
-import type { AddCredentialRequest, BatchCredentialPolicyRequest, RuntimeSettings, SetCredentialPolicyRequest } from '@/types/api'
+import type { AddCredentialRequest, BatchCredentialPolicyRequest, CredentialTestRequest, RuntimeSettings, SetCredentialPolicyRequest } from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -42,6 +43,13 @@ export function useCredentialBalance(id: number | null) {
     queryFn: () => getCredentialBalance(id!),
     enabled: id !== null,
     retry: false, // 余额查询失败时不重试（避免重复请求被封禁的账号）
+  })
+}
+
+export function useTestCredentialConnection() {
+  return useMutation({
+    mutationFn: ({ id, request }: { id: number; request: CredentialTestRequest }) =>
+      testCredentialConnection(id, request),
   })
 }
 

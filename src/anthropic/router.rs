@@ -38,7 +38,7 @@ const MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
 /// 创建带有 KiroProvider 的 Anthropic API 路由
 pub fn create_router_with_provider(
     api_key: impl Into<String>,
-    kiro_provider: Option<KiroProvider>,
+    kiro_provider: Option<Arc<KiroProvider>>,
     extract_thinking: bool,
     runtime_limiter: Arc<RuntimeLimiter>,
 ) -> Router {

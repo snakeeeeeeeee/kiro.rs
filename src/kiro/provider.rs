@@ -22,7 +22,13 @@ use crate::kiro::dynamic_proxy::is_proxy_error;
 use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::model::events::Event;
+use crate::kiro::model::requests::conversation::{
+    ConversationState, CurrentMessage, UserInputMessage,
+};
+use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::model_cooldown::ModelCooldownManager;
+use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::kiro::parser::frame::Frame;
 use crate::kiro::prompt_dump::{PromptDump, PromptDumpMetaUpdate};
 use crate::kiro::settings::{SameAccountRetryRule, matching_same_account_retry_rule};
@@ -66,6 +72,25 @@ pub struct LeasedResponse {
     prompt_dump: Option<PromptDump>,
     lease: Option<CredentialLease>,
     timing: Option<ResponseTimingGuard>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CredentialTestResult {
+    pub credential_id: u64,
+    pub model: String,
+    pub prompt: String,
+    pub response_text: String,
+    pub status: u16,
+    pub latency_ms: u64,
+    pub endpoint: String,
+    pub api_region: String,
+}
+
+struct FixedCredentialApiResponse {
+    response: LeasedResponse,
+    endpoint: String,
+    api_region: String,
+    status: u16,
 }
 
 struct ApiTimingRecord {
@@ -479,6 +504,73 @@ fn raw_debug_config_for_model(
     }
 }
 
+fn map_admin_test_model(model: &str) -> Option<String> {
+    let model_lower = model.trim().to_ascii_lowercase();
+
+    if model_lower.contains("sonnet") {
+        if model_lower.contains("4-6") || model_lower.contains("4.6") {
+            Some("claude-sonnet-4.6".to_string())
+        } else {
+            Some("claude-sonnet-4.5".to_string())
+        }
+    } else if model_lower.contains("opus") {
+        if model_lower.contains("4-7") || model_lower.contains("4.7") {
+            Some("claude-opus-4.7".to_string())
+        } else if model_lower.contains("4-5") || model_lower.contains("4.5") {
+            Some("claude-opus-4.5".to_string())
+        } else {
+            Some("claude-opus-4.6".to_string())
+        }
+    } else if model_lower.contains("haiku") {
+        Some("claude-haiku-4.5".to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_assistant_response_text(body: &[u8]) -> String {
+    let mut decoder = EventStreamDecoder::new();
+    if let Err(err) = decoder.feed(body) {
+        tracing::warn!(error = %err, body_bytes = body.len(), "解析账号测试响应失败");
+        return String::new();
+    }
+
+    let mut text = String::new();
+    for result in decoder.decode_iter() {
+        match result {
+            Ok(frame) => match Event::from_frame(frame) {
+                Ok(Event::AssistantResponse(event)) => text.push_str(&event.content),
+                Ok(Event::Error {
+                    error_code,
+                    error_message,
+                }) => {
+                    if !error_message.is_empty() {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&format!("{}: {}", error_code, error_message));
+                    }
+                }
+                Ok(Event::Exception {
+                    exception_type,
+                    message,
+                }) => {
+                    if !message.is_empty() {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&format!("{}: {}", exception_type, message));
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => tracing::debug!(error = %err, "解析账号测试事件失败"),
+            },
+            Err(err) => tracing::debug!(error = %err, "解析账号测试 event-stream 帧失败"),
+        }
+    }
+    text
+}
+
 fn log_kiro_raw_request(
     raw_request_id: &str,
     model: &str,
@@ -751,6 +843,130 @@ impl KiroProvider {
 
     pub fn token_manager(&self) -> Arc<MultiTokenManager> {
         self.token_manager.clone()
+    }
+
+    pub async fn test_credential_message(
+        &self,
+        credential_id: u64,
+        model: &str,
+        prompt: &str,
+    ) -> anyhow::Result<CredentialTestResult> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            anyhow::bail!("测试消息不能为空");
+        }
+        let mapped_model = map_admin_test_model(model)
+            .ok_or_else(|| anyhow::anyhow!("不支持的测试模型: {}", model))?;
+        let conversation_id = format!("admin-test-{}", Uuid::new_v4());
+        let request = KiroRequest {
+            conversation_state: ConversationState::new(conversation_id)
+                .with_agent_task_type("vibe")
+                .with_chat_trigger_type("MANUAL")
+                .with_current_message(CurrentMessage::new(UserInputMessage::new(
+                    prompt,
+                    &mapped_model,
+                ))),
+            profile_arn: None,
+        };
+        let request_body = serde_json::to_string(&request)?;
+        let started_at = Instant::now();
+        let fixed = self
+            .call_api_with_fixed_credential(&request_body, credential_id, &mapped_model)
+            .await?;
+        let status = fixed.status;
+        let endpoint = fixed.endpoint;
+        let api_region = fixed.api_region;
+        let response_bytes = fixed.response.bytes().await?;
+        let response_text = parse_assistant_response_text(&response_bytes);
+        Ok(CredentialTestResult {
+            credential_id,
+            model: mapped_model,
+            prompt: prompt.to_string(),
+            response_text,
+            status,
+            latency_ms: duration_ms(started_at.elapsed()),
+            endpoint,
+            api_region,
+        })
+    }
+
+    async fn call_api_with_fixed_credential(
+        &self,
+        request_body: &str,
+        credential_id: u64,
+        model: &str,
+    ) -> anyhow::Result<FixedCredentialApiResponse> {
+        let ctx = self
+            .token_manager
+            .acquire_context_for_credential(credential_id, Some(model))
+            .await?;
+        let config = self.token_manager.config();
+        let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
+        let endpoint = self.endpoint_for(&ctx.credentials)?;
+        let rctx = RequestContext {
+            credentials: &ctx.credentials,
+            token: &ctx.token,
+            machine_id: &machine_id,
+            config,
+        };
+        let url = endpoint.api_url(&rctx);
+        let body = endpoint.transform_api_body(request_body, &rctx);
+        let api_region = rctx.credentials.effective_api_region(config).to_string();
+        let endpoint_name = endpoint.name().to_string();
+
+        tracing::info!(
+            credential_id = ctx.id,
+            model,
+            endpoint = endpoint.name(),
+            api_region = api_region.as_str(),
+            url = %url,
+            "admin_credential_test_request"
+        );
+
+        let base = self
+            .client_for(ctx.id, &ctx.credentials)?
+            .post(&url)
+            .body(body)
+            .header("content-type", "application/json");
+        let request = endpoint.decorate_api(base, &rctx);
+        let response = match request.send().await {
+            Ok(resp) => resp,
+            Err(err) => {
+                if is_proxy_error(&err) {
+                    self.mark_dynamic_proxy_failure(ctx.id, &err).await;
+                }
+                self.token_manager.report_transient_error(ctx.id);
+                return Err(err.into());
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            self.token_manager.report_success(ctx.id);
+            return Ok(FixedCredentialApiResponse {
+                response: LeasedResponse::new(
+                    response, ctx.id, 1, None, false, 0, None, ctx.lease, None,
+                ),
+                endpoint: endpoint_name,
+                api_region,
+                status: status.as_u16(),
+            });
+        }
+
+        let body = response.text().await.unwrap_or_default();
+        if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
+            self.token_manager.report_quota_exhausted(ctx.id);
+        } else if status.as_u16() == 402 && endpoint.is_overage_limit(&body) {
+            self.token_manager.stop_overage_for(ctx.id);
+        } else if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
+            if status.as_u16() == 429 {
+                self.token_manager.report_rate_limited(ctx.id);
+            } else {
+                self.token_manager.report_transient_error(ctx.id);
+            }
+        } else if matches!(status.as_u16(), 401 | 403) {
+            self.token_manager.report_failure(ctx.id);
+        }
+        anyhow::bail!("账号测试失败: {} {}", status, body);
     }
 
     /// 内部方法：带重试逻辑的 MCP API 调用

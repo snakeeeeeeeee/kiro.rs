@@ -14,7 +14,7 @@ use super::{
         get_runtime_settings, get_runtime_status, reset_failure_count, rotate_dynamic_proxy,
         set_credential_disabled, set_credential_policy, set_credential_policy_batch,
         set_credential_priority, set_load_balancing_mode, set_runtime_settings,
-        test_endpoint_latency, verify_dynamic_proxy,
+        test_credential_connection, test_endpoint_latency, verify_dynamic_proxy,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -58,6 +58,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}/disabled", post(set_credential_disabled))
         .route("/credentials/{id}/priority", post(set_credential_priority))
         .route("/credentials/{id}/policy", patch(set_credential_policy))
+        .route("/credentials/{id}/test", post(test_credential_connection))
         .route(
             "/credentials/{id}/cooldown/clear",
             post(clear_credential_cooldown),

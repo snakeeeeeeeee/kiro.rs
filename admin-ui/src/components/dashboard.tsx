@@ -13,6 +13,7 @@ import { KamImportDialog } from '@/components/kam-import-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
 import { RuntimeSettingsDialog } from '@/components/runtime-settings-dialog'
 import { PolicyDialog } from '@/components/policy-dialog'
+import { CredentialTestDialog } from '@/components/credential-test-dialog'
 import { AccountTable, type AccountColumn, type AccountColumnKey, type AccountSortKey } from '@/components/account-table'
 import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useClearCooldown, useClearCooldownBatch, useSetDisabled, useBindDynamicProxy, useRotateDynamicProxy, useVerifyDynamicProxy, useClearDynamicProxy, useDynamicProxyBatchAction } from '@/hooks/use-credentials'
 import { getCredentialBalance, forceRefreshToken, exportCredentials, getRuntimeStatus } from '@/api/credentials'
@@ -200,6 +201,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [runtimeSettingsOpen, setRuntimeSettingsOpen] = useState(false)
   const [policyDialogOpen, setPolicyDialogOpen] = useState(false)
   const [policyCredential, setPolicyCredential] = useState<CredentialStatusItem | null>(null)
+  const [testDialogOpen, setTestDialogOpen] = useState(false)
+  const [testCredential, setTestCredential] = useState<CredentialStatusItem | null>(null)
   const [batchPolicyOpen, setBatchPolicyOpen] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -1023,6 +1026,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
     })
   }
 
+  const openCredentialTestDialog = (credential: CredentialStatusItem) => {
+    setTestCredential(credential)
+    setTestDialogOpen(true)
+  }
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -1419,6 +1427,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             onToggleSelectAll={handleToggleSelectAllCurrentPage}
             onViewBalance={handleViewBalance}
             onRefreshBalance={handleRefreshBalance}
+            onTestConnection={openCredentialTestDialog}
             onEditPolicy={openPolicyDialog}
             onToggleDisabled={handleToggleCredentialDisabled}
             onClearCooldown={handleClearCooldown}
@@ -1501,6 +1510,12 @@ export function Dashboard({ onLogout }: DashboardProps) {
         open={policyDialogOpen}
         onOpenChange={setPolicyDialogOpen}
         credential={policyCredential}
+      />
+
+      <CredentialTestDialog
+        open={testDialogOpen}
+        onOpenChange={setTestDialogOpen}
+        credential={testCredential}
       />
 
       <PolicyDialog

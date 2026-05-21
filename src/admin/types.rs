@@ -109,6 +109,27 @@ pub struct CredentialStatusItem {
     pub dynamic_proxy: Option<DynamicProxyBindingView>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialTestRequest {
+    pub model: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialTestResponse {
+    pub credential_id: u64,
+    pub model: String,
+    pub prompt: String,
+    pub response_text: String,
+    pub status: u16,
+    pub latency_ms: u64,
+    pub endpoint: String,
+    pub api_region: String,
+}
+
 // ============ 运行时状态 ============
 
 #[derive(Debug, Serialize)]
