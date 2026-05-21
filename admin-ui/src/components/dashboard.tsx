@@ -98,6 +98,7 @@ function toKamStyleExport(credential: ExportedCredential) {
 
 type SortKey = AccountSortKey
 type SortOrder = 'asc' | 'desc'
+const UNKNOWN_SUBSCRIPTION_FILTER = '__unknown_subscription__'
 
 const COLUMN_STORAGE_KEY = 'kiro-admin-table-columns'
 const BALANCE_AUTO_REFRESH_STORAGE_KEY = 'kiro-admin-balance-auto-refresh'
@@ -145,6 +146,15 @@ const columnLabels: Record<ColumnKey, string> = {
 
 function credentialName(credential: CredentialStatusItem): string {
   return credential.email || credential.maskedApiKey || `凭据 #${credential.id}`
+}
+
+function normalizeSubscriptionTitle(title: string | null | undefined): string {
+  const normalized = (title || '').trim()
+  return normalized && normalized !== '-' ? normalized : UNKNOWN_SUBSCRIPTION_FILTER
+}
+
+function subscriptionFilterLabel(value: string): string {
+  return value === UNKNOWN_SUBSCRIPTION_FILTER ? '未查询' : value
 }
 
 function formatClockTime(value: Date | null): string {
@@ -196,6 +206,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [authFilter, setAuthFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [dispatchFilter, setDispatchFilter] = useState('all')
+  const [subscriptionFilter, setSubscriptionFilter] = useState('all')
   const [endpointFilter, setEndpointFilter] = useState('all')
   const [proxyFilter, setProxyFilter] = useState('all')
   const [sortKey, setSortKey] = useState<SortKey>('priority')
@@ -261,6 +272,13 @@ export function Dashboard({ onLogout }: DashboardProps) {
   }
 
   const endpointOptions = Array.from(new Set(data?.credentials.map(c => c.endpoint).filter(Boolean) || [])).sort()
+  const subscriptionOptions = Array.from(
+    new Set((data?.credentials || []).map(credential => normalizeSubscriptionTitle(credential.subscriptionTitle))),
+  ).sort((a, b) => {
+    if (a === UNKNOWN_SUBSCRIPTION_FILTER) return 1
+    if (b === UNKNOWN_SUBSCRIPTION_FILTER) return -1
+    return a.localeCompare(b)
+  })
 
   const filteredCredentials = (data?.credentials || [])
     .filter(credential => {
@@ -282,6 +300,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
       if (dispatchFilter === 'available' && !credential.availableForDispatch) return false
       if (dispatchFilter === 'full' && credential.inFlight < credential.maxConcurrent) return false
       if (dispatchFilter === 'blocked' && credential.availableForDispatch) return false
+      if (subscriptionFilter !== 'all' && normalizeSubscriptionTitle(credential.subscriptionTitle) !== subscriptionFilter) return false
       if (endpointFilter !== 'all' && credential.endpoint !== endpointFilter) return false
       const hasAnyProxy = credential.hasProxy || Boolean(credential.dynamicProxy)
       if (proxyFilter === 'proxy' && !hasAnyProxy) return false
@@ -335,7 +354,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
   // 当凭据列表变化时重置到第一页
   useEffect(() => {
     setCurrentPage(1)
-  }, [data?.credentials.length, searchQuery, authFilter, statusFilter, dispatchFilter, endpointFilter, proxyFilter, itemsPerPage])
+  }, [data?.credentials.length, searchQuery, authFilter, statusFilter, dispatchFilter, subscriptionFilter, endpointFilter, proxyFilter, itemsPerPage])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -1295,7 +1314,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             </div>
           </div>
 
-          <div className="grid gap-2 rounded-lg border bg-card p-3 md:grid-cols-[minmax(220px,1.5fr)_repeat(5,minmax(140px,1fr))]">
+          <div className="grid gap-2 rounded-lg border bg-card p-3 md:grid-cols-[minmax(220px,1.5fr)_repeat(6,minmax(140px,1fr))]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <input
@@ -1322,6 +1341,12 @@ export function Dashboard({ onLogout }: DashboardProps) {
               <option value="available">可调度</option>
               <option value="full">满载</option>
               <option value="blocked">不可调度</option>
+            </select>
+            <select value={subscriptionFilter} onChange={event => setSubscriptionFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="all">全部等级</option>
+              {subscriptionOptions.map(subscription => (
+                <option key={subscription} value={subscription}>{subscriptionFilterLabel(subscription)}</option>
+              ))}
             </select>
             <select value={endpointFilter} onChange={event => setEndpointFilter(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
               <option value="all">全部端点</option>
