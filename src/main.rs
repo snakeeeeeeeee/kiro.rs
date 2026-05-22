@@ -12,6 +12,7 @@ pub mod token;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anthropic::VirtualCacheUsageManager;
 use clap::Parser;
 use kiro::dynamic_proxy::{DynamicProxyManager, spawn_dynamic_proxy_worker};
 use kiro::endpoint::{KiroEndpoint, default_endpoints, normalize_endpoint_name};
@@ -213,6 +214,7 @@ async fn main() {
     let runtime_limiter = Arc::new(RuntimeLimiter::new(&config));
     let metrics = Arc::new(MetricsRecorder::new());
     let model_cooldowns = Arc::new(ModelCooldownManager::new());
+    let virtual_cache_usage = Arc::new(VirtualCacheUsageManager::new());
     let kiro_provider = Arc::new(KiroProvider::with_proxy(
         token_manager.clone(),
         metrics.clone(),
@@ -239,6 +241,7 @@ async fn main() {
         Some(kiro_provider.clone()),
         config.extract_thinking,
         runtime_limiter.clone(),
+        virtual_cache_usage.clone(),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
@@ -261,6 +264,7 @@ async fn main() {
                 metrics.clone(),
                 model_cooldowns.clone(),
                 dynamic_proxy_manager.clone(),
+                virtual_cache_usage.clone(),
                 endpoint_names.clone(),
             );
             let admin_state = admin::AdminState::new(admin_key, admin_service);

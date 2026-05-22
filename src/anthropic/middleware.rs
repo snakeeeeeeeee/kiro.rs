@@ -42,13 +42,14 @@ impl AppState {
         api_key: impl Into<String>,
         extract_thinking: bool,
         runtime_limiter: Arc<RuntimeLimiter>,
+        virtual_cache_usage: Arc<VirtualCacheUsageManager>,
     ) -> Self {
         Self {
             api_key: api_key.into(),
             kiro_provider: None,
             extract_thinking,
             runtime_limiter,
-            virtual_cache_usage: Arc::new(VirtualCacheUsageManager::new()),
+            virtual_cache_usage,
             signed_thinking_cache: Arc::new(SignedThinkingCache::new(
                 std::time::Duration::from_secs(3 * 60 * 60),
             )),

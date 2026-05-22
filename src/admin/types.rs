@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::anthropic::VirtualCacheReuseSnapshot;
 use crate::kiro::dynamic_proxy::{DynamicProxyBindingView, DynamicProxySummary};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownSnapshot;
@@ -183,6 +184,7 @@ pub struct RuntimeStatusResponse {
     pub compat_thinking_model: String,
     pub compat_models_shape: String,
     pub load_balancing_mode: String,
+    pub virtual_cache_reuse: VirtualCacheReuseSnapshot,
     pub total_credentials: usize,
     pub available_credentials: usize,
     pub dispatch_available_credentials: usize,

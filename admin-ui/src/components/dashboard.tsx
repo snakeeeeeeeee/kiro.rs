@@ -1162,6 +1162,21 @@ export function Dashboard({ onLogout }: DashboardProps) {
           </Card>
           <Card>
             <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">缓存复用</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold tabular-nums">
+                {runtimeStatus?.virtualCacheReuse.enabled
+                  ? `${Math.round((runtimeStatus.virtualCacheReuse.actualRatio || 0) * 100)}%`
+                  : '关闭'}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                目标 {runtimeStatus?.virtualCacheReuse.enabled ? `${Math.round(runtimeStatus.virtualCacheReuse.targetRatio * 100)}%` : '-'} · 5m 窗口 {runtimeStatus?.virtualCacheReuse.windowSecs ? `${Math.round(runtimeStatus.virtualCacheReuse.windowSecs / 60)}m` : '-'} · 样本 {runtimeStatus?.virtualCacheReuse.sampleCount ?? 0}
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">动态 IP</CardTitle>
             </CardHeader>
             <CardContent>

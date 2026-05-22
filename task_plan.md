@@ -37,6 +37,8 @@ Current extension: add an Opus 4.7 run mode switch with `custom`, `benchmark`, a
 
 Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibility settings, fix PDF exact streaming duplicate output, and verify with local checks plus Docker where credentials allow.
 
+Current extension: add a default-off global target cache reuse ratio that uses recent virtual-cache usage as a soft controller while preserving the existing ledger semantics and advanced cache execution settings.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -70,6 +72,7 @@ Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibili
 - [completed] Add request-kind signature diagnostics and Prompt Dump runtime/Admin support
 - [completed] Add Opus 4.7 run modes for benchmark scoring vs low-latency daily use without mutating manual dump settings
 - [completed] Implement Opus 4.6/Sonnet 4.6 compatibility settings, generalized probe helpers, PDF duplicate-output fix, and Docker verification
+- [in_progress] Add global target cache reuse ratio config, 5-minute diagnostics, Admin UI control, and regression coverage
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.
@@ -108,6 +111,7 @@ Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibili
 - Opus 4.6/Sonnet 4.6 identity compatibility is gated to `benchmark` or `custom + cc_max_like`; normal Claude Code/tool workflows should not have tools stripped unless the request matches the detector-style identity probe.
 - PDF exact streaming diagnostics must not reuse the same assistant text buffer for replay. PDF diagnostic text is observed for logs only; already-forwarded stream text is not replayed at stream end.
 - ANTML probe diagnostics use a distinct `request_kind="antml_probe"` so later signature/behavior logs are not confused with identity probes.
+- Target cache reuse ratio is a goal layer above the existing virtual cache execution layer. `0` keeps current behavior; non-zero values steer future previews through bounded adjustments instead of directly overriding final usage fields.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

@@ -47,6 +47,7 @@ For one account, seed conservatively:
   "virtualCacheBurstMinTokens": 1500,
   "virtualCacheBurstMaxTokens": 3000,
   "virtualCacheFallbackScope": "none",
+  "targetCacheReuseRatio": 0,
   "shutdownDrainTimeoutSecs": 60
 }
 ```
@@ -58,6 +59,7 @@ For more accounts:
 - `perAccountMaxConcurrent`: start with `2` or `3`
 - `queueMaxSize`: start with `64` or `128`
 - `rateLimitCooldownMs`: keep `60000` unless upstream 429 is rare
+- `targetCacheReuseRatio`: optional soft target for recent 5-minute virtual-cache reuse; keep `0` to disable
 
 Avoid high values until you have real traffic data.
 

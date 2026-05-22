@@ -89,6 +89,7 @@ pub struct RuntimeSettings {
     pub virtual_cache_burst_min_tokens: u32,
     pub virtual_cache_burst_max_tokens: u32,
     pub virtual_cache_fallback_scope: String,
+    pub target_cache_reuse_ratio: f64,
     pub dynamic_proxy_enabled: bool,
     pub dynamic_proxy_provider: String,
     pub dynamic_proxy_protocol: String,
@@ -209,6 +210,7 @@ impl RuntimeSettings {
             virtual_cache_fallback_scope: normalize_virtual_cache_fallback_scope(
                 &config.virtual_cache_fallback_scope,
             ),
+            target_cache_reuse_ratio: config.target_cache_reuse_ratio.clamp(0.0, 1.0),
             dynamic_proxy_enabled: config.dynamic_proxy_enabled,
             dynamic_proxy_provider: normalize_dynamic_proxy_provider(
                 &config.dynamic_proxy_provider,
@@ -423,6 +425,9 @@ impl RuntimeSettings {
             && self.virtual_cache_fallback_scope != "none"
         {
             anyhow::bail!("virtualCacheFallbackScope 必须是 'model' 或 'none'");
+        }
+        if !(0.0..=1.0).contains(&self.target_cache_reuse_ratio) {
+            anyhow::bail!("targetCacheReuseRatio 必须在 0..1 范围内，0 表示关闭");
         }
         if self.dynamic_proxy_provider.trim().is_empty() {
             anyhow::bail!("dynamicProxyProvider 不能为空");
@@ -977,6 +982,7 @@ mod tests {
             settings.prompt_dump_models,
             "claude-opus-4-6,claude-opus-4-7,claude-sonnet-4-6"
         );
+        assert_eq!(settings.target_cache_reuse_ratio, 0.0);
         assert_eq!(
             normalize_opus47_detection_profile("cc-max-like"),
             "cc_max_like"
@@ -1029,6 +1035,19 @@ mod tests {
 
         settings.global_max_concurrent_limit = 1024;
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn target_cache_reuse_ratio_validates_percent_fraction() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.target_cache_reuse_ratio = 0.95;
+        assert!(settings.validate().is_ok());
+
+        settings.target_cache_reuse_ratio = 1.01;
+        assert!(settings.validate().is_err());
+
+        settings.target_cache_reuse_ratio = -0.01;
+        assert!(settings.validate().is_err());
     }
 
     #[test]

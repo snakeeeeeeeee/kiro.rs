@@ -8,6 +8,7 @@ use axum::{
 };
 use std::sync::Arc;
 
+use super::VirtualCacheUsageManager;
 use crate::kiro::provider::KiroProvider;
 use crate::runtime::RuntimeLimiter;
 
@@ -41,8 +42,14 @@ pub fn create_router_with_provider(
     kiro_provider: Option<Arc<KiroProvider>>,
     extract_thinking: bool,
     runtime_limiter: Arc<RuntimeLimiter>,
+    virtual_cache_usage: Arc<VirtualCacheUsageManager>,
 ) -> Router {
-    let mut state = AppState::new(api_key, extract_thinking, runtime_limiter);
+    let mut state = AppState::new(
+        api_key,
+        extract_thinking,
+        runtime_limiter,
+        virtual_cache_usage,
+    );
     if let Some(provider) = kiro_provider {
         state = state.with_kiro_provider(provider);
     }

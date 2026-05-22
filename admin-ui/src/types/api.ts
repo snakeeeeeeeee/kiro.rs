@@ -113,6 +113,7 @@ export interface RuntimeStatusResponse {
   compatThinkingModel: 'native' | 'plain_text'
   compatModelsShape: 'anthropic' | 'aggregator'
   loadBalancingMode: 'priority' | 'balanced'
+  virtualCacheReuse: VirtualCacheReuseSnapshot
   totalCredentials: number
   availableCredentials: number
   dispatchAvailableCredentials: number
@@ -372,6 +373,7 @@ export interface RuntimeSettings {
   virtualCacheBurstMinTokens: number
   virtualCacheBurstMaxTokens: number
   virtualCacheFallbackScope: 'model' | 'none'
+  targetCacheReuseRatio: number
   dynamicProxyEnabled: boolean
   dynamicProxyProvider: string
   dynamicProxyProtocol: 'http' | 'socks5'
@@ -389,6 +391,18 @@ export interface RuntimeSettings {
   dynamicProxyWorkerIntervalMs: number
   dynamicProxyWorkerBatchSize: number
   dynamicProxyWorkerConcurrency: number
+}
+
+export interface VirtualCacheReuseSnapshot {
+  enabled: boolean
+  windowSecs: number
+  targetRatio: number
+  actualRatio: number
+  inputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  denominatorTokens: number
+  sampleCount: number
 }
 
 export interface SetCredentialPolicyRequest {

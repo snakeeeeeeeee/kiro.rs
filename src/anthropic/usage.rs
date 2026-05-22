@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -9,6 +10,11 @@ use crate::kiro::settings::{RuntimeSettings, normalize_virtual_cache_ttl};
 use crate::token;
 
 use super::types::MessagesRequest;
+
+const CACHE_REUSE_WINDOW_SECS: i64 = 5 * 60;
+const CACHE_REUSE_MIN_SAMPLES: usize = 3;
+const CACHE_REUSE_TUNING_DEADBAND: f64 = 0.02;
+const CACHE_REUSE_TUNING_MAX_STEP: f64 = 0.25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheTtl {
@@ -132,9 +138,32 @@ struct LedgerEntry {
     turn_count: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ReuseSample {
+    recorded_at: DateTime<Utc>,
+    input_tokens: i32,
+    cache_read_input_tokens: i32,
+    cache_creation_input_tokens: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VirtualCacheReuseSnapshot {
+    pub enabled: bool,
+    pub window_secs: i64,
+    pub target_ratio: f64,
+    pub actual_ratio: f64,
+    pub input_tokens: i64,
+    pub cache_read_input_tokens: i64,
+    pub cache_creation_input_tokens: i64,
+    pub denominator_tokens: i64,
+    pub sample_count: usize,
+}
+
 #[derive(Default)]
 pub struct VirtualCacheUsageManager {
     ledgers: Mutex<HashMap<LedgerKey, LedgerEntry>>,
+    reuse_samples: Mutex<VecDeque<ReuseSample>>,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +223,20 @@ impl VirtualCacheUsageManager {
         self.commit_usage_at(pending, Utc::now());
     }
 
+    pub fn reuse_snapshot(&self, target_ratio: f64) -> VirtualCacheReuseSnapshot {
+        self.reuse_snapshot_at(target_ratio, Utc::now())
+    }
+
+    fn reuse_snapshot_at(
+        &self,
+        target_ratio: f64,
+        now: DateTime<Utc>,
+    ) -> VirtualCacheReuseSnapshot {
+        let mut samples = self.reuse_samples.lock();
+        prune_reuse_samples(&mut samples, now);
+        reuse_snapshot_from_samples(&samples, target_ratio)
+    }
+
     fn preview_usage_at(
         &self,
         settings: &RuntimeSettings,
@@ -237,14 +280,16 @@ impl VirtualCacheUsageManager {
         }
 
         let accounting_total = compute_accounting_total(&input, observed_total);
-        let uncached = compute_uncached_tokens(settings, &input, accounting_total);
+        let target_reuse_snapshot = self.reuse_snapshot_at(settings.target_cache_reuse_ratio, now);
+        let effective_settings = apply_target_cache_reuse_tuning(settings, &target_reuse_snapshot);
+        let uncached = compute_uncached_tokens(&effective_settings, &input, accounting_total);
         cap_entry_cached_tokens(&mut entry, accounting_total.saturating_sub(uncached));
         let read_tokens = entry
             .cached_5m_tokens
             .saturating_add(entry.cached_1h_tokens);
 
         let creation_tokens = compute_creation_tokens(
-            settings,
+            &effective_settings,
             &input,
             &entry,
             accounting_total,
@@ -312,7 +357,139 @@ impl VirtualCacheUsageManager {
         entry.last_observed_input_tokens = pending.observed_total_input_tokens;
         entry.last_accounting_input_tokens = pending.accounting_total_input_tokens;
         entry.turn_count = entry.turn_count.saturating_add(1);
+        drop(ledgers);
+
+        self.record_reuse_sample(&pending.usage, now);
     }
+
+    fn record_reuse_sample(&self, usage: &AnthropicUsage, now: DateTime<Utc>) {
+        let denominator = usage
+            .input_tokens
+            .saturating_add(usage.cache_read_input_tokens)
+            .saturating_add(usage.cache_creation_input_tokens);
+        if denominator <= 0
+            || (usage.cache_read_input_tokens <= 0 && usage.cache_creation_input_tokens <= 0)
+        {
+            return;
+        }
+
+        let mut samples = self.reuse_samples.lock();
+        prune_reuse_samples(&mut samples, now);
+        samples.push_back(ReuseSample {
+            recorded_at: now,
+            input_tokens: usage.input_tokens.max(0),
+            cache_read_input_tokens: usage.cache_read_input_tokens.max(0),
+            cache_creation_input_tokens: usage.cache_creation_input_tokens.max(0),
+        });
+    }
+}
+
+fn prune_reuse_samples(samples: &mut VecDeque<ReuseSample>, now: DateTime<Utc>) {
+    let cutoff = now - Duration::seconds(CACHE_REUSE_WINDOW_SECS);
+    while samples
+        .front()
+        .is_some_and(|sample| sample.recorded_at < cutoff)
+    {
+        samples.pop_front();
+    }
+}
+
+fn reuse_snapshot_from_samples(
+    samples: &VecDeque<ReuseSample>,
+    target_ratio: f64,
+) -> VirtualCacheReuseSnapshot {
+    let input_tokens = samples
+        .iter()
+        .map(|sample| sample.input_tokens.max(0) as i64)
+        .sum::<i64>();
+    let cache_read_input_tokens = samples
+        .iter()
+        .map(|sample| sample.cache_read_input_tokens.max(0) as i64)
+        .sum::<i64>();
+    let cache_creation_input_tokens = samples
+        .iter()
+        .map(|sample| sample.cache_creation_input_tokens.max(0) as i64)
+        .sum::<i64>();
+    let denominator_tokens = input_tokens
+        .saturating_add(cache_read_input_tokens)
+        .saturating_add(cache_creation_input_tokens);
+    let actual_ratio = if denominator_tokens > 0 {
+        cache_read_input_tokens as f64 / denominator_tokens as f64
+    } else {
+        0.0
+    };
+
+    VirtualCacheReuseSnapshot {
+        enabled: target_ratio > 0.0,
+        window_secs: CACHE_REUSE_WINDOW_SECS,
+        target_ratio: target_ratio.clamp(0.0, 1.0),
+        actual_ratio,
+        input_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
+        denominator_tokens,
+        sample_count: samples.len(),
+    }
+}
+
+fn apply_target_cache_reuse_tuning(
+    settings: &RuntimeSettings,
+    snapshot: &VirtualCacheReuseSnapshot,
+) -> RuntimeSettings {
+    if settings.target_cache_reuse_ratio <= 0.0
+        || !settings.virtual_cache_usage_enabled
+        || snapshot.sample_count < CACHE_REUSE_MIN_SAMPLES
+        || snapshot.denominator_tokens <= 0
+    {
+        return settings.clone();
+    }
+
+    let target = settings.target_cache_reuse_ratio.clamp(0.0, 1.0);
+    let error = target - snapshot.actual_ratio.clamp(0.0, 1.0);
+    if error.abs() < CACHE_REUSE_TUNING_DEADBAND {
+        return settings.clone();
+    }
+
+    let step = error.clamp(-CACHE_REUSE_TUNING_MAX_STEP, CACHE_REUSE_TUNING_MAX_STEP);
+    let factor = 1.0 - step;
+
+    let mut effective = settings.clone();
+    effective.virtual_cache_uncached_input_tokens =
+        scale_u32(effective.virtual_cache_uncached_input_tokens, factor, 1);
+    effective.virtual_cache_min_input_tokens =
+        scale_u32(effective.virtual_cache_min_input_tokens, factor, 1);
+    effective.virtual_cache_max_input_tokens =
+        scale_u32(effective.virtual_cache_max_input_tokens, factor, 1);
+    if effective.virtual_cache_min_input_tokens > effective.virtual_cache_max_input_tokens {
+        effective.virtual_cache_min_input_tokens = effective.virtual_cache_max_input_tokens;
+    }
+
+    effective.virtual_cache_warmup_tokens =
+        scale_u32(effective.virtual_cache_warmup_tokens, factor, 1);
+    effective.virtual_cache_min_creation_tokens =
+        scale_u32(effective.virtual_cache_min_creation_tokens, factor, 1);
+    effective.virtual_cache_max_creation_tokens =
+        scale_u32(effective.virtual_cache_max_creation_tokens, factor, 1);
+    if effective.virtual_cache_min_creation_tokens > effective.virtual_cache_max_creation_tokens {
+        effective.virtual_cache_min_creation_tokens = effective.virtual_cache_max_creation_tokens;
+    }
+    effective.virtual_cache_burst_min_tokens =
+        scale_u32(effective.virtual_cache_burst_min_tokens, factor, 0);
+    effective.virtual_cache_burst_max_tokens =
+        scale_u32(effective.virtual_cache_burst_max_tokens, factor, 0);
+    if effective.virtual_cache_burst_min_tokens > effective.virtual_cache_burst_max_tokens {
+        effective.virtual_cache_burst_min_tokens = effective.virtual_cache_burst_max_tokens;
+    }
+
+    effective
+}
+
+fn scale_u32(value: u32, factor: f64, min_value: u32) -> u32 {
+    let scaled = ((value as f64) * factor).round();
+    if !scaled.is_finite() {
+        return value.max(min_value);
+    }
+    scaled.clamp(min_value as f64, u32::MAX as f64) as u32
 }
 
 fn compute_accounting_total(input: &VirtualUsageInput, observed_total: i32) -> i32 {
@@ -1236,6 +1413,101 @@ mod tests {
             next.cache_read_input_tokens
         );
         assert_eq!(next.cache_creation_input_tokens, 1_000);
+    }
+
+    #[test]
+    fn reuse_snapshot_tracks_five_minute_window() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let now = Utc::now();
+
+        let first = manager.preview_usage_at(
+            &settings,
+            input("reuse-window", 10_000, CacheTtl::FiveMinutes),
+            now,
+        );
+        manager.commit_usage_at(first, now);
+
+        let snapshot = manager.reuse_snapshot_at(settings.target_cache_reuse_ratio, now);
+        assert_eq!(snapshot.window_secs, 300);
+        assert!(!snapshot.enabled);
+        assert_eq!(snapshot.sample_count, 1);
+        assert_eq!(snapshot.input_tokens, 1);
+        assert_eq!(snapshot.cache_read_input_tokens, 0);
+        assert_eq!(snapshot.cache_creation_input_tokens, 18_000);
+        assert_eq!(snapshot.denominator_tokens, 18_001);
+        assert_eq!(snapshot.actual_ratio, 0.0);
+
+        let later_snapshot = manager.reuse_snapshot_at(
+            settings.target_cache_reuse_ratio,
+            now + Duration::minutes(6),
+        );
+        assert_eq!(later_snapshot.sample_count, 0);
+        assert_eq!(later_snapshot.denominator_tokens, 0);
+        assert_eq!(later_snapshot.actual_ratio, 0.0);
+    }
+
+    #[test]
+    fn target_cache_reuse_ratio_zero_keeps_current_behavior() {
+        let manager = VirtualCacheUsageManager::new();
+        let settings = settings();
+        let now = Utc::now();
+
+        let first = manager.preview_usage_at(
+            &settings,
+            input("reuse-off", 10_000, CacheTtl::FiveMinutes),
+            now,
+        );
+        manager.commit_usage_at(first, now);
+
+        let second = manager.preview_usage_at(
+            &settings,
+            input("reuse-off", 10_100, CacheTtl::FiveMinutes),
+            now + Duration::seconds(10),
+        );
+        assert_eq!(second.usage().cache_read_input_tokens, 9_999);
+        assert_eq!(second.usage().cache_creation_input_tokens, 128);
+    }
+
+    #[test]
+    fn target_cache_reuse_ratio_biases_future_previews_toward_target() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_uncached_input_tokens = 20;
+        settings.virtual_cache_min_input_tokens = 20;
+        settings.virtual_cache_max_input_tokens = 96;
+        settings.target_cache_reuse_ratio = 0.1;
+
+        let now = Utc::now();
+        for offset in [0_i64, 10, 20] {
+            let pending = manager.preview_usage_at(
+                &settings,
+                input("reuse-target", 10_000 + (offset as i32 * 10), CacheTtl::FiveMinutes),
+                now + Duration::seconds(offset),
+            );
+            manager.commit_usage_at(pending, now + Duration::seconds(offset));
+        }
+
+        let baseline_settings = RuntimeSettings {
+            target_cache_reuse_ratio: 0.0,
+            ..settings.clone()
+        };
+        let baseline = manager.preview_usage_at(
+            &baseline_settings,
+            input("reuse-target", 10_300, CacheTtl::FiveMinutes),
+            now + Duration::seconds(30),
+        );
+        let tuned = manager.preview_usage_at(
+            &settings,
+            input("reuse-target", 10_300, CacheTtl::FiveMinutes),
+            now + Duration::seconds(30),
+        );
+
+        assert_ne!(baseline.usage().input_tokens, tuned.usage().input_tokens);
+        assert_ne!(
+            baseline.usage().cache_creation_input_tokens,
+            tuned.usage().cache_creation_input_tokens
+        );
     }
 
     #[test]

@@ -82,6 +82,11 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
     setForm(prev => prev ? { ...prev, [key]: Number.isFinite(next) ? next : 0 } : prev)
   }
 
+  const updatePercent = (key: 'targetCacheReuseRatio', value: string) => {
+    const next = Number(value)
+    setForm(prev => prev ? { ...prev, [key]: Number.isFinite(next) ? next / 100 : 0 } : prev)
+  }
+
   const handleSave = () => {
     if (!form) return
     setRuntimeSettings.mutate(form, {
@@ -848,6 +853,21 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="enabled">启用</option>
                 <option value="disabled">关闭</option>
               </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">目标缓存复用率 %</label>
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round((form.targetCacheReuseRatio || 0) * 100)}
+                onChange={event => updatePercent('targetCacheReuseRatio', event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                0 表示关闭；开启后只用最近 5 分钟的虚拟缓存账本做软目标调节。
+              </p>
             </div>
 
             <div className="space-y-2">

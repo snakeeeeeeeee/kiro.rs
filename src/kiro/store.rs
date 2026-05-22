@@ -661,6 +661,10 @@ fn runtime_settings_pairs(
             settings.virtual_cache_fallback_scope.clone(),
         ),
         (
+            "targetCacheReuseRatio",
+            settings.target_cache_reuse_ratio.to_string(),
+        ),
+        (
             "dynamicProxyEnabled",
             settings.dynamic_proxy_enabled.to_string(),
         ),
@@ -877,6 +881,7 @@ fn apply_runtime_setting(
             settings.virtual_cache_fallback_scope =
                 crate::kiro::settings::normalize_virtual_cache_fallback_scope(value)
         }
+        "targetCacheReuseRatio" => settings.target_cache_reuse_ratio = parse_f64(key, value)?,
         "dynamicProxyEnabled" => settings.dynamic_proxy_enabled = parse_bool(key, value)?,
         "dynamicProxyProvider" => {
             settings.dynamic_proxy_provider = normalize_dynamic_proxy_provider(value)
@@ -1186,6 +1191,7 @@ mod tests {
         updated.prompt_dump_dir = "/tmp/kiro-prompt-dumps".to_string();
         updated.prompt_dump_max_bytes = 12_345;
         updated.prompt_dump_models = "claude-opus-4-7,claude-sonnet-4-6".to_string();
+        updated.target_cache_reuse_ratio = 0.95;
         updated.load_balancing_mode = "balanced".to_string();
         updated.dynamic_proxy_enabled = true;
         updated.dynamic_proxy_host = "proxy.example.com".to_string();
@@ -1230,6 +1236,7 @@ mod tests {
             loaded.prompt_dump_models,
             "claude-opus-4-7,claude-sonnet-4-6"
         );
+        assert_eq!(loaded.target_cache_reuse_ratio, 0.95);
         assert_eq!(loaded.load_balancing_mode, "balanced");
         assert!(loaded.dynamic_proxy_enabled);
         assert_eq!(loaded.dynamic_proxy_host, "proxy.example.com");

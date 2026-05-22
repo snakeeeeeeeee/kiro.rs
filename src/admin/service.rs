@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
 
+use crate::anthropic::VirtualCacheUsageManager;
 use crate::http_client::build_client;
 use crate::kiro::dynamic_proxy::DynamicProxyManager;
 use crate::kiro::endpoint::{endpoint_api_url, endpoint_label, normalize_endpoint_name};
@@ -55,6 +56,7 @@ pub struct AdminService {
     metrics: Arc<MetricsRecorder>,
     model_cooldowns: Arc<ModelCooldownManager>,
     dynamic_proxy: Arc<DynamicProxyManager>,
+    virtual_cache_usage: Arc<VirtualCacheUsageManager>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
@@ -69,6 +71,7 @@ impl AdminService {
         metrics: Arc<MetricsRecorder>,
         model_cooldowns: Arc<ModelCooldownManager>,
         dynamic_proxy: Arc<DynamicProxyManager>,
+        virtual_cache_usage: Arc<VirtualCacheUsageManager>,
         known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
@@ -84,6 +87,7 @@ impl AdminService {
             metrics,
             model_cooldowns,
             dynamic_proxy,
+            virtual_cache_usage,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
@@ -174,6 +178,9 @@ impl AdminService {
                 }
             });
         let dynamic_bindings = self.dynamic_proxy_bindings_map();
+        let virtual_cache_reuse = self
+            .virtual_cache_usage
+            .reuse_snapshot(settings.target_cache_reuse_ratio);
         RuntimeStatusResponse {
             default_endpoint: snapshot.default_endpoint.clone(),
             endpoints: self.endpoint_options(&snapshot.default_endpoint),
@@ -223,6 +230,7 @@ impl AdminService {
             compat_thinking_model: snapshot.compat_thinking_model,
             compat_models_shape: snapshot.compat_models_shape,
             load_balancing_mode: snapshot.load_balancing_mode,
+            virtual_cache_reuse,
             total_credentials: snapshot.total,
             available_credentials: snapshot.available,
             dispatch_available_credentials: snapshot.dispatch_available,

@@ -33,3 +33,4 @@ mod usage;
 mod websearch;
 
 pub use router::create_router_with_provider;
+pub use usage::{VirtualCacheReuseSnapshot, VirtualCacheUsageManager};

@@ -45,6 +45,7 @@
   "virtualCacheMinCreationTokens": 128,
   "virtualCacheMaxCreationTokens": 1200,
   "virtualCacheFallbackScope": "model",
+  "targetCacheReuseRatio": 0,
   "shutdownDrainTimeoutSecs": 60,
   "_defaultEndpointNote": "Supported values: ide, codewhisperer, amazonq. After SQLite is initialized, manage it from Admin UI.",
   "defaultEndpoint": "ide"
