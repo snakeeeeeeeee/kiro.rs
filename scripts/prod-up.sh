@@ -22,6 +22,7 @@ Environment:
   RUST_LOG                   Container log level, default info
   DOCKER_BUILDKIT            Enable BuildKit, default 1
   DOCKER_BUILD_PROGRESS      Build progress output, default plain
+  GATEWAY_NETWORK            Shared Docker network name, default ai-gateway
   HEALTH_TIMEOUT_SECS        Health wait timeout, default 90
   RUN_SMOKE                  Same as --smoke when set to 1
   REMOVE_ORPHANS             Same as --remove-orphans when set to 1
@@ -33,6 +34,7 @@ KIRO_RS_IMAGE="${KIRO_RS_IMAGE:-kiro-rs:prod}"
 KIRO_RS_BIND="${KIRO_RS_BIND:-0.0.0.0}"
 KIRO_RS_PORT="${KIRO_RS_PORT:-18990}"
 RUST_LOG="${RUST_LOG:-info}"
+GATEWAY_NETWORK="${GATEWAY_NETWORK:-ai-gateway}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-90}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${KIRO_RS_PORT}/healthz}"
 RUN_SMOKE="${RUN_SMOKE:-0}"
@@ -87,12 +89,18 @@ export KIRO_RS_IMAGE
 export KIRO_RS_BIND
 export KIRO_RS_PORT
 export RUST_LOG
+export GATEWAY_NETWORK
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 export DOCKER_BUILD_PROGRESS
+
+if ! docker network inspect "$GATEWAY_NETWORK" >/dev/null 2>&1; then
+  docker network create "$GATEWAY_NETWORK" >/dev/null
+fi
 
 compose_args=(
   -f docker-compose-prod.yml
   -f docker-compose-prod.build.yml
+  -f docker-compose-prod.gateway.yml
 )
 
 build_args=(build --progress="$DOCKER_BUILD_PROGRESS" "$SERVICE_NAME")

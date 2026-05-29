@@ -1,0 +1,9 @@
+services:
+  kiro-rs:
+    networks:
+      - default
+      - ai-gateway
+
+networks:
+  ai-gateway:
+    external: true

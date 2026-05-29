@@ -1,0 +1,10 @@
+services:
+  kiro-rs:
+    networks:
+      - default
+      - gateway
+
+networks:
+  gateway:
+    name: "${GATEWAY_NETWORK:-ai-gateway}"
+    external: true
