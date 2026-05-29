@@ -109,6 +109,7 @@ const MIN_PDF_PRIMARY_TEXT_CHARS: usize = 32;
 /// 按照用户要求：
 /// - sonnet 4.6/4-6 → claude-sonnet-4.6
 /// - 其他 sonnet → claude-sonnet-4.5
+/// - opus 4.8/4-8 → claude-opus-4.8
 /// - opus 4.7/4-7 → claude-opus-4.7
 /// - opus 4.5/4-5 → claude-opus-4.5
 /// - 其他 opus → claude-opus-4.6
@@ -123,7 +124,9 @@ pub fn map_model(model: &str) -> Option<String> {
             Some("claude-sonnet-4.5".to_string())
         }
     } else if model_lower.contains("opus") {
-        if model_lower.contains("4-7") || model_lower.contains("4.7") {
+        if model_lower.contains("4-8") || model_lower.contains("4.8") {
+            Some("claude-opus-4.8".to_string())
+        } else if model_lower.contains("4-7") || model_lower.contains("4.7") {
             Some("claude-opus-4.7".to_string())
         } else if model_lower.contains("4-5") || model_lower.contains("4.5") {
             Some("claude-opus-4.5".to_string())
@@ -147,6 +150,7 @@ pub fn get_context_window_size(model: &str) -> i32 {
         Some(mapped)
             if mapped == "claude-sonnet-4.6"
                 || mapped == "claude-opus-4.6"
+                || mapped == "claude-opus-4.8"
                 || mapped == "claude-opus-4.7" =>
         {
             1_000_000
@@ -2164,6 +2168,13 @@ mod tests {
         // thinking 后缀不应影响 opus 4.7 模型映射
         let result = map_model("claude-opus-4-7-thinking");
         assert_eq!(result, Some("claude-opus-4.7".to_string()));
+    }
+
+    #[test]
+    fn test_map_model_thinking_suffix_opus_4_8() {
+        // thinking 后缀不应影响 opus 4.8 模型映射
+        let result = map_model("claude-opus-4-8-thinking");
+        assert_eq!(result, Some("claude-opus-4.8".to_string()));
     }
 
     #[test]

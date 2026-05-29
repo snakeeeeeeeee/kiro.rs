@@ -318,9 +318,9 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
 
             <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
               <div className="space-y-1">
-                <h3 className="text-sm font-semibold">Opus 4.7 兼容策略</h3>
+                <h3 className="text-sm font-semibold">Opus 4.7/4.8 兼容策略</h3>
                 <p className="text-xs text-muted-foreground">
-                  这些选项只影响 claude-opus-4-7；Prompt Dump 仍在下方手动控制。
+                  这些选项影响 claude-opus-4-7 和 claude-opus-4-8；Prompt Dump 仍在下方手动控制。
                 </p>
               </div>
 
@@ -681,7 +681,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     value={form.promptDumpModels}
                     onChange={event => setForm(prev => prev ? { ...prev, promptDumpModels: event.target.value } : prev)}
                   />
-                  <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-sonnet-4-6。</p>
+                  <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-opus-4-8, claude-sonnet-4-6。</p>
                 </div>
               </div>
             </section>

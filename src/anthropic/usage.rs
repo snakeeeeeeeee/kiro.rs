@@ -1482,7 +1482,11 @@ mod tests {
         for offset in [0_i64, 10, 20] {
             let pending = manager.preview_usage_at(
                 &settings,
-                input("reuse-target", 10_000 + (offset as i32 * 10), CacheTtl::FiveMinutes),
+                input(
+                    "reuse-target",
+                    10_000 + (offset as i32 * 10),
+                    CacheTtl::FiveMinutes,
+                ),
                 now + Duration::seconds(offset),
             );
             manager.commit_usage_at(pending, now + Duration::seconds(offset));

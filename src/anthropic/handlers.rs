@@ -278,6 +278,24 @@ pub async fn get_models(State(state): State<AppState>) -> impl IntoResponse {
 fn anthropic_models() -> Vec<Model> {
     vec![
         Model {
+            id: "claude-opus-4-8".to_string(),
+            object: "model".to_string(),
+            created: 1779926400, // May 28, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.8".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
+            id: "claude-opus-4-8-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1779926400, // May 28, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Opus 4.8 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(32000),
+        },
+        Model {
             id: "claude-opus-4-7".to_string(),
             object: "model".to_string(),
             created: 1776297600, // Apr 16, 2026
@@ -509,6 +527,34 @@ mod tests {
         );
         assert!(!client_thinking_enabled_for_request(
             "claude-opus-4-7",
+            &payload,
+            "native",
+            client_requested_thinking
+        ));
+    }
+
+    #[test]
+    fn plain_opus48_reuses_opus47_plain_stabilization() {
+        let mut payload = request("claude-opus-4-8");
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-8", &payload);
+        let mode = apply_opus47_plain_stabilization(
+            &mut payload,
+            "claude-opus-4-8",
+            &settings("adaptive_low"),
+        );
+
+        assert_eq!(mode, "adaptive_low");
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
+            payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("low")
+        );
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-8",
             &payload,
             "native",
             client_requested_thinking
@@ -769,9 +815,33 @@ mod tests {
     }
 
     #[test]
-    fn clean_probe_mode_is_scoped_to_plain_opus47() {
+    fn plain_opus48_plain_text_compat_hides_thinking_and_strips_suffix() {
+        let payload = request_with_content(
+            "claude-opus-4-8",
+            "<thinking_mode>enabled</thinking_mode>hello",
+        );
+        let client_requested_thinking =
+            client_requested_thinking_for_request("claude-opus-4-8", &payload);
+
+        assert!(client_requested_thinking);
+        assert!(!client_thinking_enabled_for_request(
+            "claude-opus-4-8",
+            &payload,
+            "plain_text",
+            client_requested_thinking,
+        ));
+        assert_eq!(
+            response_model_for_request("claude-opus-4-8-thinking", "plain_text"),
+            "claude-opus-4-8"
+        );
+    }
+
+    #[test]
+    fn clean_probe_mode_is_scoped_to_plain_opus47_and_opus48() {
         let enabled =
             conversion_options_for_request("claude-opus-4-7", &clean_probe_settings("clean"));
+        let enabled48 =
+            conversion_options_for_request("claude-opus-4-8", &clean_probe_settings("clean"));
         let thinking_model = conversion_options_for_request(
             "claude-opus-4-7-thinking",
             &clean_probe_settings("clean"),
@@ -780,6 +850,7 @@ mod tests {
             conversion_options_for_request("claude-sonnet-4-6", &clean_probe_settings("clean"));
 
         assert!(enabled.clean_probe_mode);
+        assert!(enabled48.clean_probe_mode);
         assert!(!thinking_model.clean_probe_mode);
         assert!(!other_model.clean_probe_mode);
     }
@@ -825,6 +896,27 @@ mod tests {
         let mode = apply_opus47_antml_probe_compat(
             &mut conversion_result.conversation_state,
             "claude-opus-4-7",
+            &antml_settings("clarify"),
+        );
+        let content = &conversion_result
+            .conversation_state
+            .current_message
+            .user_input_message
+            .content;
+
+        assert_eq!(mode, "clarify");
+        assert!(content.starts_with("兼容说明：下面出现的 antml tag"));
+        assert!(content.contains(ANTML_PROBE));
+        assert_eq!(count_antml_tags(content), 1);
+    }
+
+    #[test]
+    fn antml_probe_compat_clarifies_plain_opus48_probe() {
+        let payload = request_with_content("claude-opus-4-8", ANTML_PROBE);
+        let mut conversion_result = convert_request(&payload).unwrap();
+        let mode = apply_opus47_antml_probe_compat(
+            &mut conversion_result.conversation_state,
+            "claude-opus-4-8",
             &antml_settings("clarify"),
         );
         let content = &conversion_result
@@ -3496,7 +3588,7 @@ async fn handle_non_stream_request(
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含且客户端没有显式 thinking，则补默认 thinking 配置。
 ///
-/// - Opus 4.6/4.7：覆写为 adaptive 类型
+/// - Opus 4.6/4.7/4.8：覆写为 adaptive 类型
 /// - 其他模型：覆写为 enabled 类型
 fn override_thinking_from_model_name(
     payload: &mut MessagesRequest,
@@ -3511,7 +3603,9 @@ fn override_thinking_from_model_name(
         && (model_lower.contains("4-6")
             || model_lower.contains("4.6")
             || model_lower.contains("4-7")
-            || model_lower.contains("4.7"));
+            || model_lower.contains("4.7")
+            || model_lower.contains("4-8")
+            || model_lower.contains("4.8"));
 
     if payload
         .thinking
@@ -3644,11 +3738,36 @@ fn is_opus47_model_name(model: &str) -> bool {
     )
 }
 
+fn is_opus48_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-8"
+            | "claude-opus-4.8"
+            | "claude-opus-4-8-thinking"
+            | "claude-opus-4.8-thinking"
+    )
+}
+
+fn is_plain_opus48_model_name(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-opus-4-8" | "claude-opus-4.8"
+    )
+}
+
 fn is_plain_opus47_model_name(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
         "claude-opus-4-7" | "claude-opus-4.7"
     )
+}
+
+fn is_opus47_or_48_model_name(model: &str) -> bool {
+    is_opus47_model_name(model) || is_opus48_model_name(model)
+}
+
+fn is_plain_opus47_or_48_model_name(model: &str) -> bool {
+    is_plain_opus47_model_name(model) || is_plain_opus48_model_name(model)
 }
 
 fn is_opus46_model_name(model: &str) -> bool {
@@ -3686,11 +3805,15 @@ fn is_plain_sonnet46_model_name(model: &str) -> bool {
 }
 
 fn is_compat_diagnostics_model_name(model: &str) -> bool {
-    is_opus47_model_name(model) || is_opus46_model_name(model) || is_sonnet46_model_name(model)
+    is_opus48_model_name(model)
+        || is_opus47_model_name(model)
+        || is_opus46_model_name(model)
+        || is_sonnet46_model_name(model)
 }
 
 fn is_plain_probe_compat_model_name(model: &str) -> bool {
-    is_plain_opus47_model_name(model)
+    is_plain_opus48_model_name(model)
+        || is_plain_opus47_model_name(model)
         || is_plain_opus46_model_name(model)
         || is_plain_sonnet46_model_name(model)
 }
@@ -3764,10 +3887,10 @@ fn client_thinking_enabled_for_request(
     compat_thinking_model: &str,
     client_requested_thinking: bool,
 ) -> bool {
-    if compat_thinking_model == "plain_text" && is_opus47_model_name(model) {
+    if compat_thinking_model == "plain_text" && is_opus47_or_48_model_name(model) {
         return false;
     }
-    // 以前 plain claude-opus-4-7 会额外要求 API 层的 `thinking` 字段为 enabled，
+    // 以前 plain claude-opus-4-7/4-8 会额外要求 API 层的 `thinking` 字段为 enabled，
     // 但 client_requested_thinking 已经覆盖 API 字段 / `-thinking` 模型后缀 /
     // content 层 `<thinking_mode>enabled</thinking_mode>` 三种入口，
     // 再加一层 API 字段硬闸会把合法的 Claude Code 风格 thinking 请求全部拒掉，
@@ -3829,6 +3952,9 @@ fn content_requests_thinking(text: &str) -> bool {
 }
 
 fn response_model_for_request(model: &str, compat_thinking_model: &str) -> String {
+    if compat_thinking_model == "plain_text" && is_opus48_model_name(model) {
+        return "claude-opus-4-8".to_string();
+    }
     if compat_thinking_model == "plain_text" && is_opus47_model_name(model) {
         return "claude-opus-4-7".to_string();
     }
@@ -3842,7 +3968,7 @@ fn apply_opus47_plain_stabilization(
 ) -> String {
     let mode = crate::kiro::settings::effective_opus47_plain_stabilization_mode(settings);
 
-    if !is_plain_opus47_model_name(requested_model) || mode == "off" {
+    if !is_plain_opus47_or_48_model_name(requested_model) || mode == "off" {
         return "off".to_string();
     }
 
@@ -3865,7 +3991,7 @@ fn apply_opus47_plain_stabilization(
         model = %requested_model,
         stabilization_mode = %mode,
         effort = effort,
-        "Opus 4.7 plain 稳定模式已注入 adaptive thinking，上游启用但客户端隐藏"
+        "Opus 4.7/4.8 plain 稳定模式已注入 adaptive thinking，上游启用但客户端隐藏"
     );
 
     mode
@@ -3879,9 +4005,9 @@ fn conversion_options_for_request(
         crate::kiro::settings::effective_opus47_signed_thinking_preservation(settings);
     let signed_thinking_mode = SignedThinkingMode::from_setting(signed_thinking_setting.as_str());
     ConversionOptions {
-        clean_probe_mode: is_plain_opus47_model_name(requested_model)
+        clean_probe_mode: is_plain_opus47_or_48_model_name(requested_model)
             && crate::kiro::settings::effective_opus47_clean_probe_mode(settings) == "clean",
-        signed_thinking_history_experiment: is_opus47_model_name(requested_model)
+        signed_thinking_history_experiment: is_opus47_or_48_model_name(requested_model)
             && signed_thinking_mode == SignedThinkingMode::HistoryExperiment,
     }
 }
@@ -3958,7 +4084,7 @@ fn apply_opus47_short_thinking_experiment(
     let detection_profile = crate::kiro::settings::effective_opus47_detection_profile(settings);
     let signed_thinking_preservation =
         crate::kiro::settings::effective_opus47_signed_thinking_preservation(settings);
-    if !is_opus47_model_name(requested_model)
+    if !is_opus47_or_48_model_name(requested_model)
         || detection_profile != "cc_max_like"
         || signed_thinking_preservation != "history_experiment"
         || !client_requested_thinking

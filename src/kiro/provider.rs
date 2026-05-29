@@ -479,6 +479,13 @@ fn raw_debug_config_for_model(
     model: &str,
 ) -> (bool, usize) {
     match model.trim().to_ascii_lowercase().as_str() {
+        "claude-opus-4-8"
+        | "claude-opus-4.8"
+        | "claude-opus-4-8-thinking"
+        | "claude-opus-4.8-thinking" => (
+            settings.opus47_raw_debug_enabled,
+            settings.opus47_raw_debug_max_chars,
+        ),
         "claude-opus-4-7"
         | "claude-opus-4.7"
         | "claude-opus-4-7-thinking"
@@ -514,7 +521,9 @@ fn map_admin_test_model(model: &str) -> Option<String> {
             Some("claude-sonnet-4.5".to_string())
         }
     } else if model_lower.contains("opus") {
-        if model_lower.contains("4-7") || model_lower.contains("4.7") {
+        if model_lower.contains("4-8") || model_lower.contains("4.8") {
+            Some("claude-opus-4.8".to_string())
+        } else if model_lower.contains("4-7") || model_lower.contains("4.7") {
             Some("claude-opus-4.7".to_string())
         } else if model_lower.contains("4-5") || model_lower.contains("4.5") {
             Some("claude-opus-4.5".to_string())

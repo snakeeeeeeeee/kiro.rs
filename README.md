@@ -215,15 +215,15 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `sessionAffinityEnabled` | boolean | `true` | 会话到账号的软亲和开关。开启后同一 `metadata.user_id`/session 优先复用上次账号；关闭后只按负载策略调度，不影响虚拟 usage 账本 |
 | `sessionAffinityTtlSecs` | number | `3600` | 会话软亲和绑定 TTL，范围 `300..43200` 秒 |
 | `sameAccountRetryRules` | array | 见示例 | 单号重试规则。命中规则时先用当前账号重试，耗尽后才进入账号冷却或换号 |
-| `opus47PlainStabilizationMode` | string | `off` | Opus 4.7 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
-| `opus47AntmlProbeCompat` | string | `off` | Opus 4.7 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
-| `opus47CleanProbeMode` | string | `off` | Opus 4.7 clean probe 模式：`off` 或 `clean`。开启后减少本地合成提示、工具描述后缀和结构化输出历史污染，仅作用于 plain `claude-opus-4-7` |
-| `opus47DetectionProfile` | string | `normal` | Opus 4.7 检测 profile：`normal`、`cc_max_like` 或 `clean_probe_debug`。`cc_max_like` 会统一应用聚合器模型列表、flat usage、native thinking、关闭 Clean Probe，并启用窄身份/ANTML 探针兼容 |
-| `opus47SignedThinkingPreservation` | string | `off` | Opus 4.7 signed-thinking 实验：`off`、`diagnose`、`cache_only` 或 `history_experiment`。当前只观察/缓存上游真实 signature，不伪造 signature |
-| `opus47ShortThinkingExperiment` | string | `off` | Opus 4.7 短请求/PDF thinking 标签 A/B：`off` 或 `adaptive_high`，仅在 `cc_max_like + history_experiment` 下生效 |
-| `opus47DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.7 响应形态诊断日志，包括 reasoning/signature 是否由上游出现并暴露给客户端 |
-| `opus47RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.7 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
-| `opus47RawDebugMaxChars` | number | `20000` | Opus 4.7 原始调试日志单字段最大字符数 |
+| `opus47PlainStabilizationMode` | string | `off` | Opus 4.7/4.8 plain 请求的上游 thinking 稳定模式：`off`、`adaptive_low` 或 `adaptive_high` |
+| `opus47AntmlProbeCompat` | string | `off` | Opus 4.7/4.8 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
+| `opus47CleanProbeMode` | string | `off` | Opus 4.7/4.8 clean probe 模式：`off` 或 `clean`。开启后减少本地合成提示、工具描述后缀和结构化输出历史污染，仅作用于 plain `claude-opus-4-7`/`claude-opus-4-8` |
+| `opus47DetectionProfile` | string | `normal` | Opus 4.7/4.8 检测 profile：`normal`、`cc_max_like` 或 `clean_probe_debug`。`cc_max_like` 会统一应用聚合器模型列表、flat usage、native thinking、关闭 Clean Probe，并启用窄身份/ANTML 探针兼容 |
+| `opus47SignedThinkingPreservation` | string | `off` | Opus 4.7/4.8 signed-thinking 实验：`off`、`diagnose`、`cache_only` 或 `history_experiment`。当前只观察/缓存上游真实 signature，不伪造 signature |
+| `opus47ShortThinkingExperiment` | string | `off` | Opus 4.7/4.8 短请求/PDF thinking 标签 A/B：`off` 或 `adaptive_high`，仅在 `cc_max_like + history_experiment` 下生效 |
+| `opus47DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.7/4.8 响应形态诊断日志，包括 reasoning/signature 是否由上游出现并暴露给客户端 |
+| `opus47RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.7/4.8 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
+| `opus47RawDebugMaxChars` | number | `20000` | Opus 4.7/4.8 原始调试日志单字段最大字符数 |
 | `opus46DetectionProfile` | string | `normal` | Opus 4.6 检测 profile：`normal` 或 `cc_max_like`。`cc_max_like` 启用窄身份/ANTML 探针兼容，并让通用兼容形态 effective 为 CC Max Like 形态 |
 | `opus46AntmlProbeCompat` | string | `off` | Opus 4.6 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
 | `opus46DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.6 响应形态诊断日志 |
@@ -527,6 +527,7 @@ RUST_LOG=debug ./target/release/kiro-rs
 | Anthropic 模型 | Kiro 模型 |
 |----------------|-----------|
 | `*sonnet*` | `claude-sonnet-4.5` |
+| `*opus*`（含 4.8/4-8） | `claude-opus-4.8` |
 | `*opus*`（含 4.7/4-7） | `claude-opus-4.7` |
 | `*opus*`（含 4.5/4-5） | `claude-opus-4.5` |
 | `*opus*`（其他） | `claude-opus-4.6` |
