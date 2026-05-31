@@ -766,6 +766,32 @@ pub fn session_key_for_request(
     request_isolated_fallback_key(model)
 }
 
+pub fn session_key_for_request_with_conversation_header(
+    req: &MessagesRequest,
+    model: &str,
+    fallback_scope: &str,
+    x_conversation_id: Option<&str>,
+) -> String {
+    let metadata_user_id = req
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.user_id.as_ref())
+        .map(|user_id| user_id.trim());
+
+    if metadata_user_id.is_some_and(|user_id| !user_id.is_empty()) {
+        return session_key_for_request(req, model, fallback_scope);
+    }
+
+    if let Some(conversation_id) = x_conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("header:x-conversation-id:{conversation_id}");
+    }
+
+    session_key_for_request(req, model, fallback_scope)
+}
+
 fn metadata_user_id_cache_key(user_id: &str) -> Option<String> {
     if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(user_id) {
         let device_id = json_string_field(&map, "device_id").unwrap_or_default();
@@ -1112,6 +1138,90 @@ mod tests {
         );
         assert_eq!(second_usage.cache_read_input_tokens, 0);
         assert_eq!(second_usage.cache_creation_input_tokens, 30_999);
+    }
+
+    #[test]
+    fn missing_metadata_uses_x_conversation_id_header() {
+        let first = request_without_metadata();
+        let second = request_without_metadata();
+
+        let first_key = session_key_for_request_with_conversation_header(
+            &first,
+            &first.model,
+            "model",
+            Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+        );
+        let second_key = session_key_for_request_with_conversation_header(
+            &second,
+            &second.model,
+            "model",
+            Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+        );
+
+        assert_eq!(
+            first_key,
+            "header:x-conversation-id:af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"
+        );
+        assert_eq!(second_key, first_key);
+    }
+
+    #[test]
+    fn metadata_user_id_takes_priority_over_x_conversation_id_header() {
+        let request = request_with_metadata_user_id(
+            "user_device-a_account__session_8bb5523b-ec7c-4540-a9ca-beb6d79f1552",
+        );
+
+        assert_eq!(
+            session_key_for_request_with_conversation_header(
+                &request,
+                &request.model,
+                "model",
+                Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+            ),
+            "metadata:user:user_device-a_account__session_8bb5523b-ec7c-4540-a9ca-beb6d79f1552"
+        );
+    }
+
+    #[test]
+    fn empty_metadata_user_id_allows_x_conversation_id_header_fallback() {
+        let request = request_with_metadata_user_id("   ");
+
+        assert_eq!(
+            session_key_for_request_with_conversation_header(
+                &request,
+                &request.model,
+                "model",
+                Some(" af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3 "),
+            ),
+            "header:x-conversation-id:af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"
+        );
+    }
+
+    #[test]
+    fn non_empty_metadata_user_id_keeps_existing_fallback_behavior() {
+        let first = request_with_metadata_user_id(
+            r#"{"session_id":"","account_uuid":"","device_id":"","user":""}"#,
+        );
+        let second = request_with_metadata_user_id(
+            r#"{"session_id":"","account_uuid":"","device_id":"","user":""}"#,
+        );
+
+        let first_key = session_key_for_request_with_conversation_header(
+            &first,
+            &first.model,
+            "model",
+            Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+        );
+        let second_key = session_key_for_request_with_conversation_header(
+            &second,
+            &second.model,
+            "model",
+            Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+        );
+
+        assert!(first_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
+        assert!(second_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
+        assert_ne!(first_key, second_key);
     }
 
     #[test]

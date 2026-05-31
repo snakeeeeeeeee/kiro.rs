@@ -16,7 +16,7 @@ use axum::{
     Json as JsonExtractor,
     body::Body,
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Json, Response},
 };
 use bytes::Bytes;
@@ -40,7 +40,8 @@ use super::types::{
 };
 use super::usage::{
     AnthropicUsage, CacheTtl, VirtualCacheUsageManager, VirtualUsageInput,
-    estimate_latest_user_input_tokens, request_cache_ttl, session_key_for_request,
+    estimate_latest_user_input_tokens, request_cache_ttl,
+    session_key_for_request_with_conversation_header,
 };
 use super::websearch;
 
@@ -131,6 +132,14 @@ fn metadata_user_id_for_log(payload: &MessagesRequest) -> Option<String> {
         .metadata
         .as_ref()
         .and_then(|metadata| metadata.user_id.clone())
+}
+
+fn x_conversation_id_for_session(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-conversation-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 /// GET /healthz
@@ -1776,6 +1785,7 @@ mod tests {
 /// 创建消息（对话）
 pub async fn post_messages(
     State(state): State<AppState>,
+    headers: HeaderMap,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
     let input_diagnostics = request_input_diagnostics(&payload);
@@ -1842,10 +1852,12 @@ pub async fn post_messages(
         client_requested_thinking,
         &runtime_settings,
     );
-    let usage_session_key = session_key_for_request(
+    let x_conversation_id = x_conversation_id_for_session(&headers);
+    let usage_session_key = session_key_for_request_with_conversation_header(
         &payload,
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
+        x_conversation_id,
     );
     let request_log = RequestLogContext::new(route, metadata_user_id, usage_session_key);
     let request_log = RequestLogContext {
@@ -1862,6 +1874,8 @@ pub async fn post_messages(
         client_account_uuid = request_log.client_account_uuid_for_log(),
         client_user = request_log.client_user_for_log(),
         client_session_id = request_log.client_session_id_for_log(),
+        x_conversation_id = x_conversation_id.unwrap_or(""),
+        x_conversation_id_present = x_conversation_id.is_some(),
         usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
     );
@@ -4725,6 +4739,7 @@ pub async fn count_tokens(
 /// - message_start 中的 input_tokens 是从 contextUsageEvent 计算的准确值
 pub async fn post_messages_cc(
     State(state): State<AppState>,
+    headers: HeaderMap,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
     let input_diagnostics = request_input_diagnostics(&payload);
@@ -4792,10 +4807,12 @@ pub async fn post_messages_cc(
         client_requested_thinking,
         &runtime_settings,
     );
-    let usage_session_key = session_key_for_request(
+    let x_conversation_id = x_conversation_id_for_session(&headers);
+    let usage_session_key = session_key_for_request_with_conversation_header(
         &payload,
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
+        x_conversation_id,
     );
     let request_log = RequestLogContext::new(route, metadata_user_id, usage_session_key);
     let request_log = RequestLogContext {
@@ -4812,6 +4829,8 @@ pub async fn post_messages_cc(
         client_account_uuid = request_log.client_account_uuid_for_log(),
         client_user = request_log.client_user_for_log(),
         client_session_id = request_log.client_session_id_for_log(),
+        x_conversation_id = x_conversation_id.unwrap_or(""),
+        x_conversation_id_present = x_conversation_id.is_some(),
         usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
     );
