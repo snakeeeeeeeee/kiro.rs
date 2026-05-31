@@ -142,6 +142,25 @@ fn x_conversation_id_for_session(headers: &HeaderMap) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+fn header_value_for_log<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+}
+
+fn usage_session_key_source(session_key: &str) -> &'static str {
+    if session_key.starts_with("metadata:") {
+        "metadata.user_id"
+    } else if session_key.starts_with("header:x-conversation-id:") {
+        "x-conversation-id"
+    } else if session_key.starts_with("fallback:") {
+        "fallback"
+    } else {
+        "unknown"
+    }
+}
+
 /// GET /healthz
 pub async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
@@ -1792,6 +1811,7 @@ pub async fn post_messages(
     let route = "/v1/messages";
     let request_id = RequestLogContext::new_request_id();
     let metadata_user_id = metadata_user_id_for_log(&payload);
+    let x_conversation_id = x_conversation_id_for_session(&headers);
     let initial_request_log = RequestLogContext::new_with_request_id(
         route,
         metadata_user_id.clone(),
@@ -1804,6 +1824,11 @@ pub async fn post_messages(
         route = initial_request_log.route,
         metadata_user_id = initial_request_log.metadata_user_id_for_log(),
         metadata_user_id_present = initial_request_log.metadata_user_id_present(),
+        x_conversation_id = x_conversation_id.unwrap_or(""),
+        x_conversation_id_present = x_conversation_id.is_some(),
+        x_user_id_present = headers.contains_key("x-user-id"),
+        x_codebuddy_request = header_value_for_log(&headers, "x-codebuddy-request"),
+        user_agent = header_value_for_log(&headers, header::USER_AGENT.as_str()),
         client_device_id = initial_request_log.client_device_id_for_log(),
         client_account_uuid = initial_request_log.client_account_uuid_for_log(),
         client_user = initial_request_log.client_user_for_log(),
@@ -1852,7 +1877,6 @@ pub async fn post_messages(
         client_requested_thinking,
         &runtime_settings,
     );
-    let x_conversation_id = x_conversation_id_for_session(&headers);
     let usage_session_key = session_key_for_request_with_conversation_header(
         &payload,
         &payload.model,
@@ -1876,6 +1900,7 @@ pub async fn post_messages(
         client_session_id = request_log.client_session_id_for_log(),
         x_conversation_id = x_conversation_id.unwrap_or(""),
         x_conversation_id_present = x_conversation_id.is_some(),
+        usage_session_key_source = usage_session_key_source(&request_log.usage_session_key),
         usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
     );
@@ -4746,6 +4771,7 @@ pub async fn post_messages_cc(
     let route = "/cc/v1/messages";
     let request_id = RequestLogContext::new_request_id();
     let metadata_user_id = metadata_user_id_for_log(&payload);
+    let x_conversation_id = x_conversation_id_for_session(&headers);
     let initial_request_log = RequestLogContext::new_with_request_id(
         route,
         metadata_user_id.clone(),
@@ -4758,6 +4784,11 @@ pub async fn post_messages_cc(
         route = initial_request_log.route,
         metadata_user_id = initial_request_log.metadata_user_id_for_log(),
         metadata_user_id_present = initial_request_log.metadata_user_id_present(),
+        x_conversation_id = x_conversation_id.unwrap_or(""),
+        x_conversation_id_present = x_conversation_id.is_some(),
+        x_user_id_present = headers.contains_key("x-user-id"),
+        x_codebuddy_request = header_value_for_log(&headers, "x-codebuddy-request"),
+        user_agent = header_value_for_log(&headers, header::USER_AGENT.as_str()),
         client_device_id = initial_request_log.client_device_id_for_log(),
         client_account_uuid = initial_request_log.client_account_uuid_for_log(),
         client_user = initial_request_log.client_user_for_log(),
@@ -4807,7 +4838,6 @@ pub async fn post_messages_cc(
         client_requested_thinking,
         &runtime_settings,
     );
-    let x_conversation_id = x_conversation_id_for_session(&headers);
     let usage_session_key = session_key_for_request_with_conversation_header(
         &payload,
         &payload.model,
@@ -4831,6 +4861,7 @@ pub async fn post_messages_cc(
         client_session_id = request_log.client_session_id_for_log(),
         x_conversation_id = x_conversation_id.unwrap_or(""),
         x_conversation_id_present = x_conversation_id.is_some(),
+        usage_session_key_source = usage_session_key_source(&request_log.usage_session_key),
         usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
     );
