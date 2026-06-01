@@ -7,6 +7,7 @@ export interface NormalizedCredentialInput {
   accessToken?: string
   expiresAt?: string
   profileArn?: string
+  provider?: string
   clientId?: string
   clientSecret?: string
   region?: string
@@ -204,6 +205,7 @@ export function normalizeCredentialInput(value: unknown): NormalizedCredentialIn
     accessToken: firstString(obj.accessToken, obj.access_token, nested.accessToken, nested.access_token),
     expiresAt: firstDateString(obj.expiresAt, obj.expires_at, nested.expiresAt, nested.expires_at),
     profileArn: firstString(obj.profileArn, obj.profile_arn, nested.profileArn, nested.profile_arn),
+    provider: firstString(obj.provider, nested.provider),
     clientId: firstString(obj.clientId, obj.client_id, nested.clientId, nested.client_id),
     clientSecret: firstString(obj.clientSecret, obj.client_secret, nested.clientSecret, nested.client_secret),
     region: firstString(obj.region, nested.region),

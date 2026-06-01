@@ -24,7 +24,7 @@ impl IdeEndpoint {
     }
 
     fn api_region<'a>(&self, ctx: &'a RequestContext<'_>) -> &'a str {
-        ctx.credentials.effective_api_region(ctx.config)
+        ctx.credentials.effective_q_api_region(ctx.config)
     }
 
     pub(crate) fn host(&self, ctx: &RequestContext<'_>) -> String {
@@ -32,6 +32,9 @@ impl IdeEndpoint {
     }
 
     pub(crate) fn x_amz_user_agent(&self, ctx: &RequestContext<'_>) -> String {
+        if ctx.credentials.uses_profileless_enterprise_q_api() {
+            return self.enterprise_user_agent(ctx);
+        }
         format!(
             "aws-sdk-js/1.0.34 KiroIDE-{}-{}",
             ctx.config.kiro_version, ctx.machine_id
@@ -39,6 +42,9 @@ impl IdeEndpoint {
     }
 
     pub(crate) fn user_agent(&self, ctx: &RequestContext<'_>) -> String {
+        if ctx.credentials.uses_profileless_enterprise_q_api() {
+            return self.enterprise_user_agent(ctx);
+        }
         format!(
             "aws-sdk-js/1.0.34 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.34 m/E KiroIDE-{}-{}",
             ctx.config.system_version,
@@ -46,6 +52,10 @@ impl IdeEndpoint {
             ctx.config.kiro_version,
             ctx.machine_id
         )
+    }
+
+    fn enterprise_user_agent(&self, ctx: &RequestContext<'_>) -> String {
+        format!("KiroIDE {} {}", ctx.config.kiro_version, ctx.machine_id)
     }
 }
 

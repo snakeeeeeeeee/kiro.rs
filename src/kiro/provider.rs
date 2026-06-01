@@ -532,6 +532,11 @@ fn map_admin_test_model(model: &str) -> Option<String> {
         }
     } else if model_lower.contains("haiku") {
         Some("claude-haiku-4.5".to_string())
+    } else if matches!(
+        model_lower.as_str(),
+        "deepseek-3.2" | "minimax-m2.5" | "minimax-m2.1" | "glm-5" | "qwen3-coder-next"
+    ) {
+        Some(model_lower)
     } else {
         None
     }
@@ -920,7 +925,7 @@ impl KiroProvider {
         };
         let url = endpoint.api_url(&rctx);
         let body = endpoint.transform_api_body(request_body, &rctx);
-        let api_region = rctx.credentials.effective_api_region(config).to_string();
+        let api_region = rctx.credentials.effective_q_api_region(config).to_string();
         let endpoint_name = endpoint.name().to_string();
 
         tracing::info!(
@@ -1028,7 +1033,7 @@ impl KiroProvider {
             tracing::info!(
                 credential_id = ctx.id,
                 endpoint = endpoint.name(),
-                api_region = rctx.credentials.effective_api_region(config),
+                api_region = rctx.credentials.effective_q_api_region(config),
                 url = %url,
                 "kiro_mcp_request_endpoint"
             );
@@ -1323,7 +1328,7 @@ impl KiroProvider {
                 model = model_for_metrics.as_str(),
                 credential_id = ctx.id,
                 endpoint = endpoint.name(),
-                api_region = rctx.credentials.effective_api_region(config),
+                api_region = rctx.credentials.effective_q_api_region(config),
                 stream = is_stream,
                 url = %url,
                 "kiro_api_request_endpoint"
@@ -1365,7 +1370,7 @@ impl KiroProvider {
                     external_model = model_for_metrics.as_str(),
                     credential_id = ctx.id,
                     endpoint = endpoint.name(),
-                    api_region = rctx.credentials.effective_api_region(config),
+                    api_region = rctx.credentials.effective_q_api_region(config),
                     kiro_version = config.kiro_version.as_str(),
                     node_version = config.node_version.as_str(),
                     system_version = config.system_version.as_str(),

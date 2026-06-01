@@ -113,6 +113,13 @@ function authLabel(value: string | null | undefined) {
   return 'Social'
 }
 
+function credentialAuthLabel(credential: CredentialStatusItem) {
+  if (credential.authMethod === 'idc' && credential.provider?.toLowerCase() === 'enterprise') {
+    return 'Enterprise'
+  }
+  return authLabel(credential.authMethod)
+}
+
 function dynamicProxyBadge(credential: CredentialStatusItem) {
   const binding = credential.dynamicProxy
   if (!binding) return <Badge variant="outline">未绑定</Badge>
@@ -247,7 +254,7 @@ export function AccountTable({
                       <td key={column.key} className="whitespace-nowrap px-4 py-4 align-middle">
                         {column.key === 'auth' && (
                           <div className="flex flex-wrap gap-1">
-                            <Badge variant="secondary">{authLabel(credential.authMethod)}</Badge>
+                            <Badge variant="secondary">{credentialAuthLabel(credential)}</Badge>
                             {credential.hasProfileArn && <Badge variant="outline">Profile</Badge>}
                           </div>
                         )}

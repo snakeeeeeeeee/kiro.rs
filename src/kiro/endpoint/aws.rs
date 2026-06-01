@@ -21,7 +21,7 @@ struct AwsStreamingEndpoint {
 
 impl AwsStreamingEndpoint {
     fn api_region<'a>(&self, ctx: &'a RequestContext<'_>) -> &'a str {
-        ctx.credentials.effective_api_region(ctx.config)
+        ctx.credentials.effective_q_api_region(ctx.config)
     }
 
     fn host(&self, ctx: &RequestContext<'_>) -> String {

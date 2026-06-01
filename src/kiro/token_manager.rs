@@ -351,7 +351,7 @@ pub(crate) async fn get_usage_limits(
     tracing::debug!("正在获取使用额度信息...");
 
     // 优先级：凭据.api_region > config.api_region > config.region
-    let region = credentials.effective_api_region(config);
+    let region = credentials.effective_q_api_region(config);
     let host = format!("q.{}.amazonaws.com", region);
     let machine_id = machine_id::generate_from_credentials(credentials, config);
     let kiro_version = &config.kiro_version;
@@ -359,10 +359,17 @@ pub(crate) async fn get_usage_limits(
     let node_version = &config.node_version;
 
     // 构建 URL
-    let mut url = format!(
-        "https://{}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
-        host
-    );
+    let mut url = if credentials.uses_profileless_enterprise_q_api() {
+        format!(
+            "https://{}/getUsageLimits?isEmailRequired=true&origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
+            host
+        )
+    } else {
+        format!(
+            "https://{}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
+            host
+        )
+    };
 
     // profileArn 是可选的
     if let Some(profile_arn) = &credentials.profile_arn {
@@ -370,11 +377,18 @@ pub(crate) async fn get_usage_limits(
     }
 
     // 构建 User-Agent headers
-    let user_agent = format!(
-        "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
-        os_name, node_version, kiro_version, machine_id
-    );
-    let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-{}-{}", kiro_version, machine_id);
+    let (user_agent, amz_user_agent) = if credentials.uses_profileless_enterprise_q_api() {
+        let ua = format!("KiroIDE {} {}", kiro_version, machine_id);
+        (ua.clone(), ua)
+    } else {
+        (
+            format!(
+                "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
+                os_name, node_version, kiro_version, machine_id
+            ),
+            format!("aws-sdk-js/1.0.0 KiroIDE-{}-{}", kiro_version, machine_id),
+        )
+    };
 
     let client = build_client(proxy, 60, config.tls_backend)?;
 
@@ -514,6 +528,8 @@ pub struct CredentialEntrySnapshot {
     pub failure_count: u32,
     /// 认证方式
     pub auth_method: Option<String>,
+    /// 登录 Provider（Enterprise / BuilderId / Google / Github 等）
+    pub provider: Option<String>,
     /// 是否有 Profile ARN
     pub has_profile_arn: bool,
     /// Token 过期时间
@@ -2280,6 +2296,7 @@ impl MultiTokenManager {
                                 }
                             })
                         },
+                        provider: e.credentials.provider.clone(),
                         has_profile_arn: e.credentials.profile_arn.is_some(),
                         expires_at: if e.credentials.is_api_key_credential() {
                             None // API Key 凭据本地不维护过期时间（服务端策略未知）
@@ -2686,6 +2703,7 @@ impl MultiTokenManager {
         });
         validated_cred.client_id = new_cred.client_id;
         validated_cred.client_secret = new_cred.client_secret;
+        validated_cred.provider = new_cred.provider;
         validated_cred.region = new_cred.region;
         validated_cred.auth_region = new_cred.auth_region;
         validated_cred.api_region = new_cred.api_region;

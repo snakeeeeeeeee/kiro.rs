@@ -114,6 +114,7 @@ const MIN_PDF_PRIMARY_TEXT_CHARS: usize = 32;
 /// - opus 4.5/4-5 → claude-opus-4.5
 /// - 其他 opus → claude-opus-4.6
 /// - 所有 haiku → claude-haiku-4.5
+/// - Kiro Power/Enterprise 可能只开放非 Claude 模型，直通 Kiro 原生模型 ID
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
 
@@ -135,6 +136,11 @@ pub fn map_model(model: &str) -> Option<String> {
         }
     } else if model_lower.contains("haiku") {
         Some("claude-haiku-4.5".to_string())
+    } else if matches!(
+        model_lower.as_str(),
+        "deepseek-3.2" | "minimax-m2.5" | "minimax-m2.1" | "glm-5" | "qwen3-coder-next"
+    ) {
+        Some(model_lower)
     } else {
         None
     }
@@ -2140,6 +2146,15 @@ mod tests {
     #[test]
     fn test_map_model_unsupported() {
         assert!(map_model("gpt-4").is_none());
+    }
+
+    #[test]
+    fn test_map_model_passes_through_kiro_native_models() {
+        assert_eq!(map_model("deepseek-3.2"), Some("deepseek-3.2".to_string()));
+        assert_eq!(
+            map_model("qwen3-coder-next"),
+            Some("qwen3-coder-next".to_string())
+        );
     }
 
     #[test]

@@ -30,6 +30,10 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_arn: Option<String>,
 
+    /// 登录 Provider（Google / Github / BuilderId / Enterprise 等）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
     /// 过期时间 (RFC3339 格式)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
@@ -242,10 +246,60 @@ impl KiroCredentials {
 
     /// 获取有效的 API Region（用于 API 请求）
     /// 优先级：凭据.api_region > config.api_region > config.region
+    ///
+    /// 这是历史通用 API region 选择逻辑。发往 Q 服务的请求应优先使用
+    /// [`Self::effective_q_api_region`]，以兼容 Enterprise IdC 无 profileArn 账号。
+    #[allow(dead_code)]
     pub fn effective_api_region<'a>(&'a self, config: &'a Config) -> &'a str {
         self.api_region
             .as_deref()
             .unwrap_or(config.effective_api_region())
+    }
+
+    /// 获取 Q API 调用使用的 Region。
+    ///
+    /// 普通账号保持旧行为；Enterprise IdC 没有 `profileArn` 时，Kiro/KAM 会使用账号的
+    /// 登录 region 调 Q API，否则上游可能走到 BuilderId/social 的 profileArn 校验分支。
+    pub fn effective_q_api_region<'a>(&'a self, config: &'a Config) -> &'a str {
+        self.api_region
+            .as_deref()
+            .or_else(|| {
+                if self.uses_profileless_enterprise_q_api() {
+                    self.region.as_deref()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(config.effective_api_region())
+    }
+
+    /// Enterprise IdC 账号与真实 Kiro IDE/KAM 一样不携带 `profileArn`。
+    ///
+    /// 对历史已导入账号做兼容：如果是 IdC、没有 profileArn，且带 OIDC client 信息，
+    /// 也按 Enterprise 无 profileArn 请求形态处理。BuilderId 若需要工作应显式带
+    /// BuilderId 的固定 profileArn。
+    pub fn uses_profileless_enterprise_q_api(&self) -> bool {
+        if self
+            .profile_arn
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return false;
+        }
+
+        if self
+            .provider
+            .as_deref()
+            .is_some_and(|provider| provider.eq_ignore_ascii_case("Enterprise"))
+        {
+            return true;
+        }
+
+        let is_idc = self
+            .auth_method
+            .as_deref()
+            .is_some_and(|method| method.eq_ignore_ascii_case("idc"));
+        is_idc && self.client_id.is_some() && self.client_secret.is_some()
     }
 
     /// 获取有效的代理配置
@@ -391,6 +445,7 @@ mod tests {
             access_token: Some("token".to_string()),
             refresh_token: None,
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
             client_id: None,
@@ -514,6 +569,7 @@ mod tests {
             access_token: None,
             refresh_token: Some("test".to_string()),
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: None,
             client_id: None,
@@ -550,6 +606,7 @@ mod tests {
             access_token: None,
             refresh_token: Some("test".to_string()),
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: None,
             client_id: None,
@@ -669,6 +726,7 @@ mod tests {
             access_token: Some("token".to_string()),
             refresh_token: Some("refresh".to_string()),
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
             client_id: None,
@@ -893,6 +951,52 @@ mod tests {
 
         assert_eq!(creds.effective_auth_region(&config), "auth-only");
         assert_eq!(creds.effective_api_region(&config), "api-only");
+    }
+
+    #[test]
+    fn enterprise_idc_without_profile_arn_uses_credential_region_for_q_api() {
+        let mut config = Config::default();
+        config.region = "config-region".to_string();
+        config.api_region = Some("config-api-region".to_string());
+
+        let mut creds = KiroCredentials::default();
+        creds.auth_method = Some("idc".to_string());
+        creds.provider = Some("Enterprise".to_string());
+        creds.region = Some("us-east-1".to_string());
+
+        assert!(creds.uses_profileless_enterprise_q_api());
+        assert_eq!(creds.effective_q_api_region(&config), "us-east-1");
+        assert_eq!(creds.effective_api_region(&config), "config-api-region");
+    }
+
+    #[test]
+    fn explicit_api_region_still_wins_for_enterprise_q_api() {
+        let mut config = Config::default();
+        config.region = "config-region".to_string();
+
+        let mut creds = KiroCredentials::default();
+        creds.auth_method = Some("idc".to_string());
+        creds.provider = Some("Enterprise".to_string());
+        creds.region = Some("us-east-1".to_string());
+        creds.api_region = Some("eu-central-1".to_string());
+
+        assert_eq!(creds.effective_q_api_region(&config), "eu-central-1");
+    }
+
+    #[test]
+    fn profile_arn_disables_profileless_enterprise_q_api_mode() {
+        let mut config = Config::default();
+        config.region = "config-region".to_string();
+        config.api_region = Some("config-api-region".to_string());
+
+        let mut creds = KiroCredentials::default();
+        creds.auth_method = Some("idc".to_string());
+        creds.provider = Some("Enterprise".to_string());
+        creds.region = Some("us-east-1".to_string());
+        creds.profile_arn = Some("arn:aws:codewhisperer:us-east-1:123:profile/test".to_string());
+
+        assert!(!creds.uses_profileless_enterprise_q_api());
+        assert_eq!(creds.effective_q_api_region(&config), "config-api-region");
     }
 
     // ============ 凭据级代理优先级测试 ============

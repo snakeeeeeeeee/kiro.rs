@@ -111,6 +111,7 @@ impl AdminService {
                 is_current: entry.id == snapshot.current_id,
                 expires_at: entry.expires_at,
                 auth_method: entry.auth_method,
+                provider: entry.provider,
                 has_profile_arn: entry.has_profile_arn,
                 refresh_token_hash: entry.refresh_token_hash,
                 api_key_hash: entry.api_key_hash,
@@ -725,17 +726,29 @@ impl AdminService {
 
         // 构建凭据对象
         let email = req.email.clone();
+        let region = req.region.or_else(|| {
+            let is_enterprise = req
+                .provider
+                .as_deref()
+                .is_some_and(|provider| provider.eq_ignore_ascii_case("Enterprise"));
+            if is_enterprise && req.profile_arn.as_deref().is_none_or(str::is_empty) {
+                req.auth_region.clone()
+            } else {
+                None
+            }
+        });
         let new_cred = KiroCredentials {
             id: None,
             access_token: req.access_token,
             refresh_token: req.refresh_token,
             profile_arn: req.profile_arn,
+            provider: req.provider,
             expires_at: req.expires_at,
             auth_method: Some(req.auth_method),
             client_id: req.client_id,
             client_secret: req.client_secret,
             priority: req.priority,
-            region: req.region,
+            region,
             auth_region: req.auth_region,
             api_region: req.api_region,
             machine_id: req.machine_id,

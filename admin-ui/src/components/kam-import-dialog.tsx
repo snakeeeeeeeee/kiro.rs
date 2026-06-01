@@ -179,6 +179,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
           const clientId = account.clientId?.trim() || undefined
           const clientSecret = account.clientSecret?.trim() || undefined
           const authMethod = clientId && clientSecret ? 'idc' : 'social'
+          const provider = account.provider?.trim() || (authMethod === 'idc' ? 'Enterprise' : undefined)
 
           // idc 模式下必须同时提供 clientId 和 clientSecret
           if (authMethod === 'social' && (clientId || clientSecret)) {
@@ -188,6 +189,8 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
           const addedCred = await addCredential({
             refreshToken: token,
             authMethod,
+            provider,
+            region: account.region?.trim() || undefined,
             authRegion: account.authRegion?.trim() || account.region?.trim() || undefined,
             apiRegion: account.apiRegion?.trim() || undefined,
             clientId,

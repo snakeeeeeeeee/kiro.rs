@@ -522,3 +522,7 @@
 - Validation passed: `cargo test compressed_context_reset_keeps_virtual_accounting_total -- --nocapture`, `cargo test stream_usage_commit_rebuilds_with_final_compressed_context -- --nocapture`, `cargo test anthropic::usage::tests -- --nocapture`, `cargo test anthropic::stream::tests -- --nocapture`, and `cargo check`.
 - Follow-up from screenshot: fixed missing-metadata `virtualCacheFallbackScope: "model"` to reuse `fallback:model:{model}` instead of appending a random UUID. Added `missing_metadata_model_fallback_accumulates_virtual_cache` and `missing_metadata_none_fallback_uses_request_isolation`.
 - Final validation after fallback fix passed: `cargo test anthropic::usage::tests -- --nocapture`, `cargo test anthropic::stream::tests -- --nocapture`, `cargo check`, and full `cargo test` (341 tests).
+
+- 2026-06-01 CST: Resumed Kiro Power comparison against /Users/zhangyu/code/test/kiro-account-manager. Found KAM does not synthesize a profileArn for Enterprise; it stores IdC metadata and sends Enterprise Q API calls without profileArn. Preparing a redacted KAM-shaped upstream probe.
+
+- 2026-06-01 CST: Implemented KAM-compatible Enterprise IdC behavior: persist provider, preserve region, use Enterprise no-profileArn Q API shape with isEmailRequired=true and KiroIDE UA, and pass through Kiro native model IDs. Validation passed: cargo fmt -- --check, cargo check, cargo test -q (366), pnpm --dir admin-ui build, cargo build, isolated live import/balance/message smoke.
