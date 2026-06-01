@@ -13,10 +13,12 @@ import { useCredentials, useAddCredential, useDeleteCredential } from '@/hooks/u
 import { getCredentialBalance, setCredentialDisabled } from '@/api/credentials'
 import {
   credentialDisplayName,
+  formatCredentialUsageSnapshot,
+  hasCredentialImportSnapshot,
   parseCredentialImportInput,
   type NormalizedCredentialInput,
 } from '@/lib/credential-import'
-import { extractErrorMessage, sha256Hex } from '@/lib/utils'
+import { extractErrorMessage, parseError, sha256Hex } from '@/lib/utils'
 
 interface BatchImportDialogProps {
   open: boolean
@@ -27,6 +29,7 @@ interface VerificationResult {
   index: number
   status: 'pending' | 'checking' | 'verifying' | 'verified' | 'duplicate' | 'failed'
   error?: string
+  warning?: string
   usage?: string
   email?: string
   credentialId?: number
@@ -34,7 +37,10 @@ interface VerificationResult {
   rollbackError?: string
 }
 
-
+function balanceWarningMessage(error: unknown): string {
+  const parsed = parseError(error)
+  return `余额实时刷新失败，已使用导入快照。${parsed.detail || parsed.title}`
+}
 
 export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps) {
   const [jsonInput, setJsonInput] = useState('')
@@ -244,18 +250,31 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             // 延迟 1 秒
             await new Promise(resolve => setTimeout(resolve, 1000))
 
-            // 验活
-            const balance = await getCredentialBalance(addedCred.credentialId)
+            // 验活；如果导入文件自带额度/订阅快照，实时余额失败时保留已添加凭据。
+            const importedUsage = formatCredentialUsageSnapshot(cred)
+            let usage = importedUsage
+            let warning: string | undefined
+
+            try {
+              const balance = await getCredentialBalance(addedCred.credentialId)
+              usage = `${balance.currentUsage}/${balance.usageLimit}`
+            } catch (error) {
+              if (!hasCredentialImportSnapshot(cred)) {
+                throw error
+              }
+              warning = balanceWarningMessage(error)
+            }
 
             successCount++
             existingApiKeyHashes.add(credHash)
-            setCurrentProcessing(`验活成功: ${addedCred.email || displayName}`)
+            setCurrentProcessing(warning ? `导入成功，余额待刷新: ${addedCred.email || displayName}` : `验活成功: ${addedCred.email || displayName}`)
             setResults(prev => {
               const newResults = [...prev]
               newResults[i] = {
                 ...newResults[i],
                 status: 'verified',
-                usage: `${balance.currentUsage}/${balance.usageLimit}`,
+                usage,
+                warning,
                 email: addedCred.email || displayName,
                 credentialId: addedCred.credentialId
               }
@@ -306,19 +325,32 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
           // 延迟 1 秒
           await new Promise(resolve => setTimeout(resolve, 1000))
 
-          // 验活
-          const balance = await getCredentialBalance(addedCred.credentialId)
+          // 验活；如果导入文件自带额度/订阅快照，实时余额失败时保留已添加凭据。
+          const importedUsage = formatCredentialUsageSnapshot(cred)
+          let usage = importedUsage
+          let warning: string | undefined
+
+          try {
+            const balance = await getCredentialBalance(addedCred.credentialId)
+            usage = `${balance.currentUsage}/${balance.usageLimit}`
+          } catch (error) {
+            if (!hasCredentialImportSnapshot(cred)) {
+              throw error
+            }
+            warning = balanceWarningMessage(error)
+          }
 
           // 验活成功
           successCount++
           existingOauthHashes.add(credHash)
-          setCurrentProcessing(`验活成功: ${addedCred.email || displayName}`)
+          setCurrentProcessing(warning ? `导入成功，余额待刷新: ${addedCred.email || displayName}` : `验活成功: ${addedCred.email || displayName}`)
           setResults(prev => {
             const newResults = [...prev]
             newResults[i] = {
               ...newResults[i],
               status: 'verified',
-              usage: `${balance.currentUsage}/${balance.usageLimit}`,
+              usage,
+              warning,
               email: addedCred.email || displayName,
               credentialId: addedCred.credentialId
             }
@@ -406,6 +438,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
       case 'verifying':
         return '验活中...'
       case 'verified':
+        if (result.warning) return '导入成功（余额待刷新）'
         return '验活成功'
       case 'duplicate':
         return '重复凭据'
@@ -506,6 +539,11 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
                         {result.error && (
                           <div className="text-xs text-red-600 dark:text-red-400 mt-1">
                             {result.error}
+                          </div>
+                        )}
+                        {result.warning && (
+                          <div className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
+                            {result.warning}
                           </div>
                         )}
                         {result.rollbackError && (

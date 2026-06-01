@@ -956,6 +956,9 @@ impl AdminService {
             msg.contains("已被限流") ||
             msg.contains("服务器错误") ||
             msg.contains("Token 刷新失败") ||
+            msg.contains("获取使用额度失败") ||
+            msg.contains("认证失败") ||
+            msg.contains("Invalid profileArn") ||
             msg.contains("暂时不可用") ||
             // 网络错误（reqwest 错误）
             msg.contains("error trying to connect") ||

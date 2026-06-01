@@ -259,6 +259,29 @@ export function parseCredentialImportInput(raw: string): NormalizedCredentialInp
     .filter(credential => Boolean(credential.refreshToken || credential.kiroApiKey || credential.accessToken))
 }
 
+export function formatCredentialUsageSnapshot(credential: NormalizedCredentialInput): string | undefined {
+  const current = credential.usageCurrent
+  const limit = credential.usageLimit
+
+  if (typeof current === 'number' && Number.isFinite(current) && typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+    return `${current}/${limit}`
+  }
+
+  if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+    return `0/${limit}`
+  }
+
+  if (typeof current === 'number' && Number.isFinite(current) && current > 0) {
+    return `${current}/未知`
+  }
+
+  return undefined
+}
+
+export function hasCredentialImportSnapshot(credential: NormalizedCredentialInput): boolean {
+  return Boolean(formatCredentialUsageSnapshot(credential) || credential.subscriptionTitle?.trim())
+}
+
 export function credentialDisplayName(credential: NormalizedCredentialInput, fallback: string) {
   return credential.email || credential.label || credential.nickname || fallback
 }

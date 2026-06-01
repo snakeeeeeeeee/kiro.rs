@@ -13,10 +13,12 @@ import { useCredentials, useAddCredential, useDeleteCredential } from '@/hooks/u
 import { getCredentialBalance, setCredentialDisabled } from '@/api/credentials'
 import {
   credentialDisplayName,
+  formatCredentialUsageSnapshot,
+  hasCredentialImportSnapshot,
   parseCredentialImportInput,
   type NormalizedCredentialInput,
 } from '@/lib/credential-import'
-import { extractErrorMessage, sha256Hex } from '@/lib/utils'
+import { extractErrorMessage, parseError, sha256Hex } from '@/lib/utils'
 
 interface KamImportDialogProps {
   open: boolean
@@ -27,6 +29,7 @@ interface VerificationResult {
   index: number
   status: 'pending' | 'checking' | 'verifying' | 'verified' | 'duplicate' | 'failed' | 'skipped'
   error?: string
+  warning?: string
   usage?: string
   email?: string
   credentialId?: number
@@ -41,6 +44,11 @@ function parseKamJson(raw: string): NormalizedCredentialInput[] {
     throw new Error('没有包含有效 refreshToken 的账号')
   }
   return accounts
+}
+
+function balanceWarningMessage(error: unknown): string {
+  const parsed = parseError(error)
+  return `余额实时刷新失败，已使用导入快照。${parsed.detail || parsed.title}`
 }
 
 export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
@@ -206,17 +214,31 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
 
           await new Promise(resolve => setTimeout(resolve, 1000))
 
-          const balance = await getCredentialBalance(addedCred.credentialId)
+          // 验活；如果导入文件自带额度/订阅快照，实时余额失败时保留已添加账号。
+          const importedUsage = formatCredentialUsageSnapshot(account)
+          let usage = importedUsage
+          let warning: string | undefined
+
+          try {
+            const balance = await getCredentialBalance(addedCred.credentialId)
+            usage = `${balance.currentUsage}/${balance.usageLimit}`
+          } catch (error) {
+            if (!hasCredentialImportSnapshot(account)) {
+              throw error
+            }
+            warning = balanceWarningMessage(error)
+          }
 
           successCount++
           existingTokenHashes.add(tokenHash)
-          setCurrentProcessing(`验活成功: ${addedCred.email || displayName}`)
+          setCurrentProcessing(warning ? `导入成功，余额待刷新: ${addedCred.email || displayName}` : `验活成功: ${addedCred.email || displayName}`)
           setResults(prev => {
             const next = [...prev]
             next[i] = {
               ...next[i],
               status: 'verified',
-              usage: `${balance.currentUsage}/${balance.usageLimit}`,
+              usage,
+              warning,
               email: addedCred.email || displayName,
               credentialId: addedCred.credentialId,
             }
@@ -295,7 +317,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
       case 'pending': return '等待中'
       case 'checking': return '检查重复...'
       case 'verifying': return '验活中...'
-      case 'verified': return '验活成功'
+      case 'verified': return result.warning ? '导入成功（余额待刷新）' : '验活成功'
       case 'duplicate': return '重复凭据'
       case 'skipped': return '已跳过（error 状态）'
       case 'failed':
@@ -420,6 +442,9 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
                         )}
                         {result.error && (
                           <div className="text-xs text-red-600 dark:text-red-400 mt-1">{result.error}</div>
+                        )}
+                        {result.warning && (
+                          <div className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">{result.warning}</div>
                         )}
                         {result.rollbackError && (
                           <div className="text-xs text-red-600 dark:text-red-400 mt-1">回滚失败: {result.rollbackError}</div>

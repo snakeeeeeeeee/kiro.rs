@@ -218,6 +218,13 @@
 ## Prompt Leak Probe Check
 - The existing `scripts/prompt_leak_conversation_probe.py` is a multi-turn black-box diagnostic. It asks for hidden/system/developer instructions and scores responses against leak patterns such as `Claude Code`, `system prompt`, `developer`, `working directory`, `tool`, and known Claude metadata strings.
 - Against local Docker with current `cc_max_like` settings, the five scripted turns all returned `UNAVAILABLE`, so the script reported no leak signal.
+
+## Kiro Power Import 400 Investigation
+- The provided Kiro Power export is a wrapper object with `accounts: []`, and each account has nested `credentials` plus top-level metadata such as `email`, `subscription`, `usage`, `status`, `id`, `machineId`, and millisecond timestamps.
+- Sensitive credential fields are present in the attachment, so debugging output must stay structural/redacted.
+- Direct `POST /api/admin/credentials` with the normalized IdC fields succeeds locally. The failing step is the import dialog's immediate balance refresh.
+- The account is imported without `profileArn`; the later `GET /api/admin/credentials/:id/balance` call reaches upstream and returns `400 Bad Request {"message":"Invalid profileArn."}`. The import dialogs previously treated that balance-refresh failure as account verification failure and rolled back the already-added credential.
+- The provided export already includes usable local subscription/usage snapshot values (`KIRO POWER`, `0/10000`), so the safer behavior is to keep the successfully added credential and show a balance-refresh warning until a manual balance refresh works.
 - Additional direct probes that asked for the gateway-added identity compatibility text did not reveal the internal `身份兼容说明` prefix or proxy/Kiro/AWS/Amazon details.
 - Caveat: the script treats `Claude Code` as a leak pattern in general. Our identity normalization intentionally exposes Claude Code as public identity wording for identity probes, so future leak analysis should distinguish public identity口径 from private instruction leakage.
 

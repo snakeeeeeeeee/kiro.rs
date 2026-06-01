@@ -197,3 +197,9 @@ Current extension: add a default-off global target cache reuse ratio that uses r
 - [completed] Patch stream usage commit so compressed context sizes update the ledger.
 - [completed] Add regression coverage for compressed stream context reset.
 - [completed] Run targeted and broader validation.
+
+## Kiro Power Import 400 Investigation
+- [completed] Reproduce the Admin import failure with the provided Kiro Power export shape.
+- [completed] Identify whether the 400 comes from frontend normalization, Admin request validation, or token verification.
+- [completed] Patch the narrow compatibility issue and add regression coverage.
+- [completed] Verify by local API/UI import without exposing imported secrets.

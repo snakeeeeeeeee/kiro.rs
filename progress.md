@@ -1,6 +1,10 @@
 # Progress
 
 ## Session Log
+- 2026-06-01 CST: Started investigating Admin import HTTP 400 for a provided Kiro Power account export. Read the attachment structurally only; it contains real OAuth/IdC secrets, so later logs and responses should avoid printing credential values.
+- 2026-06-01 CST: Reproduced the real failure path on isolated local port 18990. Add credential returned 200; balance refresh returned upstream `Invalid profileArn`, which explained the UI rollback/400 report.
+- 2026-06-01 CST: Patched batch and KAM import dialogs so an add-success + balance-refresh-failure keeps the credential when the import file carries usage/subscription snapshot metadata, and displays a warning instead of rolling back.
+- 2026-06-01 CST: Validation passed: `cargo fmt -- --check`, `cargo check`, `cargo test -q` (362 tests), `pnpm --dir admin-ui build`, isolated API balance-error check, and in-app browser KAM import UI smoke.
 - 2026-05-22 CST: Started implementation of default-off global target cache reuse ratio. Current git only has pre-existing untracked `scripts/prompt_leak_conversation_probe.py` and `tmp/`; this work will not touch them.
 - 2026-05-17 04:53 CST: User reported server A/B result that known commit `1ba06f6` passes current CCTest LLM fingerprint validation, while `3a8d4ff` did not. Started comparing `1ba06f6..HEAD` for likely regression causes.
 - Started implementing the approved Opus 4.6 / Sonnet 4.6 compatibility plan. Initial code read confirmed no source edits existed yet; untracked `scripts/prompt_leak_conversation_probe.py` and `tmp/` are treated as user artifacts and will not be touched.
