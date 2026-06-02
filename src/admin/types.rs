@@ -95,6 +95,10 @@ pub struct CredentialStatusItem {
     pub max_concurrent_override: Option<usize>,
     /// 单账号 RPM 覆盖值
     pub rpm_override: Option<u32>,
+    /// Turbo 模式（off/race）
+    pub turbo_mode: String,
+    /// Turbo 并发倍数
+    pub turbo_fanout: usize,
     /// 当前生效 RPM
     pub effective_rpm: u32,
     /// 是否使用全局默认策略
@@ -234,6 +238,8 @@ pub struct RuntimeCredentialStatus {
     pub max_concurrent: usize,
     pub max_concurrent_override: Option<usize>,
     pub rpm_override: Option<u32>,
+    pub turbo_mode: String,
+    pub turbo_fanout: usize,
     pub effective_rpm: u32,
     pub uses_default_policy: bool,
     pub cooldown_until: Option<String>,
@@ -267,6 +273,10 @@ pub struct SetPriorityRequest {
 pub struct SetCredentialPolicyRequest {
     pub max_concurrent_override: Option<usize>,
     pub rpm_override: Option<u32>,
+    #[serde(default = "default_turbo_mode")]
+    pub turbo_mode: String,
+    #[serde(default = "default_turbo_fanout")]
+    pub turbo_fanout: usize,
     pub allow_overage: bool,
     pub overage_weight: u32,
 }
@@ -277,8 +287,20 @@ pub struct BatchCredentialPolicyRequest {
     pub ids: Vec<u64>,
     pub max_concurrent_override: Option<usize>,
     pub rpm_override: Option<u32>,
+    #[serde(default = "default_turbo_mode")]
+    pub turbo_mode: String,
+    #[serde(default = "default_turbo_fanout")]
+    pub turbo_fanout: usize,
     pub allow_overage: bool,
     pub overage_weight: u32,
+}
+
+fn default_turbo_mode() -> String {
+    "off".to_string()
+}
+
+fn default_turbo_fanout() -> usize {
+    1
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,5 +562,38 @@ impl AdminErrorResponse {
 
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::new("internal_error", message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatchCredentialPolicyRequest, SetCredentialPolicyRequest};
+
+    #[test]
+    fn policy_request_defaults_turbo_fields() {
+        let single: SetCredentialPolicyRequest = serde_json::from_str(
+            r#"{
+                "maxConcurrentOverride": null,
+                "rpmOverride": null,
+                "allowOverage": false,
+                "overageWeight": 1
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(single.turbo_mode, "off");
+        assert_eq!(single.turbo_fanout, 1);
+
+        let batch: BatchCredentialPolicyRequest = serde_json::from_str(
+            r#"{
+                "ids": [1, 2],
+                "maxConcurrentOverride": null,
+                "rpmOverride": null,
+                "allowOverage": false,
+                "overageWeight": 1
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(batch.turbo_mode, "off");
+        assert_eq!(batch.turbo_fanout, 1);
     }
 }

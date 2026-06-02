@@ -1,4 +1,4 @@
-import { Edit3, Globe2, Play, RefreshCw, RotateCw, Snowflake, Trash2 } from 'lucide-react'
+import { Edit3, Globe2, Play, RefreshCw, RotateCw, Snowflake, Trash2, Zap } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -160,6 +160,10 @@ function quotaStatusBadge(credential: CredentialStatusItem, allowOverUsage: bool
   return <Badge variant="warning">超额可用</Badge>
 }
 
+function turboEnabled(credential: CredentialStatusItem) {
+  return credential.turboMode === 'race' && credential.turboFanout > 1
+}
+
 export function AccountTable({
   credentials,
   allowOverUsage,
@@ -233,9 +237,10 @@ export function AccountTable({
                 const balance = balanceMap.get(credential.id)
                 const quota = quotaView(credential, balance)
                 const isBalanceLoading = loadingBalanceIds.has(credential.id)
+                const isTurbo = turboEnabled(credential)
                 return (
-                  <tr key={credential.id} className="border-b hover:bg-muted/40">
-                    <td className="sticky left-0 z-10 bg-card px-4 py-4">
+                  <tr key={credential.id} className={`border-b hover:bg-muted/40 ${isTurbo ? 'bg-orange-50/50' : ''}`}>
+                    <td className={`sticky left-0 z-10 px-4 py-4 ${isTurbo ? 'border-l-4 border-orange-500 bg-orange-50' : 'bg-card'}`}>
                       <input
                         type="checkbox"
                         className="h-4 w-4 rounded border-input"
@@ -244,10 +249,16 @@ export function AccountTable({
                         aria-label={`选择 ${credentialName(credential)}`}
                       />
                     </td>
-                    <td className="sticky left-12 z-10 min-w-[260px] bg-card px-4 py-4">
+                    <td className={`sticky left-12 z-10 min-w-[260px] px-4 py-4 ${isTurbo ? 'bg-orange-50' : 'bg-card'}`}>
                       <div className="space-y-1">
                         <div className="font-medium text-foreground">{credentialName(credential)}</div>
                         <div className="text-xs text-muted-foreground">{credentialSecondaryName(credential)}</div>
+                        {isTurbo && (
+                          <Badge className="border-orange-200 bg-orange-500 text-white hover:bg-orange-500/90">
+                            <Zap className="mr-1 h-3 w-3" />
+                            TURBO x{credential.turboFanout}
+                          </Badge>
+                        )}
                       </div>
                     </td>
                     {columns.map(column => (
@@ -315,10 +326,15 @@ export function AccountTable({
                         )}
                         {column.key === 'dispatch' && dispatchBadge(credential)}
                         {column.key === 'concurrency' && (
-                          <span className={credential.inFlight >= credential.maxConcurrent ? 'font-semibold text-yellow-600' : 'font-medium'}>
-                            {credential.inFlight} / {credential.maxConcurrent}
-                            {credential.maxConcurrentOverride != null && <span className="ml-1 text-xs text-muted-foreground">覆盖</span>}
-                          </span>
+                          <div className="space-y-1">
+                            <span className={credential.inFlight >= credential.maxConcurrent ? 'font-semibold text-yellow-600' : 'font-medium'}>
+                              {credential.inFlight} / {credential.maxConcurrent}
+                              {credential.maxConcurrentOverride != null && <span className="ml-1 text-xs text-muted-foreground">覆盖</span>}
+                            </span>
+                            {isTurbo && (
+                              <div className="text-xs font-medium text-orange-700">Turbo x{credential.turboFanout}</div>
+                            )}
+                          </div>
                         )}
                         {column.key === 'rpm' && (
                           <span className="font-medium">

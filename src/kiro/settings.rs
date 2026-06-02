@@ -116,6 +116,18 @@ pub struct CredentialPolicy {
     pub rpm_override: Option<u32>,
     pub allow_overage: bool,
     pub overage_weight: u32,
+    #[serde(default = "default_turbo_mode")]
+    pub turbo_mode: String,
+    #[serde(default = "default_turbo_fanout")]
+    pub turbo_fanout: usize,
+}
+
+fn default_turbo_mode() -> String {
+    "off".to_string()
+}
+
+fn default_turbo_fanout() -> usize {
+    1
 }
 
 impl RuntimeSettings {
@@ -477,6 +489,8 @@ impl CredentialPolicy {
             rpm_override: None,
             allow_overage: false,
             overage_weight: 1,
+            turbo_mode: default_turbo_mode(),
+            turbo_fanout: default_turbo_fanout(),
         }
     }
 
@@ -496,6 +510,8 @@ impl CredentialPolicy {
             && self.rpm_override.is_none()
             && !self.allow_overage
             && self.effective_overage_weight() == 1
+            && self.effective_turbo_mode() == "off"
+            && self.effective_turbo_fanout() == 1
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -505,11 +521,43 @@ impl CredentialPolicy {
         if let Some(value) = self.rpm_override {
             validate_rpm("rpmOverride", value)?;
         }
+        if !(1..=10).contains(&self.overage_weight) {
+            anyhow::bail!("overageWeight 必须在 1..10 范围内");
+        }
+        let turbo_mode = self.effective_turbo_mode();
+        if turbo_mode != "off" && turbo_mode != "race" {
+            anyhow::bail!("turboMode 必须是 'off' 或 'race'");
+        }
+        if turbo_mode == "race" && !(2..=5).contains(&self.turbo_fanout) {
+            anyhow::bail!("turboFanout 必须在 2..5 范围内");
+        }
+        if turbo_mode == "off" && self.turbo_fanout > 5 {
+            anyhow::bail!("turboFanout 不能超过 5");
+        }
         Ok(())
     }
 
     pub fn effective_overage_weight(&self) -> u32 {
         self.overage_weight.clamp(1, 10)
+    }
+
+    pub fn effective_turbo_mode(&self) -> &str {
+        let mode = self.turbo_mode.trim();
+        if mode.eq_ignore_ascii_case("race") {
+            "race"
+        } else if mode.eq_ignore_ascii_case("off") || mode.is_empty() {
+            "off"
+        } else {
+            "__invalid__"
+        }
+    }
+
+    pub fn effective_turbo_fanout(&self) -> usize {
+        if self.effective_turbo_mode() == "race" {
+            self.turbo_fanout.clamp(2, 5)
+        } else {
+            1
+        }
     }
 }
 
@@ -957,6 +1005,31 @@ mod tests {
     fn same_account_retry_rule_validation_rejects_bad_status() {
         let invalid = rule("599-500", None);
         assert!(validate_same_account_retry_rules(&[invalid]).is_err());
+    }
+
+    #[test]
+    fn credential_policy_turbo_defaults_and_validation() {
+        let default_policy = CredentialPolicy::default();
+        assert_eq!(default_policy.effective_turbo_mode(), "off");
+        assert_eq!(default_policy.effective_turbo_fanout(), 1);
+        assert!(default_policy.uses_default_policy());
+
+        let race = CredentialPolicy {
+            turbo_mode: "race".to_string(),
+            turbo_fanout: 3,
+            ..CredentialPolicy::default()
+        };
+        assert!(race.validate().is_ok());
+        assert_eq!(race.effective_turbo_mode(), "race");
+        assert_eq!(race.effective_turbo_fanout(), 3);
+        assert!(!race.uses_default_policy());
+
+        let invalid = CredentialPolicy {
+            turbo_mode: "race".to_string(),
+            turbo_fanout: 1,
+            ..CredentialPolicy::default()
+        };
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

@@ -136,6 +136,8 @@ impl AdminService {
                 max_concurrent: entry.max_concurrent,
                 max_concurrent_override: entry.max_concurrent_override,
                 rpm_override: entry.rpm_override,
+                turbo_mode: entry.turbo_mode,
+                turbo_fanout: entry.turbo_fanout,
                 effective_rpm: entry.effective_rpm,
                 uses_default_policy: entry.uses_default_policy,
                 cooldown_until: entry.cooldown_until,
@@ -249,6 +251,8 @@ impl AdminService {
                     max_concurrent: entry.max_concurrent,
                     max_concurrent_override: entry.max_concurrent_override,
                     rpm_override: entry.rpm_override,
+                    turbo_mode: entry.turbo_mode,
+                    turbo_fanout: entry.turbo_fanout,
                     effective_rpm: entry.effective_rpm,
                     uses_default_policy: entry.uses_default_policy,
                     cooldown_until: entry.cooldown_until,
@@ -576,12 +580,21 @@ impl AdminService {
         let policy = CredentialPolicy {
             max_concurrent_override: req.max_concurrent_override,
             rpm_override: req.rpm_override,
+            turbo_mode: req.turbo_mode,
+            turbo_fanout: req.turbo_fanout,
             allow_overage: req.allow_overage,
             overage_weight: req.overage_weight,
         };
         self.token_manager
-            .set_policy(id, policy)
-            .map_err(|e| self.classify_error(e, id))
+            .set_policy(id, policy.clone())
+            .map_err(|e| self.classify_error(e, id))?;
+        tracing::info!(
+            credential_id = id,
+            turbo_mode = policy.effective_turbo_mode(),
+            turbo_fanout = policy.effective_turbo_fanout(),
+            "admin_credential_policy_update"
+        );
+        Ok(())
     }
 
     pub fn set_policy_batch(
@@ -596,12 +609,21 @@ impl AdminService {
         let policy = CredentialPolicy {
             max_concurrent_override: req.max_concurrent_override,
             rpm_override: req.rpm_override,
+            turbo_mode: req.turbo_mode,
+            turbo_fanout: req.turbo_fanout,
             allow_overage: req.allow_overage,
             overage_weight: req.overage_weight,
         };
         self.token_manager
-            .set_policy_batch(&req.ids, policy)
-            .map_err(|e| AdminServiceError::InvalidCredential(e.to_string()))
+            .set_policy_batch(&req.ids, policy.clone())
+            .map_err(|e| AdminServiceError::InvalidCredential(e.to_string()))?;
+        tracing::info!(
+            credential_ids = ?req.ids,
+            turbo_mode = policy.effective_turbo_mode(),
+            turbo_fanout = policy.effective_turbo_fanout(),
+            "admin_credential_policy_batch_update"
+        );
+        Ok(())
     }
 
     pub fn clear_cooldown(&self, id: u64) -> Result<(), AdminServiceError> {

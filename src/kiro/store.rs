@@ -79,6 +79,8 @@ impl KiroStore {
                 rpm_override INTEGER NULL,
                 allow_overage INTEGER NOT NULL DEFAULT 0,
                 overage_weight INTEGER NOT NULL DEFAULT 1,
+                turbo_mode TEXT NOT NULL DEFAULT 'off',
+                turbo_fanout INTEGER NOT NULL DEFAULT 1,
                 failure_count INTEGER NOT NULL DEFAULT 0,
                 refresh_failure_count INTEGER NOT NULL DEFAULT 0,
                 success_count INTEGER NOT NULL DEFAULT 0,
@@ -129,6 +131,18 @@ impl KiroStore {
             &conn,
             "credentials",
             "overage_weight",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "credentials",
+            "turbo_mode",
+            "TEXT NOT NULL DEFAULT 'off'",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "credentials",
+            "turbo_fanout",
             "INTEGER NOT NULL DEFAULT 1",
         )?;
         Ok(())
@@ -250,7 +264,8 @@ impl KiroStore {
         let mut stmt = conn.prepare(
             r#"
             SELECT data_json, max_concurrent_override, rpm_override, allow_overage,
-                   overage_weight, failure_count, refresh_failure_count, success_count,
+                   overage_weight, turbo_mode, turbo_fanout,
+                   failure_count, refresh_failure_count, success_count,
                    last_used_at, disabled_reason
             FROM credentials
             ORDER BY COALESCE(json_extract(data_json, '$.priority'), 0), id
@@ -285,6 +300,8 @@ impl KiroStore {
                 rpm_override = ?3,
                 allow_overage = ?4,
                 overage_weight = ?5,
+                turbo_mode = ?6,
+                turbo_fanout = ?7,
                 data_json = CASE
                     WHEN ?4 != 0 THEN json_set(data_json,
                         '$.allowOverage', json('true'),
@@ -304,7 +321,9 @@ impl KiroStore {
                 policy.max_concurrent_override.map(|v| v as i64),
                 policy.rpm_override.map(|v| v as i64),
                 bool_to_i64(policy.allow_overage),
-                policy.effective_overage_weight() as i64
+                policy.effective_overage_weight() as i64,
+                policy.effective_turbo_mode(),
+                policy.effective_turbo_fanout() as i64
             ],
         )?;
         if updated == 0 {
@@ -1043,6 +1062,8 @@ fn stored_credential_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
         rpm_override: opt_i64_to_u32(row.get(2)?),
         allow_overage: i64_to_bool(row.get(3)?),
         overage_weight: i64_to_u32(row.get(4)?).clamp(1, 10),
+        turbo_mode: row.get::<_, String>(5)?,
+        turbo_fanout: opt_i64_to_usize(Some(row.get(6)?)).unwrap_or(1),
     };
     credentials.allow_overage = policy.allow_overage;
     credentials.overage_weight = policy.effective_overage_weight();
@@ -1050,11 +1071,11 @@ fn stored_credential_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
     Ok(StoredCredential {
         credentials,
         policy,
-        failure_count: i64_to_u32(row.get(5)?),
-        refresh_failure_count: i64_to_u32(row.get(6)?),
-        success_count: i64_to_u64(row.get(7)?),
-        last_used_at: row.get(8)?,
-        disabled_reason: row.get(9)?,
+        failure_count: i64_to_u32(row.get(7)?),
+        refresh_failure_count: i64_to_u32(row.get(8)?),
+        success_count: i64_to_u64(row.get(9)?),
+        last_used_at: row.get(10)?,
+        disabled_reason: row.get(11)?,
     })
 }
 
@@ -1075,16 +1096,18 @@ fn insert_or_replace_stored_credential_tx(
         r#"
         INSERT INTO credentials (
             id, data_json, max_concurrent_override, rpm_override, allow_overage,
-            overage_weight, failure_count, refresh_failure_count, success_count,
-            last_used_at, disabled_reason, updated_at
+            overage_weight, turbo_mode, turbo_fanout, failure_count,
+            refresh_failure_count, success_count, last_used_at, disabled_reason, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
             data_json = excluded.data_json,
             max_concurrent_override = excluded.max_concurrent_override,
             rpm_override = excluded.rpm_override,
             allow_overage = excluded.allow_overage,
             overage_weight = excluded.overage_weight,
+            turbo_mode = excluded.turbo_mode,
+            turbo_fanout = excluded.turbo_fanout,
             failure_count = excluded.failure_count,
             refresh_failure_count = excluded.refresh_failure_count,
             success_count = excluded.success_count,
@@ -1099,6 +1122,8 @@ fn insert_or_replace_stored_credential_tx(
             entry.policy.rpm_override.map(|v| v as i64),
             bool_to_i64(entry.policy.allow_overage),
             entry.policy.effective_overage_weight() as i64,
+            entry.policy.effective_turbo_mode(),
+            entry.policy.effective_turbo_fanout() as i64,
             entry.failure_count as i64,
             entry.refresh_failure_count as i64,
             entry.success_count as i64,
@@ -1286,6 +1311,44 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert!(store.delete_dynamic_proxy_binding(42).unwrap());
         assert!(store.load_dynamic_proxy_binding(42).unwrap().is_none());
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn credential_policy_turbo_round_trip() {
+        let path = test_db_path("credential-policy-turbo");
+        let store = KiroStore::open(&path).unwrap();
+        let mut credential = KiroCredentials::default();
+        credential.id = Some(7);
+        credential.priority = 1;
+        let stored = StoredCredential {
+            credentials: credential,
+            policy: CredentialPolicy::default(),
+            failure_count: 0,
+            refresh_failure_count: 0,
+            success_count: 0,
+            last_used_at: None,
+            disabled_reason: None,
+        };
+        store.replace_all_credentials(&[stored]).unwrap();
+
+        let policy = CredentialPolicy {
+            max_concurrent_override: Some(6),
+            rpm_override: Some(0),
+            allow_overage: true,
+            overage_weight: 3,
+            turbo_mode: "race".to_string(),
+            turbo_fanout: 3,
+        };
+        store.update_policy(7, &policy).unwrap();
+        let loaded = store.load_credentials().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].policy.effective_turbo_mode(), "race");
+        assert_eq!(loaded[0].policy.effective_turbo_fanout(), 3);
+        assert_eq!(loaded[0].policy.max_concurrent_override, Some(6));
+        assert!(loaded[0].policy.allow_overage);
 
         drop(store);
         let _ = std::fs::remove_file(path);

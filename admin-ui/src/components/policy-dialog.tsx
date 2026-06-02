@@ -29,6 +29,8 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
   const [rpm, setRpm] = useState('')
   const [allowOverage, setAllowOverage] = useState(false)
   const [overageWeight, setOverageWeight] = useState('1')
+  const [turboMode, setTurboMode] = useState<'off' | 'race'>('off')
+  const [turboFanout, setTurboFanout] = useState('3')
 
   useEffect(() => {
     if (!open) return
@@ -36,6 +38,8 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
     setRpm(credential?.rpmOverride?.toString() ?? '')
     setAllowOverage(credential?.allowOverage ?? false)
     setOverageWeight((credential?.overageWeight || 1).toString())
+    setTurboMode(credential?.turboMode ?? 'off')
+    setTurboFanout((credential?.turboFanout && credential.turboFanout > 1 ? credential.turboFanout : 3).toString())
   }, [credential, open])
 
   const parseOptionalNumber = (value: string) => {
@@ -49,6 +53,10 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
     const policy = {
       maxConcurrentOverride: parseOptionalNumber(maxConcurrent),
       rpmOverride: parseOptionalNumber(rpm),
+      turboMode,
+      turboFanout: turboMode === 'race'
+        ? Math.min(5, Math.max(2, parseOptionalNumber(turboFanout) ?? 3))
+        : 1,
       allowOverage,
       overageWeight: Math.min(10, Math.max(1, parseOptionalNumber(overageWeight) ?? 1)),
     }
@@ -102,6 +110,9 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
                 当前生效：并发 {credential.maxConcurrent}，RPM {credential.effectiveRpm || '不限'}
               </div>
               <div className="mt-1 text-muted-foreground">
+                Turbo：{credential.turboMode === 'race' ? `RACE x${credential.turboFanout}` : '关闭'}
+              </div>
+              <div className="mt-1 text-muted-foreground">
                 额度：{credential.usageLimit > 0 ? `${credential.usageCurrent.toFixed(2)} / ${credential.usageLimit.toFixed(2)}` : '未查询'}
                 {credential.isOverUsageLimit ? '，已达上限' : ''}
                 {credential.overageStopped ? '，透支已停止' : ''}
@@ -132,6 +143,34 @@ export function PolicyDialog({ open, onOpenChange, credential, selectedIds = [] 
               onChange={event => setRpm(event.target.value)}
             />
           </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Turbo 模式</label>
+            <select
+              value={turboMode}
+              onChange={event => setTurboMode(event.target.value as 'off' | 'race')}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="off">关闭</option>
+              <option value="race">Race：立即并发抢成功</option>
+            </select>
+          </div>
+
+          {turboMode === 'race' && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Turbo 并发次数</label>
+              <Input
+                type="number"
+                min={2}
+                max={5}
+                value={turboFanout}
+                onChange={event => setTurboFanout(event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                建议 x3；会额外占用账号并发和 RPM，最好同步提高账号并发覆盖。
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <label className="text-sm font-medium">账号级透支</label>

@@ -576,6 +576,10 @@ pub struct CredentialEntrySnapshot {
     pub max_concurrent_override: Option<usize>,
     /// 单凭据 RPM 覆盖值
     pub rpm_override: Option<u32>,
+    /// Turbo 模式
+    pub turbo_mode: String,
+    /// Turbo 并发倍数
+    pub turbo_fanout: usize,
     /// 当前生效 RPM
     pub effective_rpm: u32,
     /// 是否使用全局默认策略
@@ -1476,6 +1480,39 @@ impl MultiTokenManager {
         }
     }
 
+    pub fn policy_for_credential(&self, id: u64) -> Option<CredentialPolicy> {
+        self.entries
+            .lock()
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.policy.clone())
+    }
+
+    pub async fn acquire_additional_contexts_for_credential(
+        self: &Arc<Self>,
+        id: u64,
+        model: Option<&str>,
+        count: usize,
+    ) -> Vec<CallContext> {
+        let mut contexts = Vec::with_capacity(count);
+        for _ in 0..count {
+            match self.acquire_context_for_credential(id, model).await {
+                Ok(ctx) => contexts.push(ctx),
+                Err(err) => {
+                    tracing::debug!(
+                        credential_id = id,
+                        requested = count,
+                        acquired = contexts.len(),
+                        error = %err,
+                        "额外获取同账号 Turbo lease 结束"
+                    );
+                    break;
+                }
+            }
+        }
+        contexts
+    }
+
     /// 选择优先级最高的未禁用凭据作为当前凭据（内部方法）
     ///
     /// 纯粹按优先级选择，不排除当前凭据，用于优先级变更后立即生效
@@ -2338,6 +2375,8 @@ impl MultiTokenManager {
                         max_concurrent,
                         max_concurrent_override: e.policy.max_concurrent_override,
                         rpm_override: e.policy.rpm_override,
+                        turbo_mode: e.policy.effective_turbo_mode().to_string(),
+                        turbo_fanout: e.policy.effective_turbo_fanout(),
                         effective_rpm,
                         uses_default_policy: e.policy.uses_default_policy(),
                         cooldown_until: e.cooldown_until.map(|until| until.to_rfc3339()),
@@ -2725,6 +2764,7 @@ impl MultiTokenManager {
             rpm_override: None,
             allow_overage: validated_cred.allow_overage,
             overage_weight: validated_cred.effective_overage_weight(),
+            ..CredentialPolicy::default()
         };
 
         {

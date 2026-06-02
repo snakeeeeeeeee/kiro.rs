@@ -31,8 +31,10 @@ use crate::kiro::model_cooldown::ModelCooldownManager;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::kiro::parser::frame::Frame;
 use crate::kiro::prompt_dump::{PromptDump, PromptDumpMetaUpdate};
-use crate::kiro::settings::{SameAccountRetryRule, matching_same_account_retry_rule};
-use crate::kiro::token_manager::{CredentialLease, MultiTokenManager};
+use crate::kiro::settings::{
+    CredentialPolicy, SameAccountRetryRule, matching_same_account_retry_rule,
+};
+use crate::kiro::token_manager::{CallContext, CredentialLease, MultiTokenManager};
 use crate::metrics::{MetricsRecorder, RequestTimingSample, UpstreamOutcome, duration_ms};
 use crate::model::config::TlsBackend;
 use parking_lot::Mutex;
@@ -137,6 +139,46 @@ impl std::error::Error for ProviderRateLimitError {}
 struct UpstreamErrorInfo {
     reason: Option<String>,
     retry_after_ms: Option<u64>,
+}
+
+struct ApiRequestParts {
+    endpoint: Arc<dyn KiroEndpoint>,
+    endpoint_name: String,
+    url: String,
+    body: String,
+    api_region: String,
+    raw_request_id: Option<String>,
+    raw_debug_enabled: bool,
+    raw_debug_max_chars: usize,
+}
+
+struct ApiSendSuccess {
+    response: reqwest::Response,
+    ctx: CallContext,
+    status: u16,
+    upstream_ms: u64,
+    turbo_attempt_index: Option<usize>,
+}
+
+struct ApiSendFailure {
+    ctx: CallContext,
+    status: Option<u16>,
+    body: String,
+    upstream_error: UpstreamErrorInfo,
+    error: Option<anyhow::Error>,
+    upstream_ms: u64,
+    turbo_attempt_index: Option<usize>,
+}
+
+enum ApiSendOutcome {
+    Success(ApiSendSuccess),
+    Failure(ApiSendFailure),
+}
+
+struct ApiSendBatch {
+    outcome: ApiSendOutcome,
+    actual_fanout: usize,
+    upstream_ms: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -456,6 +498,19 @@ fn same_account_retry_key(
         reason.unwrap_or(""),
         rule.status
     )
+}
+
+fn turbo_failure_priority(status: Option<u16>) -> u16 {
+    match status {
+        Some(402) => 600,
+        Some(401 | 403) => 590,
+        Some(429) => 580,
+        Some(408) => 570,
+        Some(status) if (500..=599).contains(&status) => 560,
+        Some(400) => 550,
+        Some(status) => status,
+        None => 540,
+    }
 }
 
 fn truncate_for_raw_debug(value: &str, max_chars: usize) -> (String, bool) {
@@ -785,6 +840,361 @@ impl KiroProvider {
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("未知端点: {}", name))
+    }
+
+    fn build_api_request_parts(
+        &self,
+        ctx: &CallContext,
+        request_body: &str,
+        is_stream: bool,
+        model_for_metrics: &str,
+        settings: &crate::kiro::settings::RuntimeSettings,
+    ) -> anyhow::Result<ApiRequestParts> {
+        let config = self.token_manager.config();
+        let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
+        let endpoint = self.endpoint_for(&ctx.credentials)?;
+        let rctx = RequestContext {
+            credentials: &ctx.credentials,
+            token: &ctx.token,
+            machine_id: &machine_id,
+            config,
+        };
+        let url = endpoint.api_url(&rctx);
+        let body = endpoint.transform_api_body(request_body, &rctx);
+        let endpoint_name = endpoint.name().to_string();
+        let api_region = rctx.credentials.effective_q_api_region(config).to_string();
+        let (raw_debug_enabled, raw_debug_max_chars) =
+            raw_debug_config_for_model(settings, model_for_metrics);
+        let raw_request_id = raw_debug_enabled.then(|| Uuid::new_v4().to_string());
+        if let Some(raw_request_id) = raw_request_id.as_deref() {
+            log_kiro_raw_request(
+                raw_request_id,
+                model_for_metrics,
+                ctx.id,
+                &endpoint_name,
+                &url,
+                is_stream,
+                &body,
+                raw_debug_max_chars,
+            );
+        }
+
+        Ok(ApiRequestParts {
+            endpoint,
+            endpoint_name,
+            url,
+            body,
+            api_region,
+            raw_request_id,
+            raw_debug_enabled,
+            raw_debug_max_chars,
+        })
+    }
+
+    async fn send_api_attempt(
+        &self,
+        ctx: CallContext,
+        parts: &ApiRequestParts,
+        turbo_attempt_index: Option<usize>,
+    ) -> ApiSendOutcome {
+        let config = self.token_manager.config();
+        let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
+        let rctx = RequestContext {
+            credentials: &ctx.credentials,
+            token: &ctx.token,
+            machine_id: &machine_id,
+            config,
+        };
+        let base = match self.client_for(ctx.id, &ctx.credentials) {
+            Ok(client) => client
+                .post(&parts.url)
+                .body(parts.body.clone())
+                .header("content-type", "application/json"),
+            Err(error) => {
+                return ApiSendOutcome::Failure(ApiSendFailure {
+                    ctx,
+                    status: None,
+                    body: String::new(),
+                    upstream_error: UpstreamErrorInfo {
+                        reason: None,
+                        retry_after_ms: None,
+                    },
+                    error: Some(error),
+                    upstream_ms: 0,
+                    turbo_attempt_index,
+                });
+            }
+        };
+        let request = parts.endpoint.decorate_api(base, &rctx);
+        let upstream_started_at = Instant::now();
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                let upstream_ms = duration_ms(upstream_started_at.elapsed());
+                if is_proxy_error(&error) {
+                    self.mark_dynamic_proxy_failure(ctx.id, &error).await;
+                }
+                return ApiSendOutcome::Failure(ApiSendFailure {
+                    ctx,
+                    status: None,
+                    body: String::new(),
+                    upstream_error: UpstreamErrorInfo {
+                        reason: None,
+                        retry_after_ms: None,
+                    },
+                    error: Some(error.into()),
+                    upstream_ms,
+                    turbo_attempt_index,
+                });
+            }
+        };
+
+        let status = response.status();
+        let status_u16 = status.as_u16();
+        let retry_after_ms = parse_retry_after_ms(response.headers());
+        let mut upstream_ms = duration_ms(upstream_started_at.elapsed());
+        if status.is_success() {
+            return ApiSendOutcome::Success(ApiSendSuccess {
+                response,
+                ctx,
+                status: status_u16,
+                upstream_ms,
+                turbo_attempt_index,
+            });
+        }
+
+        let body_started_at = Instant::now();
+        let body = response.text().await.unwrap_or_default();
+        upstream_ms = upstream_ms.saturating_add(duration_ms(body_started_at.elapsed()));
+        ApiSendOutcome::Failure(ApiSendFailure {
+            ctx,
+            status: Some(status_u16),
+            upstream_error: UpstreamErrorInfo {
+                reason: extract_upstream_reason(&body),
+                retry_after_ms,
+            },
+            body,
+            error: None,
+            upstream_ms,
+            turbo_attempt_index,
+        })
+    }
+
+    async fn send_api_with_policy(
+        &self,
+        ctx: CallContext,
+        parts: &ApiRequestParts,
+        policy: Option<CredentialPolicy>,
+        model: Option<&str>,
+        model_for_metrics: &str,
+        is_stream: bool,
+        request_log: Option<&RequestLogContext>,
+    ) -> ApiSendBatch {
+        let policy = policy.unwrap_or_else(CredentialPolicy::default);
+        let requested_fanout = policy.effective_turbo_fanout();
+        if policy.effective_turbo_mode() != "race" || requested_fanout <= 1 {
+            let outcome = self.send_api_attempt(ctx, parts, None).await;
+            let upstream_ms = match &outcome {
+                ApiSendOutcome::Success(success) => success.upstream_ms,
+                ApiSendOutcome::Failure(failure) => failure.upstream_ms,
+            };
+            return ApiSendBatch {
+                outcome,
+                actual_fanout: 1,
+                upstream_ms,
+            };
+        }
+
+        let credential_id = ctx.id;
+        let mut contexts = vec![ctx];
+        let additional = self
+            .token_manager
+            .acquire_additional_contexts_for_credential(
+                credential_id,
+                model,
+                requested_fanout.saturating_sub(1),
+            )
+            .await;
+        contexts.extend(additional);
+        let actual_fanout = contexts.len();
+        let request_id = request_log.map_or("", |log| log.request_id.as_str());
+        let route = request_log.map_or("", |log| log.route);
+        tracing::info!(
+            request_id,
+            route,
+            model = model_for_metrics,
+            credential_id,
+            turbo_mode = policy.effective_turbo_mode(),
+            requested_fanout,
+            actual_fanout,
+            stream = is_stream,
+            "kiro_api_turbo_start"
+        );
+
+        let turbo_started_at = Instant::now();
+        if actual_fanout <= 1 {
+            let only = contexts
+                .pop()
+                .expect("Turbo context vector must contain initial context");
+            let outcome = self.send_api_attempt(only, parts, Some(0)).await;
+            let upstream_ms = match &outcome {
+                ApiSendOutcome::Success(success) => success.upstream_ms,
+                ApiSendOutcome::Failure(failure) => failure.upstream_ms,
+            };
+            match &outcome {
+                ApiSendOutcome::Success(success) => {
+                    tracing::info!(
+                        request_id,
+                        route,
+                        model = model_for_metrics,
+                        credential_id = success.ctx.id,
+                        turbo_attempt_index = 0usize,
+                        status = success.status,
+                        latency_ms = success.upstream_ms,
+                        winner = true,
+                        "kiro_api_turbo_attempt_success"
+                    );
+                    tracing::info!(
+                        request_id,
+                        route,
+                        model = model_for_metrics,
+                        credential_id = success.ctx.id,
+                        winner_attempt_index = 0usize,
+                        wasted_attempts = 0usize,
+                        header_ms = success.upstream_ms,
+                        total_ms = duration_ms(turbo_started_at.elapsed()),
+                        "kiro_api_turbo_winner"
+                    );
+                }
+                ApiSendOutcome::Failure(failure) => {
+                    let status_for_log = failure.status.unwrap_or(0);
+                    tracing::warn!(
+                        request_id,
+                        route,
+                        model = model_for_metrics,
+                        credential_id = failure.ctx.id,
+                        turbo_attempt_index = 0usize,
+                        status = status_for_log,
+                        latency_ms = failure.upstream_ms,
+                        upstream_reason = failure.upstream_error.reason.as_deref(),
+                        winner = false,
+                        error = failure
+                            .error
+                            .as_ref()
+                            .map(|err| err.to_string())
+                            .unwrap_or_default(),
+                        "kiro_api_turbo_attempt_failure"
+                    );
+                    tracing::warn!(
+                        request_id,
+                        route,
+                        model = model_for_metrics,
+                        credential_id = failure.ctx.id,
+                        actual_fanout,
+                        statuses = ?vec![status_for_log.to_string()],
+                        "kiro_api_turbo_all_failed"
+                    );
+                }
+            }
+            return ApiSendBatch {
+                outcome,
+                actual_fanout,
+                upstream_ms,
+            };
+        }
+
+        let mut attempts = futures::stream::FuturesUnordered::new();
+        for (idx, attempt_ctx) in contexts.into_iter().enumerate() {
+            attempts.push(self.send_api_attempt(attempt_ctx, parts, Some(idx)));
+        }
+
+        let mut failures = Vec::new();
+        while let Some(outcome) = attempts.next().await {
+            match outcome {
+                ApiSendOutcome::Success(success) => {
+                    let winner_attempt_index = success.turbo_attempt_index.unwrap_or(0);
+                    tracing::info!(
+                        request_id,
+                        route,
+                        model = model_for_metrics,
+                        credential_id = success.ctx.id,
+                        turbo_attempt_index = winner_attempt_index,
+                        status = success.status,
+                        latency_ms = success.upstream_ms,
+                        winner = true,
+                        "kiro_api_turbo_attempt_success"
+                    );
+                    tracing::info!(
+                        request_id,
+                        route,
+                        model = model_for_metrics,
+                        credential_id = success.ctx.id,
+                        winner_attempt_index,
+                        wasted_attempts = actual_fanout.saturating_sub(1),
+                        header_ms = success.upstream_ms,
+                        total_ms = duration_ms(turbo_started_at.elapsed()),
+                        "kiro_api_turbo_winner"
+                    );
+                    return ApiSendBatch {
+                        upstream_ms: success.upstream_ms,
+                        outcome: ApiSendOutcome::Success(success),
+                        actual_fanout,
+                    };
+                }
+                ApiSendOutcome::Failure(failure) => {
+                    let attempt_index = failure.turbo_attempt_index.unwrap_or(0);
+                    let status_for_log = failure.status.unwrap_or(0);
+                    tracing::warn!(
+                        request_id,
+                        route,
+                        model = model_for_metrics,
+                        credential_id = failure.ctx.id,
+                        turbo_attempt_index = attempt_index,
+                        status = status_for_log,
+                        latency_ms = failure.upstream_ms,
+                        upstream_reason = failure.upstream_error.reason.as_deref(),
+                        winner = false,
+                        error = failure
+                            .error
+                            .as_ref()
+                            .map(|err| err.to_string())
+                            .unwrap_or_default(),
+                        "kiro_api_turbo_attempt_failure"
+                    );
+                    failures.push(failure);
+                }
+            }
+        }
+
+        let upstream_ms = duration_ms(turbo_started_at.elapsed());
+        let statuses: Vec<String> = failures
+            .iter()
+            .map(|failure| {
+                failure
+                    .status
+                    .map(|status| status.to_string())
+                    .unwrap_or_else(|| "send_error".to_string())
+            })
+            .collect();
+        tracing::warn!(
+            request_id,
+            route,
+            model = model_for_metrics,
+            credential_id,
+            actual_fanout,
+            statuses = ?statuses,
+            "kiro_api_turbo_all_failed"
+        );
+
+        let representative = failures
+            .into_iter()
+            .max_by_key(|failure| turbo_failure_priority(failure.status))
+            .expect("Turbo all-failed path must have at least one failure");
+        ApiSendBatch {
+            outcome: ApiSendOutcome::Failure(representative),
+            actual_fanout,
+            upstream_ms,
+        }
     }
 
     /// 发送非流式 API 请求
@@ -1236,7 +1646,7 @@ impl KiroProvider {
         let mut last_credential_id: Option<u64> = None;
         let mut last_status: Option<u16> = None;
         let mut acquire_ms_total = 0;
-        let mut upstream_ms_total = 0;
+        let mut upstream_ms_total: u64 = 0;
         let mut retry_same_credential: Option<u64> = None;
 
         loop {
@@ -1296,26 +1706,20 @@ impl KiroProvider {
             last_credential_id = Some(ctx.id);
 
             let config = self.token_manager.config();
-            let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
-
-            let endpoint = match self.endpoint_for(&ctx.credentials) {
-                Ok(e) => e,
+            let parts = match self.build_api_request_parts(
+                &ctx,
+                request_body,
+                is_stream,
+                &model_for_metrics,
+                &settings,
+            ) {
+                Ok(parts) => parts,
                 Err(e) => {
                     last_error = Some(e);
                     self.token_manager.report_failure(ctx.id);
                     continue;
                 }
             };
-
-            let rctx = RequestContext {
-                credentials: &ctx.credentials,
-                token: &ctx.token,
-                machine_id: &machine_id,
-                config,
-            };
-
-            let url = endpoint.api_url(&rctx);
-            let body = endpoint.transform_api_body(request_body, &rctx);
             let request_log_ref = request_log.as_ref();
             tracing::info!(
                 request_id = request_log_ref.map_or("", |log| log.request_id.as_str()),
@@ -1327,32 +1731,17 @@ impl KiroProvider {
                 usage_session_key = request_log_ref.map_or("", |log| log.usage_session_key.as_str()),
                 model = model_for_metrics.as_str(),
                 credential_id = ctx.id,
-                endpoint = endpoint.name(),
-                api_region = rctx.credentials.effective_q_api_region(config),
+                endpoint = parts.endpoint_name.as_str(),
+                api_region = parts.api_region.as_str(),
                 stream = is_stream,
-                url = %url,
+                url = %parts.url,
                 "kiro_api_request_endpoint"
             );
             if let Some(dump) = prompt_dump.as_ref() {
-                dump.write_text("upstream_request.json", &body);
-            }
-            let (raw_debug_enabled, raw_debug_max_chars) =
-                raw_debug_config_for_model(&settings, &model_for_metrics);
-            let raw_request_id = raw_debug_enabled.then(|| Uuid::new_v4().to_string());
-            if let Some(raw_request_id) = raw_request_id.as_deref() {
-                log_kiro_raw_request(
-                    raw_request_id,
-                    &model_for_metrics,
-                    ctx.id,
-                    endpoint.name(),
-                    &url,
-                    is_stream,
-                    &body,
-                    raw_debug_max_chars,
-                );
+                dump.write_text("upstream_request.json", &parts.body);
             }
             if config.request_diagnostics_enabled {
-                let request_diagnostics = Self::diagnose_api_request_body(&body);
+                let request_diagnostics = Self::diagnose_api_request_body(&parts.body);
                 tracing::info!(
                     request_id = request_log_ref.map_or("", |log| log.request_id.as_str()),
                     route = request_log_ref.map_or("", |log| log.route),
@@ -1369,8 +1758,8 @@ impl KiroProvider {
                     model = request_diagnostics.model.as_deref().unwrap_or("unknown"),
                     external_model = model_for_metrics.as_str(),
                     credential_id = ctx.id,
-                    endpoint = endpoint.name(),
-                    api_region = rctx.credentials.effective_q_api_region(config),
+                    endpoint = parts.endpoint_name.as_str(),
+                    api_region = parts.api_region.as_str(),
                     kiro_version = config.kiro_version.as_str(),
                     node_version = config.node_version.as_str(),
                     system_version = config.system_version.as_str(),
@@ -1392,120 +1781,125 @@ impl KiroProvider {
                 );
             }
 
-            let base = self
-                .client_for(ctx.id, &ctx.credentials)?
-                .post(&url)
-                .body(body)
-                .header("content-type", "application/json");
-            let request = endpoint.decorate_api(base, &rctx);
+            let credential_id = ctx.id;
+            let policy = self.token_manager.policy_for_credential(credential_id);
+            let send_batch = self
+                .send_api_with_policy(
+                    ctx,
+                    &parts,
+                    policy,
+                    model.as_deref(),
+                    &model_for_metrics,
+                    is_stream,
+                    request_log_ref,
+                )
+                .await;
+            http_attempts += send_batch.actual_fanout;
+            upstream_ms_total = upstream_ms_total.saturating_add(send_batch.upstream_ms);
 
-            let upstream_started_at = Instant::now();
-            let response = match request.send().await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    upstream_ms_total += duration_ms(upstream_started_at.elapsed());
+            let (ctx, status, body, upstream_error) = match send_batch.outcome {
+                ApiSendOutcome::Success(success) => {
+                    self.token_manager.report_success(success.ctx.id);
+                    let status = reqwest::StatusCode::from_u16(success.status)
+                        .unwrap_or(reqwest::StatusCode::OK);
+                    let mut timing = ResponseTimingGuard::new(
+                        self.metrics.clone(),
+                        ApiTimingRecord {
+                            model: model_for_metrics.clone(),
+                            is_stream,
+                            credential_id: Some(success.ctx.id),
+                            status: Some(status.as_u16()),
+                            outcome: UpstreamOutcome::Success,
+                            attempts: http_attempts,
+                            queue_ms,
+                            acquire_ms: acquire_ms_total,
+                            upstream_ms: upstream_ms_total,
+                            total_ms: 0,
+                            request_log: request_log.clone(),
+                        },
+                        total_started_at,
+                        Instant::now(),
+                    );
+                    if is_stream {
+                        timing = timing.with_stream_log(StreamTimingLogContext {
+                            model: model_for_metrics.clone(),
+                            credential_id: success.ctx.id,
+                            status: status.as_u16(),
+                            attempts: http_attempts,
+                            queue_ms,
+                            acquire_ms: acquire_ms_total,
+                            header_ms: upstream_ms_total,
+                            total_started_at,
+                            request_log: request_log.clone(),
+                        });
+                    }
+                    return Ok(LeasedResponse::new(
+                        success.response,
+                        success.ctx.id,
+                        http_attempts,
+                        parts.raw_request_id.clone(),
+                        parts.raw_debug_enabled,
+                        parts.raw_debug_max_chars,
+                        prompt_dump.clone(),
+                        success.ctx.lease,
+                        Some(timing),
+                    ));
+                }
+                ApiSendOutcome::Failure(failure) if failure.status.is_none() => {
                     tracing::warn!(
-                        credential_id = ctx.id,
+                        credential_id = failure.ctx.id,
                         attempted_credentials = ?attempted_credentials,
                         excluded_credential_ids = ?excluded_credentials,
+                        turbo_attempt_index = failure.turbo_attempt_index,
                         "API 请求发送失败（尝试账号 {}/{}）: {}",
                         attempted_credentials.len(),
                         max_retry_accounts,
-                        e
+                        failure
+                            .error
+                            .as_ref()
+                            .map(|err| err.to_string())
+                            .unwrap_or_else(|| "unknown send error".to_string())
                     );
-                    if is_proxy_error(&e) {
-                        self.mark_dynamic_proxy_failure(ctx.id, &e).await;
-                    }
                     self.token_manager
-                        .report_transient_error_for(ctx.id, settings.transient_cooldown_ms);
-                    excluded_credentials.insert(ctx.id);
-                    last_error = Some(e.into());
+                        .report_transient_error_for(failure.ctx.id, settings.transient_cooldown_ms);
+                    excluded_credentials.insert(failure.ctx.id);
+                    last_error = Some(
+                        failure
+                            .error
+                            .unwrap_or_else(|| anyhow::anyhow!("API 请求发送失败")),
+                    );
                     if attempted_credentials.len() < max_retry_accounts {
                         sleep(Self::retry_delay(http_attempts)).await;
                     }
                     continue;
                 }
-            };
-            http_attempts += 1;
-            upstream_ms_total += duration_ms(upstream_started_at.elapsed());
-
-            let status = response.status();
-            last_status = Some(status.as_u16());
-            let retry_after_ms = parse_retry_after_ms(response.headers());
-
-            // 成功响应：耗时指标延后到响应体消费完成时记录。
-            if status.is_success() {
-                self.token_manager.report_success(ctx.id);
-                let mut timing = ResponseTimingGuard::new(
-                    self.metrics.clone(),
-                    ApiTimingRecord {
-                        model: model_for_metrics.clone(),
-                        is_stream,
-                        credential_id: Some(ctx.id),
-                        status: Some(status.as_u16()),
-                        outcome: UpstreamOutcome::Success,
-                        attempts: http_attempts,
-                        queue_ms,
-                        acquire_ms: acquire_ms_total,
-                        upstream_ms: upstream_ms_total,
-                        total_ms: 0,
-                        request_log: request_log.clone(),
-                    },
-                    total_started_at,
-                    Instant::now(),
-                );
-                if is_stream {
-                    timing = timing.with_stream_log(StreamTimingLogContext {
-                        model: model_for_metrics.clone(),
-                        credential_id: ctx.id,
-                        status: status.as_u16(),
-                        attempts: http_attempts,
-                        queue_ms,
-                        acquire_ms: acquire_ms_total,
-                        header_ms: upstream_ms_total,
-                        total_started_at,
-                        request_log: request_log.clone(),
-                    });
+                ApiSendOutcome::Failure(failure) => {
+                    let status = reqwest::StatusCode::from_u16(failure.status.unwrap_or(500))
+                        .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+                    last_status = Some(status.as_u16());
+                    if let Some(dump) = prompt_dump.as_ref() {
+                        dump.write_text("upstream_response.raw", &failure.body);
+                        dump.update_meta(PromptDumpMetaUpdate {
+                            route: "/v1/messages".to_string(),
+                            model: model_for_metrics.clone(),
+                            stream: is_stream,
+                            credential_id: Some(failure.ctx.id),
+                            attempts: Some(http_attempts),
+                            status: Some(status.as_u16()),
+                            duration_ms: Some(duration_ms(total_started_at.elapsed())),
+                            signature_classification: None,
+                            request_kind: None,
+                            expected_text_only: None,
+                            truncated: false,
+                        });
+                    }
+                    last_retry_after_ms = failure
+                        .upstream_error
+                        .retry_after_ms
+                        .or(last_retry_after_ms);
+                    (failure.ctx, status, failure.body, failure.upstream_error)
                 }
-                return Ok(LeasedResponse::new(
-                    response,
-                    ctx.id,
-                    http_attempts,
-                    raw_request_id,
-                    raw_debug_enabled,
-                    raw_debug_max_chars,
-                    prompt_dump.clone(),
-                    ctx.lease,
-                    Some(timing),
-                ));
-            }
-
-            // 失败响应：读取 body 用于日志/错误信息
-            let body_started_at = Instant::now();
-            let body = response.text().await.unwrap_or_default();
-            if let Some(dump) = prompt_dump.as_ref() {
-                dump.write_text("upstream_response.raw", &body);
-                dump.update_meta(PromptDumpMetaUpdate {
-                    route: "/v1/messages".to_string(),
-                    model: model_for_metrics.clone(),
-                    stream: is_stream,
-                    credential_id: Some(ctx.id),
-                    attempts: Some(http_attempts),
-                    status: Some(status.as_u16()),
-                    duration_ms: Some(duration_ms(total_started_at.elapsed())),
-                    signature_classification: None,
-                    request_kind: None,
-                    expected_text_only: None,
-                    truncated: false,
-                });
-            }
-            upstream_ms_total =
-                upstream_ms_total.saturating_add(duration_ms(body_started_at.elapsed()));
-            let upstream_error = UpstreamErrorInfo {
-                reason: extract_upstream_reason(&body),
-                retry_after_ms,
             };
-            last_retry_after_ms = upstream_error.retry_after_ms.or(last_retry_after_ms);
 
             if let Some(rule) = matching_same_account_retry_rule(
                 &settings.same_account_retry_rules,
@@ -1555,7 +1949,7 @@ impl KiroProvider {
             }
 
             // 402 Payment Required 且额度用尽：禁用凭据并故障转移
-            if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
+            if status.as_u16() == 402 && parts.endpoint.is_monthly_request_limit(&body) {
                 tracing::warn!(
                     credential_id = ctx.id,
                     attempted_credentials = ?attempted_credentials,
@@ -1601,7 +1995,7 @@ impl KiroProvider {
                 continue;
             }
 
-            if status.as_u16() == 402 && endpoint.is_overage_limit(&body) {
+            if status.as_u16() == 402 && parts.endpoint.is_overage_limit(&body) {
                 tracing::warn!(
                     credential_id = ctx.id,
                     attempted_credentials = ?attempted_credentials,
@@ -1657,7 +2051,9 @@ impl KiroProvider {
                 );
 
                 // token 被上游失效：先尝试 force-refresh，每凭据仅一次机会
-                if endpoint.is_bearer_token_invalid(&body) && !force_refreshed.contains(&ctx.id) {
+                if parts.endpoint.is_bearer_token_invalid(&body)
+                    && !force_refreshed.contains(&ctx.id)
+                {
                     force_refreshed.insert(ctx.id);
                     tracing::info!("凭据 #{} token 疑似被上游失效，尝试强制刷新", ctx.id);
                     if self

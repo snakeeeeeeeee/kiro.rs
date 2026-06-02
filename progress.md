@@ -526,3 +526,11 @@
 - 2026-06-01 CST: Resumed Kiro Power comparison against /Users/zhangyu/code/test/kiro-account-manager. Found KAM does not synthesize a profileArn for Enterprise; it stores IdC metadata and sends Enterprise Q API calls without profileArn. Preparing a redacted KAM-shaped upstream probe.
 
 - 2026-06-01 CST: Implemented KAM-compatible Enterprise IdC behavior: persist provider, preserve region, use Enterprise no-profileArn Q API shape with isEmailRequired=true and KiroIDE UA, and pass through Kiro native model IDs. Validation passed: cargo fmt -- --check, cargo check, cargo test -q (366), pnpm --dir admin-ui build, cargo build, isolated live import/balance/message smoke.
+
+## Completed: Account-Level Turbo Mode
+- Added account policy fields `turboMode` and `turboFanout`, persisted through SQLite and exposed through Admin credential/runtime status APIs.
+- Implemented same-account `race` fanout for `/v1/messages`: the selected credential acquires additional same-account leases up to the configured fanout, returns the first successful upstream response, and releases losing branches by drop cancellation.
+- Kept non-Turbo accounts on the old single-request path; MCP/WebSearch remain non-Turbo.
+- Added Turbo lifecycle logs and successful Admin policy update logs without prompt/token/API-key disclosure.
+- Added Admin policy dialog controls and account table `TURBO xN` row/badge visibility.
+- Validation passed: `cargo fmt -- --check`, `cargo check`, `cargo test` (369 tests), `pnpm --dir admin-ui build`, and `git diff --check`.

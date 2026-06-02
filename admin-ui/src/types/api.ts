@@ -40,6 +40,8 @@ export interface CredentialStatusItem {
   maxConcurrent: number
   maxConcurrentOverride?: number | null
   rpmOverride?: number | null
+  turboMode: 'off' | 'race'
+  turboFanout: number
   effectiveRpm: number
   usesDefaultPolicy: boolean
   cooldownUntil: string | null
@@ -221,6 +223,8 @@ export interface RuntimeCredentialStatus {
   maxConcurrent: number
   maxConcurrentOverride?: number | null
   rpmOverride?: number | null
+  turboMode: 'off' | 'race'
+  turboFanout: number
   effectiveRpm: number
   usesDefaultPolicy: boolean
   cooldownUntil: string | null
@@ -409,6 +413,8 @@ export interface VirtualCacheReuseSnapshot {
 export interface SetCredentialPolicyRequest {
   maxConcurrentOverride?: number | null
   rpmOverride?: number | null
+  turboMode: 'off' | 'race'
+  turboFanout: number
   allowOverage: boolean
   overageWeight: number
 }
