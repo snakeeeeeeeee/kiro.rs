@@ -188,11 +188,18 @@ struct RequestDiagnostics {
     agent_task_type: Option<String>,
     chat_trigger_type: Option<String>,
     current_content_chars: usize,
+    current_message_bytes: usize,
     history_len: usize,
     history_user_count: usize,
     history_assistant_count: usize,
+    history_bytes: usize,
+    largest_history_entry_bytes: usize,
     tools_count: usize,
+    tools_bytes: usize,
+    largest_tool_bytes: usize,
     tool_results_count: usize,
+    tool_results_bytes: usize,
+    largest_tool_result_bytes: usize,
     current_images_count: usize,
     profile_arn_present: bool,
     request_bytes: usize,
@@ -1740,46 +1747,28 @@ impl KiroProvider {
             if let Some(dump) = prompt_dump.as_ref() {
                 dump.write_text("upstream_request.json", &parts.body);
             }
-            if config.request_diagnostics_enabled {
-                let request_diagnostics = Self::diagnose_api_request_body(&parts.body);
-                tracing::info!(
-                    request_id = request_log_ref.map_or("", |log| log.request_id.as_str()),
-                    route = request_log_ref.map_or("", |log| log.route),
-                    client_device_id =
-                        request_log_ref.map_or("", RequestLogContext::client_device_id_for_log),
-                    client_account_uuid =
-                        request_log_ref.map_or("", RequestLogContext::client_account_uuid_for_log),
-                    client_user =
-                        request_log_ref.map_or("", RequestLogContext::client_user_for_log),
-                    client_session_id =
-                        request_log_ref.map_or("", RequestLogContext::client_session_id_for_log),
-                    usage_session_key =
-                        request_log_ref.map_or("", |log| log.usage_session_key.as_str()),
-                    model = request_diagnostics.model.as_deref().unwrap_or("unknown"),
-                    external_model = model_for_metrics.as_str(),
-                    credential_id = ctx.id,
-                    endpoint = parts.endpoint_name.as_str(),
-                    api_region = parts.api_region.as_str(),
-                    kiro_version = config.kiro_version.as_str(),
-                    node_version = config.node_version.as_str(),
-                    system_version = config.system_version.as_str(),
-                    stream = is_stream,
-                    conversation_id = request_diagnostics.conversation_id.as_deref(),
-                    agent_task_type = request_diagnostics.agent_task_type.as_deref(),
-                    chat_trigger_type = request_diagnostics.chat_trigger_type.as_deref(),
-                    history_len = request_diagnostics.history_len,
-                    history_user_count = request_diagnostics.history_user_count,
-                    history_assistant_count = request_diagnostics.history_assistant_count,
-                    current_content_chars = request_diagnostics.current_content_chars,
-                    tools_count = request_diagnostics.tools_count,
-                    tool_results_count = request_diagnostics.tool_results_count,
-                    current_images_count = request_diagnostics.current_images_count,
-                    profile_arn_present = request_diagnostics.profile_arn_present,
-                    request_bytes = request_diagnostics.request_bytes,
-                    thinking_directives_present = request_diagnostics.thinking_directives_present,
-                    "kiro_api_request_diagnostics"
+            let request_diagnostics = if config.request_diagnostics_enabled {
+                let diagnostics = Self::diagnose_api_request_body(&parts.body);
+                Self::log_request_diagnostics(
+                    &diagnostics,
+                    request_log_ref,
+                    model_for_metrics.as_str(),
+                    ctx.id,
+                    parts.endpoint_name.as_str(),
+                    parts.api_region.as_str(),
+                    config.kiro_version.as_str(),
+                    config.node_version.as_str(),
+                    config.system_version.as_str(),
+                    is_stream,
+                    "enabled",
+                    None,
+                    None,
+                    None,
                 );
-            }
+                Some(diagnostics)
+            } else {
+                None
+            };
 
             let credential_id = ctx.id;
             let policy = self.token_manager.policy_for_credential(credential_id);
@@ -1846,6 +1835,28 @@ impl KiroProvider {
                     ));
                 }
                 ApiSendOutcome::Failure(failure) if failure.status.is_none() => {
+                    let mut fallback_diagnostics = None;
+                    let diagnostics = Self::request_diagnostics_for_log(
+                        &request_diagnostics,
+                        &mut fallback_diagnostics,
+                        &parts.body,
+                    );
+                    Self::log_request_diagnostics(
+                        diagnostics,
+                        request_log_ref,
+                        model_for_metrics.as_str(),
+                        failure.ctx.id,
+                        parts.endpoint_name.as_str(),
+                        parts.api_region.as_str(),
+                        config.kiro_version.as_str(),
+                        config.node_version.as_str(),
+                        config.system_version.as_str(),
+                        is_stream,
+                        "upstream_failure",
+                        None,
+                        failure.upstream_error.reason.as_deref(),
+                        failure.upstream_error.retry_after_ms,
+                    );
                     tracing::warn!(
                         credential_id = failure.ctx.id,
                         attempted_credentials = ?attempted_credentials,
@@ -1897,6 +1908,28 @@ impl KiroProvider {
                         .upstream_error
                         .retry_after_ms
                         .or(last_retry_after_ms);
+                    let mut fallback_diagnostics = None;
+                    let diagnostics = Self::request_diagnostics_for_log(
+                        &request_diagnostics,
+                        &mut fallback_diagnostics,
+                        &parts.body,
+                    );
+                    Self::log_request_diagnostics(
+                        diagnostics,
+                        request_log_ref,
+                        model_for_metrics.as_str(),
+                        failure.ctx.id,
+                        parts.endpoint_name.as_str(),
+                        parts.api_region.as_str(),
+                        config.kiro_version.as_str(),
+                        config.node_version.as_str(),
+                        config.system_version.as_str(),
+                        is_stream,
+                        "upstream_failure",
+                        Some(status.as_u16()),
+                        failure.upstream_error.reason.as_deref(),
+                        failure.upstream_error.retry_after_ms,
+                    );
                     (failure.ctx, status, failure.body, failure.upstream_error)
                 }
             };
@@ -2274,6 +2307,80 @@ impl KiroProvider {
             .map(|s| s.to_string())
     }
 
+    fn log_request_diagnostics(
+        diagnostics: &RequestDiagnostics,
+        request_log: Option<&RequestLogContext>,
+        external_model: &str,
+        credential_id: u64,
+        endpoint: &str,
+        api_region: &str,
+        kiro_version: &str,
+        node_version: &str,
+        system_version: &str,
+        stream: bool,
+        diagnostics_kind: &'static str,
+        upstream_status: Option<u16>,
+        upstream_reason: Option<&str>,
+        retry_after_ms: Option<u64>,
+    ) {
+        tracing::info!(
+            request_id = request_log.map_or("", |log| log.request_id.as_str()),
+            route = request_log.map_or("", |log| log.route),
+            client_device_id = request_log.map_or("", RequestLogContext::client_device_id_for_log),
+            client_account_uuid =
+                request_log.map_or("", RequestLogContext::client_account_uuid_for_log),
+            client_user = request_log.map_or("", RequestLogContext::client_user_for_log),
+            client_session_id =
+                request_log.map_or("", RequestLogContext::client_session_id_for_log),
+            usage_session_key = request_log.map_or("", |log| log.usage_session_key.as_str()),
+            model = diagnostics.model.as_deref().unwrap_or("unknown"),
+            external_model,
+            credential_id,
+            endpoint,
+            api_region,
+            kiro_version,
+            node_version,
+            system_version,
+            stream,
+            conversation_id = diagnostics.conversation_id.as_deref(),
+            agent_task_type = diagnostics.agent_task_type.as_deref(),
+            chat_trigger_type = diagnostics.chat_trigger_type.as_deref(),
+            request_bytes = diagnostics.request_bytes,
+            history_len = diagnostics.history_len,
+            history_user_count = diagnostics.history_user_count,
+            history_assistant_count = diagnostics.history_assistant_count,
+            history_bytes = diagnostics.history_bytes,
+            largest_history_entry_bytes = diagnostics.largest_history_entry_bytes,
+            current_content_chars = diagnostics.current_content_chars,
+            current_message_bytes = diagnostics.current_message_bytes,
+            tools_count = diagnostics.tools_count,
+            tools_bytes = diagnostics.tools_bytes,
+            largest_tool_bytes = diagnostics.largest_tool_bytes,
+            tool_results_count = diagnostics.tool_results_count,
+            tool_results_bytes = diagnostics.tool_results_bytes,
+            largest_tool_result_bytes = diagnostics.largest_tool_result_bytes,
+            current_images_count = diagnostics.current_images_count,
+            profile_arn_present = diagnostics.profile_arn_present,
+            thinking_directives_present = diagnostics.thinking_directives_present,
+            diagnostics_kind,
+            upstream_status,
+            upstream_reason,
+            retry_after_ms,
+            "kiro_api_request_diagnostics"
+        );
+    }
+
+    fn request_diagnostics_for_log<'a>(
+        cached: &'a Option<RequestDiagnostics>,
+        fallback: &'a mut Option<RequestDiagnostics>,
+        request_body: &str,
+    ) -> &'a RequestDiagnostics {
+        if let Some(diagnostics) = cached.as_ref() {
+            return diagnostics;
+        }
+        fallback.get_or_insert_with(|| Self::diagnose_api_request_body(request_body))
+    }
+
     fn diagnose_api_request_body(request_body: &str) -> RequestDiagnostics {
         use serde_json::Value;
 
@@ -2309,6 +2416,10 @@ impl KiroProvider {
         if let Some(history) = state.get("history").and_then(Value::as_array) {
             diagnostics.history_len = history.len();
             for item in history {
+                let entry_bytes = item.to_string().len();
+                diagnostics.history_bytes += entry_bytes;
+                diagnostics.largest_history_entry_bytes =
+                    diagnostics.largest_history_entry_bytes.max(entry_bytes);
                 if item.get("userInputMessage").is_some() {
                     diagnostics.history_user_count += 1;
                 }
@@ -2324,6 +2435,7 @@ impl KiroProvider {
         else {
             return diagnostics;
         };
+        diagnostics.current_message_bytes = user_input.to_string().len();
 
         diagnostics.model = user_input
             .get("modelId")
@@ -2341,16 +2453,23 @@ impl KiroProvider {
             .unwrap_or(0);
 
         if let Some(context) = user_input.get("userInputMessageContext") {
-            diagnostics.tools_count = context
-                .get("tools")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0);
-            diagnostics.tool_results_count = context
-                .get("toolResults")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0);
+            if let Some(tools) = context.get("tools").and_then(Value::as_array) {
+                diagnostics.tools_count = tools.len();
+                for tool in tools {
+                    let tool_bytes = tool.to_string().len();
+                    diagnostics.tools_bytes += tool_bytes;
+                    diagnostics.largest_tool_bytes = diagnostics.largest_tool_bytes.max(tool_bytes);
+                }
+            }
+            if let Some(tool_results) = context.get("toolResults").and_then(Value::as_array) {
+                diagnostics.tool_results_count = tool_results.len();
+                for result in tool_results {
+                    let result_bytes = result.to_string().len();
+                    diagnostics.tool_results_bytes += result_bytes;
+                    diagnostics.largest_tool_result_bytes =
+                        diagnostics.largest_tool_result_bytes.max(result_bytes);
+                }
+            }
         }
 
         diagnostics
@@ -2438,6 +2557,13 @@ mod tests {
         assert_eq!(summary.tools_count, 1);
         assert_eq!(summary.tool_results_count, 1);
         assert_eq!(summary.current_images_count, 1);
+        assert!(summary.current_message_bytes > 0);
+        assert!(summary.history_bytes > 0);
+        assert!(summary.largest_history_entry_bytes > 0);
+        assert!(summary.tools_bytes > 0);
+        assert!(summary.largest_tool_bytes > 0);
+        assert!(summary.tool_results_bytes > 0);
+        assert!(summary.largest_tool_result_bytes > 0);
         assert!(summary.profile_arn_present);
         assert!(summary.thinking_directives_present);
         assert!(summary.request_bytes > 0);
