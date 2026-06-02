@@ -1,4 +1,4 @@
-import { Edit3, Globe2, Play, RefreshCw, RotateCw, Snowflake, Trash2, Zap } from 'lucide-react'
+import { Globe2, Play, RefreshCw, RotateCw, Snowflake, Trash2, Zap } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -385,8 +385,15 @@ export function AccountTable({
                             <Button size="sm" variant="ghost" onClick={() => onTestConnection(credential)} title="测试连接">
                               <Play className="h-4 w-4" />
                             </Button>
-                            <Button size="sm" variant="ghost" onClick={() => onEditPolicy(credential)} title="策略">
-                              <Edit3 className="h-4 w-4" />
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="px-2 text-orange-700 hover:bg-orange-50 hover:text-orange-800"
+                              onClick={() => onEditPolicy(credential)}
+                              title="设置 Turbo/策略"
+                            >
+                              <Zap className="h-4 w-4" />
+                              Turbo
                             </Button>
                             <Button size="sm" variant="ghost" onClick={() => onToggleDisabled(credential)}>
                               {credential.disabled ? '启用' : '禁用'}

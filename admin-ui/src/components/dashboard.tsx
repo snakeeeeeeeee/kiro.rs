@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Download, Trash2, RotateCcw, CheckCircle2, Activity, Settings, Columns3, Search, SlidersHorizontal, ShieldCheck, Globe2 } from 'lucide-react'
+import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Download, Trash2, RotateCcw, CheckCircle2, Activity, Settings, Columns3, Search, ShieldCheck, Globe2, Zap } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { storage } from '@/lib/storage'
@@ -1295,6 +1295,17 @@ export function Dashboard({ onLogout }: DashboardProps) {
                 <Settings className="h-4 w-4" />
                 运行策略
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBatchPolicyOpen(true)}
+                disabled={selectedIds.size === 0}
+                title={selectedIds.size > 0 ? '批量设置选中账号 Turbo' : '先选择账号再批量设置 Turbo'}
+                className="border-orange-200 text-orange-700 hover:bg-orange-50 hover:text-orange-800"
+              >
+                <Zap className="h-4 w-4" />
+                批量 Turbo
+              </Button>
               <div className="relative">
                 <Button variant="outline" size="sm" onClick={() => setColumnMenuOpen(open => !open)}>
                   <Columns3 className="h-4 w-4" />
@@ -1389,8 +1400,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 p-3">
               <Badge variant="secondary">已选择 {selectedIds.size} 个</Badge>
               <Button size="sm" variant="outline" onClick={() => setBatchPolicyOpen(true)}>
-                <SlidersHorizontal className="h-4 w-4" />
-                批量策略
+                <Zap className="h-4 w-4" />
+                批量 Turbo/策略
               </Button>
               <Button size="sm" variant="outline" onClick={() => handleBatchSetDisabled(false)}>启用</Button>
               <Button size="sm" variant="outline" onClick={() => handleBatchSetDisabled(true)}>禁用</Button>
