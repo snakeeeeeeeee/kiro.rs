@@ -337,6 +337,10 @@ pub struct Config {
     #[serde(default = "default_target_cache_reuse_ratio")]
     pub target_cache_reuse_ratio: f64,
 
+    /// 上下文压缩判定阈值，0 表示关闭；范围 0..1
+    #[serde(default = "default_virtual_cache_context_shrink_reset_ratio")]
+    pub virtual_cache_context_shrink_reset_ratio: f64,
+
     /// 是否启用动态账号代理绑定
     #[serde(default)]
     pub dynamic_proxy_enabled: bool,
@@ -689,6 +693,10 @@ fn default_target_cache_reuse_ratio() -> f64 {
     0.0
 }
 
+fn default_virtual_cache_context_shrink_reset_ratio() -> f64 {
+    0.7
+}
+
 fn default_dynamic_proxy_provider() -> String {
     "novproxy".to_string()
 }
@@ -840,6 +848,8 @@ impl Default for Config {
             virtual_cache_burst_max_tokens: default_virtual_cache_burst_max_tokens(),
             virtual_cache_fallback_scope: default_virtual_cache_fallback_scope(),
             target_cache_reuse_ratio: default_target_cache_reuse_ratio(),
+            virtual_cache_context_shrink_reset_ratio:
+                default_virtual_cache_context_shrink_reset_ratio(),
             dynamic_proxy_enabled: false,
             dynamic_proxy_provider: default_dynamic_proxy_provider(),
             dynamic_proxy_protocol: default_dynamic_proxy_protocol(),

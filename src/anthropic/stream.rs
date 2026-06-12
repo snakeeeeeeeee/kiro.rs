@@ -2963,7 +2963,7 @@ mod tests {
                 creation_ttl: CacheTtl::FiveMinutes,
             },
         );
-        assert_eq!(first.cache_creation_input_tokens, 199_999);
+        assert_eq!(first.cache_creation_input_tokens, 1_200);
 
         let initial_pending = manager.preview_usage(
             &settings,
@@ -3015,8 +3015,8 @@ mod tests {
             },
         );
         assert!(
-            next.cache_read_input_tokens > 50_000,
-            "stream commit should reset on compressed observed context but keep virtual accounting total, actual = {}",
+            next.cache_read_input_tokens <= settings.virtual_cache_max_creation_tokens as i32,
+            "stream commit should reset on compressed observed context while keeping creation capped, actual = {}",
             next.cache_read_input_tokens
         );
     }

@@ -90,6 +90,7 @@ pub struct RuntimeSettings {
     pub virtual_cache_burst_max_tokens: u32,
     pub virtual_cache_fallback_scope: String,
     pub target_cache_reuse_ratio: f64,
+    pub virtual_cache_context_shrink_reset_ratio: f64,
     pub dynamic_proxy_enabled: bool,
     pub dynamic_proxy_provider: String,
     pub dynamic_proxy_protocol: String,
@@ -223,6 +224,9 @@ impl RuntimeSettings {
                 &config.virtual_cache_fallback_scope,
             ),
             target_cache_reuse_ratio: config.target_cache_reuse_ratio.clamp(0.0, 1.0),
+            virtual_cache_context_shrink_reset_ratio: config
+                .virtual_cache_context_shrink_reset_ratio
+                .clamp(0.0, 1.0),
             dynamic_proxy_enabled: config.dynamic_proxy_enabled,
             dynamic_proxy_provider: normalize_dynamic_proxy_provider(
                 &config.dynamic_proxy_provider,
@@ -440,6 +444,9 @@ impl RuntimeSettings {
         }
         if !(0.0..=1.0).contains(&self.target_cache_reuse_ratio) {
             anyhow::bail!("targetCacheReuseRatio 必须在 0..1 范围内，0 表示关闭");
+        }
+        if !(0.0..=1.0).contains(&self.virtual_cache_context_shrink_reset_ratio) {
+            anyhow::bail!("virtualCacheContextShrinkResetRatio 必须在 0..1 范围内，0 表示关闭");
         }
         if self.dynamic_proxy_provider.trim().is_empty() {
             anyhow::bail!("dynamicProxyProvider 不能为空");
@@ -1056,6 +1063,7 @@ mod tests {
             "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6"
         );
         assert_eq!(settings.target_cache_reuse_ratio, 0.0);
+        assert_eq!(settings.virtual_cache_context_shrink_reset_ratio, 0.7);
         assert_eq!(
             normalize_opus47_detection_profile("cc-max-like"),
             "cc_max_like"
@@ -1120,6 +1128,22 @@ mod tests {
         assert!(settings.validate().is_err());
 
         settings.target_cache_reuse_ratio = -0.01;
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn context_shrink_reset_ratio_validates_percent_fraction() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+        settings.virtual_cache_context_shrink_reset_ratio = 0.2;
+        assert!(settings.validate().is_ok());
+
+        settings.virtual_cache_context_shrink_reset_ratio = 0.0;
+        assert!(settings.validate().is_ok());
+
+        settings.virtual_cache_context_shrink_reset_ratio = 1.01;
+        assert!(settings.validate().is_err());
+
+        settings.virtual_cache_context_shrink_reset_ratio = -0.01;
         assert!(settings.validate().is_err());
     }
 

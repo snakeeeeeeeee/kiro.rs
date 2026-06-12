@@ -534,3 +534,13 @@
 - Added Turbo lifecycle logs and successful Admin policy update logs without prompt/token/API-key disclosure.
 - Added Admin policy dialog controls and account table `TURBO xN` row/badge visibility.
 - Validation passed: `cargo fmt -- --check`, `cargo check`, `cargo test` (369 tests), `pnpm --dir admin-ui build`, and `git diff --check`.
+
+## 2026-06-13 Virtual Cache Context Shrink Threshold
+- Implemented runtime/config/Admin UI field `virtualCacheContextShrinkResetRatio`, stored as a `0..1` fraction and shown in Admin UI as a percent.
+- Replaced the hardcoded 70% context-shrink reset check with the runtime setting. `0` disables automatic shrink reset.
+- Added virtual-cache preview diagnostics for previous/current observed input tokens, configured shrink ratio, and whether reset applied.
+- Confirmed existing request diagnostics already record `input_tokens_estimated_total`, `latest_user_input_tokens_estimated`, and `request_payload_bytes_estimated`.
+- Targeted validation passed: `cargo test context_shrink -- --nocapture` and `cargo test runtime_settings_round_trip -- --nocapture`.
+- One attempted Cargo invocation passed two test filters in one command; Cargo rejected it, and full validation will cover the same tests.
+- Final validation passed: `cargo fmt -- --check`, `cargo test -q` (374 tests), `pnpm --dir admin-ui build`, and `git diff --check`.
+- Local service smoke used `/tmp/kiro-rs-runtime-test/config.runtime-test.json` on `127.0.0.1:18990` with a temporary SQLite DB. `GET /healthz` returned 200, `GET /api/admin/settings/runtime` returned `virtualCacheContextShrinkResetRatio=0.7`, `PUT` to `0.2` read back correctly, and the setting was restored to `0.7`.

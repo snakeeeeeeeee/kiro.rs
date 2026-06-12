@@ -82,7 +82,10 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
     setForm(prev => prev ? { ...prev, [key]: Number.isFinite(next) ? next : 0 } : prev)
   }
 
-  const updatePercent = (key: 'targetCacheReuseRatio', value: string) => {
+  const updatePercent = (
+    key: 'targetCacheReuseRatio' | 'virtualCacheContextShrinkResetRatio',
+    value: string,
+  ) => {
     const next = Number(value)
     setForm(prev => prev ? { ...prev, [key]: Number.isFinite(next) ? next / 100 : 0 } : prev)
   }
@@ -867,6 +870,21 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
               />
               <p className="text-xs text-muted-foreground">
                 0 表示关闭；开启后只用最近 5 分钟的虚拟缓存账本做软目标调节。
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">上下文压缩判定阈值 %</label>
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round((form.virtualCacheContextShrinkResetRatio ?? 0.7) * 100)}
+                onChange={event => updatePercent('virtualCacheContextShrinkResetRatio', event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                当前上下文低于上轮该比例时重置虚拟缓存账本；0 表示关闭。
               </p>
             </div>
 

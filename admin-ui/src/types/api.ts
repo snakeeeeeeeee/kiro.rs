@@ -379,6 +379,7 @@ export interface RuntimeSettings {
   virtualCacheBurstMaxTokens: number
   virtualCacheFallbackScope: 'model' | 'none'
   targetCacheReuseRatio: number
+  virtualCacheContextShrinkResetRatio: number
   dynamicProxyEnabled: boolean
   dynamicProxyProvider: string
   dynamicProxyProtocol: 'http' | 'socks5'

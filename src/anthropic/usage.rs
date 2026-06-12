@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::kiro::settings::{RuntimeSettings, normalize_virtual_cache_ttl};
 use crate::token;
 
-use super::types::MessagesRequest;
+use super::{converter::get_context_window_size, types::MessagesRequest};
 
 const CACHE_REUSE_WINDOW_SECS: i64 = 5 * 60;
 const CACHE_REUSE_MIN_SAMPLES: usize = 3;
@@ -253,7 +253,11 @@ impl VirtualCacheUsageManager {
         now: DateTime<Utc>,
         allow_context_shrink_reset: bool,
     ) -> PendingVirtualUsage {
-        let observed_total = input.observed_total_input_tokens.max(0);
+        let model_context_window = get_context_window_size(&input.model).max(1);
+        let observed_total = input
+            .observed_total_input_tokens
+            .max(0)
+            .min(model_context_window);
         if !settings.virtual_cache_usage_enabled || observed_total == 0 {
             return PendingVirtualUsage {
                 key: None,
@@ -273,13 +277,27 @@ impl VirtualCacheUsageManager {
 
         let mut entry = self.ledgers.lock().get(&key).cloned().unwrap_or_default();
         expire_entry(&mut entry, now);
-        let reset_ledger =
-            allow_context_shrink_reset && should_reset_for_context_shrink(&entry, observed_total);
+        let previous_observed_input_tokens = entry.last_observed_input_tokens;
+        let context_shrink_reset_ratio = settings.virtual_cache_context_shrink_reset_ratio;
+        let reset_ledger = allow_context_shrink_reset
+            && should_reset_for_context_shrink(&entry, observed_total, context_shrink_reset_ratio);
+        tracing::debug!(
+            model = %input.model,
+            session_key = %input.session_key,
+            previous_observed_input_tokens,
+            current_observed_input_tokens = observed_total,
+            context_shrink_reset_ratio,
+            context_shrink_reset_applied = reset_ledger,
+            input_tokens_estimated_total = input.observed_total_input_tokens,
+            latest_user_input_tokens_estimated = ?input.estimated_uncached_input_tokens,
+            "virtual_cache_context_shrink_diagnostics"
+        );
         if reset_ledger {
             entry = LedgerEntry::default();
         }
 
-        let accounting_total = compute_accounting_total(&input, observed_total);
+        let accounting_total =
+            compute_accounting_total(&input, observed_total, model_context_window);
         let target_reuse_snapshot = self.reuse_snapshot_at(settings.target_cache_reuse_ratio, now);
         let effective_settings = apply_target_cache_reuse_tuning(settings, &target_reuse_snapshot);
         let uncached = compute_uncached_tokens(&effective_settings, &input, accounting_total);
@@ -295,6 +313,12 @@ impl VirtualCacheUsageManager {
             accounting_total,
             uncached,
             reset_ledger,
+        );
+        let creation_tokens = cap_creation_to_available_cache_budget(
+            creation_tokens,
+            model_context_window,
+            uncached,
+            read_tokens,
         );
 
         let (ephemeral_5m_input_tokens, ephemeral_1h_input_tokens) = match input.creation_ttl {
@@ -492,11 +516,16 @@ fn scale_u32(value: u32, factor: f64, min_value: u32) -> u32 {
     scaled.clamp(min_value as f64, u32::MAX as f64) as u32
 }
 
-fn compute_accounting_total(input: &VirtualUsageInput, observed_total: i32) -> i32 {
+fn compute_accounting_total(
+    input: &VirtualUsageInput,
+    observed_total: i32,
+    model_context_window: i32,
+) -> i32 {
     input
         .accounting_total_input_tokens
         .unwrap_or(observed_total)
         .max(observed_total)
+        .min(model_context_window.max(1))
         .max(0)
 }
 
@@ -534,11 +563,12 @@ fn compute_creation_tokens(
 ) -> i32 {
     if entry.turn_count == 0 {
         let cacheable_input = observed_total.saturating_sub(uncached);
-        return if reset_ledger {
+        let creation = if reset_ledger {
             cacheable_input
         } else {
             cacheable_input.max(settings.virtual_cache_warmup_tokens as i32)
         };
+        return creation.clamp(0, settings.virtual_cache_max_creation_tokens as i32);
     }
 
     let delta = observed_total.saturating_sub(entry.last_accounting_input_tokens);
@@ -578,6 +608,19 @@ fn compute_creation_tokens(
     }
 
     creation.max(0)
+}
+
+fn cap_creation_to_available_cache_budget(
+    creation_tokens: i32,
+    accounting_total: i32,
+    uncached: i32,
+    read_tokens: i32,
+) -> i32 {
+    creation_tokens.max(0).min(
+        accounting_total
+            .saturating_sub(uncached)
+            .saturating_sub(read_tokens),
+    )
 }
 
 fn apply_creation_jitter(
@@ -677,10 +720,18 @@ fn expire_entry(entry: &mut LedgerEntry, now: DateTime<Utc>) {
     }
 }
 
-fn should_reset_for_context_shrink(entry: &LedgerEntry, observed_total: i32) -> bool {
-    entry.turn_count > 0
-        && entry.last_observed_input_tokens > 0
-        && observed_total < entry.last_observed_input_tokens.saturating_mul(7) / 10
+fn should_reset_for_context_shrink(
+    entry: &LedgerEntry,
+    observed_total: i32,
+    reset_ratio: f64,
+) -> bool {
+    if reset_ratio <= 0.0 {
+        return false;
+    }
+    let reset_threshold = ((entry.last_observed_input_tokens.max(0) as f64)
+        * reset_ratio.clamp(0.0, 1.0))
+    .floor() as i32;
+    entry.turn_count > 0 && entry.last_observed_input_tokens > 0 && observed_total < reset_threshold
 }
 
 fn cap_entry_cached_tokens(entry: &mut LedgerEntry, max_total: i32) {
@@ -935,7 +986,7 @@ mod tests {
         let first = manager.build_usage(&settings, input("session-a", 1000, CacheTtl::FiveMinutes));
         assert_eq!(first.input_tokens, 1);
         assert_eq!(first.cache_read_input_tokens, 0);
-        assert_eq!(first.cache_creation_input_tokens, 18_000);
+        assert_eq!(first.cache_creation_input_tokens, 1_200);
 
         let second =
             manager.build_usage(&settings, input("session-a", 1100, CacheTtl::FiveMinutes));
@@ -1137,7 +1188,7 @@ mod tests {
             },
         );
         assert_eq!(second_usage.cache_read_input_tokens, 0);
-        assert_eq!(second_usage.cache_creation_input_tokens, 30_999);
+        assert_eq!(second_usage.cache_creation_input_tokens, 1_200);
     }
 
     #[test]
@@ -1256,7 +1307,7 @@ mod tests {
             },
         );
         assert_eq!(second_usage.cache_read_input_tokens, 0);
-        assert_eq!(second_usage.cache_creation_input_tokens, 30_999);
+        assert_eq!(second_usage.cache_creation_input_tokens, 1_200);
     }
 
     #[test]
@@ -1315,7 +1366,7 @@ mod tests {
         let usage = manager.build_usage(&settings, input("session-a", 1000, CacheTtl::FiveMinutes));
         let json = usage.to_json_with_shape("flat");
 
-        assert_eq!(json["cache_creation_input_tokens"], 18_000);
+        assert_eq!(json["cache_creation_input_tokens"], 1_200);
         assert!(json.get("cache_creation").is_none());
     }
 
@@ -1422,6 +1473,95 @@ mod tests {
     }
 
     #[test]
+    fn first_turn_creation_respects_max_creation_tokens() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_input_mode = "estimated_user_delta".to_string();
+        settings.virtual_cache_min_input_tokens = 80;
+        settings.virtual_cache_max_input_tokens = 18_757;
+        settings.virtual_cache_warmup_tokens = 1;
+        settings.virtual_cache_min_creation_tokens = 1;
+        settings.virtual_cache_max_creation_tokens = 1_200;
+        settings.virtual_cache_creation_mode = "dynamic".to_string();
+        settings.virtual_cache_creation_jitter_ratio = 0.01;
+        settings.virtual_cache_burst_every_turns = 0;
+        settings.virtual_cache_burst_min_tokens = 1;
+        settings.virtual_cache_burst_max_tokens = 872;
+
+        let usage = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-opus-4-7".to_string(),
+                session_key: "single-request-isolated".to_string(),
+                observed_total_input_tokens: 1_771_538,
+                accounting_total_input_tokens: Some(1_771_538),
+                estimated_uncached_input_tokens: Some(831),
+                output_tokens: 727,
+                creation_ttl: CacheTtl::FiveMinutes,
+            },
+        );
+
+        assert_eq!(usage.input_tokens, 831);
+        assert_eq!(usage.cache_read_input_tokens, 0);
+        assert_eq!(usage.cache_creation_input_tokens, 1_200);
+    }
+
+    #[test]
+    fn virtual_usage_totals_are_capped_to_model_context_window() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_input_mode = "estimated_user_delta".to_string();
+        settings.virtual_cache_min_input_tokens = 80;
+        settings.virtual_cache_max_input_tokens = 18_757;
+        settings.virtual_cache_max_creation_tokens = 1_200;
+
+        let first = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-opus-4-7".to_string(),
+                session_key: "window-cap".to_string(),
+                observed_total_input_tokens: 1_771_538,
+                accounting_total_input_tokens: Some(1_771_538),
+                estimated_uncached_input_tokens: Some(831),
+                output_tokens: 727,
+                creation_ttl: CacheTtl::FiveMinutes,
+            },
+        );
+        assert_eq!(
+            first
+                .input_tokens
+                .saturating_add(first.cache_read_input_tokens)
+                .saturating_add(first.cache_creation_input_tokens),
+            2_031
+        );
+
+        let mut total = 0;
+        for turn in 1..2_000 {
+            let usage = manager.build_usage(
+                &settings,
+                VirtualUsageInput {
+                    model: "claude-opus-4-7".to_string(),
+                    session_key: "window-cap".to_string(),
+                    observed_total_input_tokens: 1_771_538 + turn,
+                    accounting_total_input_tokens: Some(1_771_538 + turn),
+                    estimated_uncached_input_tokens: Some(831),
+                    output_tokens: 727,
+                    creation_ttl: CacheTtl::FiveMinutes,
+                },
+            );
+            total = usage
+                .input_tokens
+                .saturating_add(usage.cache_read_input_tokens)
+                .saturating_add(usage.cache_creation_input_tokens);
+            assert!(
+                total <= 1_000_000,
+                "虚拟 usage 总量不能超过模型上下文窗口，turn={turn}, total={total}"
+            );
+        }
+        assert!(total > first.input_tokens + first.cache_creation_input_tokens);
+    }
+
+    #[test]
     fn ttl_buckets_expire_independently() {
         let manager = VirtualCacheUsageManager::new();
         let settings = settings();
@@ -1462,18 +1602,56 @@ mod tests {
 
         let compressed = manager.build_usage(
             &settings,
-            input("session-compressed", 5_000, CacheTtl::FiveMinutes),
+            input("session-compressed", 50_000, CacheTtl::FiveMinutes),
         );
         assert_eq!(compressed.input_tokens, 1);
         assert_eq!(compressed.cache_read_input_tokens, 0);
-        assert_eq!(compressed.cache_creation_input_tokens, 4_999);
+        assert_eq!(compressed.cache_creation_input_tokens, 1_200);
 
         let next = manager.build_usage(
             &settings,
-            input("session-compressed", 5_100, CacheTtl::FiveMinutes),
+            input("session-compressed", 50_100, CacheTtl::FiveMinutes),
         );
-        assert_eq!(next.cache_read_input_tokens, 4_999);
+        assert_eq!(next.cache_read_input_tokens, 1_200);
         assert_eq!(next.cache_creation_input_tokens, 128);
+    }
+
+    #[test]
+    fn context_shrink_ratio_controls_virtual_cache_reset() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_context_shrink_reset_ratio = 0.2;
+
+        let _ = manager.build_usage(
+            &settings,
+            input("session-ratio", 200_000, CacheTtl::FiveMinutes),
+        );
+
+        let compressed = manager.build_usage(
+            &settings,
+            input("session-ratio", 50_000, CacheTtl::FiveMinutes),
+        );
+        assert_eq!(compressed.cache_read_input_tokens, 1_200);
+        assert_eq!(compressed.cache_creation_input_tokens, 128);
+    }
+
+    #[test]
+    fn zero_context_shrink_ratio_disables_virtual_cache_reset() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_context_shrink_reset_ratio = 0.0;
+
+        let _ = manager.build_usage(
+            &settings,
+            input("session-ratio-disabled", 200_000, CacheTtl::FiveMinutes),
+        );
+
+        let compressed = manager.build_usage(
+            &settings,
+            input("session-ratio-disabled", 5_000, CacheTtl::FiveMinutes),
+        );
+        assert_eq!(compressed.cache_read_input_tokens, 1_200);
+        assert_eq!(compressed.cache_creation_input_tokens, 128);
     }
 
     #[test]
@@ -1503,7 +1681,7 @@ mod tests {
             },
         );
         assert_eq!(compressed.cache_read_input_tokens, 0);
-        assert_eq!(compressed.cache_creation_input_tokens, 199_999);
+        assert_eq!(compressed.cache_creation_input_tokens, 1_200);
 
         let next = manager.build_usage(
             &settings,
@@ -1518,11 +1696,11 @@ mod tests {
             },
         );
         assert!(
-            next.cache_read_input_tokens > 50_000,
-            "虚拟 cache_read 不应被压缩后的上游 context usage 永久限制在 5w 附近，实际值 = {}",
+            next.cache_read_input_tokens <= settings.virtual_cache_max_creation_tokens as i32,
+            "压缩重建后 cache_read 不应超过上一轮受 max 限制的虚拟创建量，实际值 = {}",
             next.cache_read_input_tokens
         );
-        assert_eq!(next.cache_creation_input_tokens, 1_000);
+        assert_eq!(next.cache_creation_input_tokens, 128);
     }
 
     #[test]
@@ -1544,8 +1722,8 @@ mod tests {
         assert_eq!(snapshot.sample_count, 1);
         assert_eq!(snapshot.input_tokens, 1);
         assert_eq!(snapshot.cache_read_input_tokens, 0);
-        assert_eq!(snapshot.cache_creation_input_tokens, 18_000);
-        assert_eq!(snapshot.denominator_tokens, 18_001);
+        assert_eq!(snapshot.cache_creation_input_tokens, 1_200);
+        assert_eq!(snapshot.denominator_tokens, 1_201);
         assert_eq!(snapshot.actual_ratio, 0.0);
 
         let later_snapshot = manager.reuse_snapshot_at(
@@ -1575,7 +1753,7 @@ mod tests {
             input("reuse-off", 10_100, CacheTtl::FiveMinutes),
             now + Duration::seconds(10),
         );
-        assert_eq!(second.usage().cache_read_input_tokens, 9_999);
+        assert_eq!(second.usage().cache_read_input_tokens, 1_200);
         assert_eq!(second.usage().cache_creation_input_tokens, 128);
     }
 
@@ -1755,12 +1933,9 @@ mod tests {
             usage.cache_read_input_tokens, 0,
             "桶都过期后 cache_read 必须从 0 开始"
         );
-        // warmup 分支返回 max(observed - uncached, warmup_tokens)，
-        // 对长 history（observed_total=200_100、uncached≈1）来说远大于 warmup_tokens，
-        // 直接按整段 history 写入 → 模拟 Anthropic 真实"cache 过期后重写"的计费行为。
         assert!(
-            usage.cache_creation_input_tokens >= 199_000,
-            "桶整体过期后下次请求应走 warmup，按整段 history 计 creation，实际值 = {}",
+            usage.cache_creation_input_tokens <= settings.virtual_cache_max_creation_tokens as i32,
+            "桶整体过期后下次请求仍应遵守 virtualCacheMaxCreationTokens，实际值 = {}",
             usage.cache_creation_input_tokens
         );
     }
