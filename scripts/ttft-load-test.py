@@ -36,6 +36,8 @@ USER_AGENT = "kiro-rs-ttft-load-test/1.0"
 @dataclass
 class RequestResult:
     request_index: int
+    stage_index: int
+    stage_concurrency: int
     ok: bool
     status: int
     error_type: str
@@ -57,6 +59,29 @@ class RequestResult:
     response_model: str | None
 
 
+@dataclass
+class StageSummary:
+    stage_index: int
+    concurrency: int
+    started_at: float
+    completed_at: float
+    wall_ms: int
+    completed: int
+    ok: int
+    errors: int
+    success_rate: float
+    error_rate: float
+    achieved_rpm: float
+    p50_ttft_ms: int | None
+    p95_ttft_ms: int | None
+    p99_ttft_ms: int | None
+    p50_total_ms: int | None
+    p95_total_ms: int | None
+    p99_total_ms: int | None
+    stable: bool
+    stable_reason: str
+
+
 class TtftLoadTester:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -65,6 +90,8 @@ class TtftLoadTester:
         self.api_key = resolve_api_key(args.api_key)
         self.out_dir = Path(args.out_dir or f"tmp/ttft-load-{self.run_id}")
         self.print_lock = threading.Lock()
+        self.request_counter = 0
+        self.request_counter_lock = threading.Lock()
 
     def run(self) -> int:
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -75,11 +102,19 @@ class TtftLoadTester:
 
         self.print_header()
         if self.args.warmup_requests > 0:
-            self.log(f"warmup requests={self.args.warmup_requests} concurrency={self.args.concurrency}")
-            self.run_batch(self.args.warmup_requests, include_results=False)
+            self.log(f"warmup requests={self.args.warmup_requests} concurrency={self.args.start_concurrency}")
+            self.run_fixed_count(
+                request_count=self.args.warmup_requests,
+                concurrency=self.args.start_concurrency,
+                stage_index=0,
+                include_results=False,
+            )
 
         started_wall = time.time()
-        results = self.run_batch(self.args.requests, include_results=True)
+        if self.args.mode == "fixed":
+            results, stage_summaries = self.run_fixed_mode()
+        else:
+            results, stage_summaries = self.run_ramp_mode()
         completed_wall = time.time()
 
         summary = build_summary(
@@ -89,21 +124,88 @@ class TtftLoadTester:
             started_wall=started_wall,
             completed_wall=completed_wall,
             results=results,
+            stage_summaries=stage_summaries,
         )
-        self.write_outputs(results, summary)
+        self.write_outputs(results, stage_summaries, summary)
         print_summary(summary, self.out_dir)
 
         if self.args.fail_on_error and summary["errors"]["total"] > 0:
             return 1
         return 0
 
-    def run_batch(self, request_count: int, include_results: bool) -> list[RequestResult]:
+    def run_fixed_mode(self) -> tuple[list[RequestResult], list[StageSummary]]:
+        started_at = time.time()
+        results = self.run_fixed_count(
+            request_count=self.args.requests,
+            concurrency=self.args.concurrency,
+            stage_index=1,
+            include_results=True,
+        )
+        completed_at = time.time()
+        stage = summarize_stage(
+            stage_index=1,
+            concurrency=self.args.concurrency,
+            started_at=started_at,
+            completed_at=completed_at,
+            results=results,
+            args=self.args,
+        )
+        self.print_stage_summary(stage)
+        return results, [stage]
+
+    def run_ramp_mode(self) -> tuple[list[RequestResult], list[StageSummary]]:
+        all_results: list[RequestResult] = []
+        stage_summaries: list[StageSummary] = []
+        stage_index = 1
+        concurrency = self.args.start_concurrency
+
+        while concurrency <= self.args.max_concurrency:
+            self.log(
+                f"stage={stage_index} concurrency={concurrency} "
+                f"duration={self.args.stage_seconds:g}s"
+            )
+            started_at = time.time()
+            stage_results = self.run_timed_stage(
+                duration_seconds=self.args.stage_seconds,
+                concurrency=concurrency,
+                stage_index=stage_index,
+            )
+            completed_at = time.time()
+            all_results.extend(stage_results)
+            stage = summarize_stage(
+                stage_index=stage_index,
+                concurrency=concurrency,
+                started_at=started_at,
+                completed_at=completed_at,
+                results=stage_results,
+                args=self.args,
+            )
+            stage_summaries.append(stage)
+            self.print_stage_summary(stage)
+
+            if self.args.stop_on_unstable and not stage.stable:
+                self.log(f"stop: stage={stage_index} unstable: {stage.stable_reason}")
+                break
+
+            stage_index += 1
+            concurrency += self.args.step_concurrency
+
+        return all_results, stage_summaries
+
+    def run_fixed_count(
+        self,
+        request_count: int,
+        concurrency: int,
+        stage_index: int,
+        include_results: bool,
+    ) -> list[RequestResult]:
         batch_started = time.time()
         futures: list[Future[RequestResult]] = []
-        with ThreadPoolExecutor(max_workers=self.args.concurrency) as executor:
-            for idx in range(1, request_count + 1):
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            for _ in range(request_count):
+                idx = self.next_request_index()
                 scheduled_at = time.time()
-                futures.append(executor.submit(self.send_one, idx, scheduled_at))
+                futures.append(executor.submit(self.send_one, idx, stage_index, concurrency, scheduled_at))
 
             results: list[RequestResult] = []
             completed = 0
@@ -120,7 +222,49 @@ class TtftLoadTester:
                     self.log(f"progress {completed}/{request_count} ok={ok} elapsed={elapsed:.1f}s")
         return sorted(results, key=lambda item: item.request_index)
 
-    def send_one(self, request_index: int, scheduled_at: float) -> RequestResult:
+    def run_timed_stage(
+        self,
+        duration_seconds: float,
+        concurrency: int,
+        stage_index: int,
+    ) -> list[RequestResult]:
+        stage_started = time.time()
+        stop_at = stage_started + duration_seconds
+        results: list[RequestResult] = []
+
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures: set[Future[RequestResult]] = set()
+            while time.time() < stop_at or futures:
+                while time.time() < stop_at and len(futures) < concurrency:
+                    idx = self.next_request_index()
+                    scheduled_at = time.time()
+                    futures.add(executor.submit(self.send_one, idx, stage_index, concurrency, scheduled_at))
+
+                done = [future for future in futures if future.done()]
+                if not done:
+                    time.sleep(0.02)
+                    continue
+
+                for future in done:
+                    futures.remove(future)
+                    results.append(future.result())
+                    if self.args.progress_every > 0 and len(results) % self.args.progress_every == 0:
+                        elapsed = time.time() - stage_started
+                        ok = sum(1 for item in results if item.ok)
+                        self.log(
+                            f"stage={stage_index} progress completed={len(results)} "
+                            f"ok={ok} elapsed={elapsed:.1f}s"
+                        )
+
+        return sorted(results, key=lambda item: item.request_index)
+
+    def send_one(
+        self,
+        request_index: int,
+        stage_index: int,
+        stage_concurrency: int,
+        scheduled_at: float,
+    ) -> RequestResult:
         started_at = time.time()
         payload = build_payload(self.args, self.run_id, request_index)
         status = 0
@@ -187,6 +331,8 @@ class TtftLoadTester:
 
         return RequestResult(
             request_index=request_index,
+            stage_index=stage_index,
+            stage_concurrency=stage_concurrency,
             ok=ok,
             status=status,
             error_type=error_type,
@@ -208,8 +354,19 @@ class TtftLoadTester:
             response_model=response_model,
         )
 
-    def write_outputs(self, results: list[RequestResult], summary: dict[str, Any]) -> None:
+    def next_request_index(self) -> int:
+        with self.request_counter_lock:
+            self.request_counter += 1
+            return self.request_counter
+
+    def write_outputs(
+        self,
+        results: list[RequestResult],
+        stage_summaries: list[StageSummary],
+        summary: dict[str, Any],
+    ) -> None:
         write_csv(self.out_dir / "requests.csv", [asdict(item) for item in results])
+        write_csv(self.out_dir / "stages.csv", [asdict(item) for item in stage_summaries])
         write_json(self.out_dir / "summary.json", summary)
         with (self.out_dir / "failures.jsonl").open("w", encoding="utf-8") as fh:
             for item in results:
@@ -227,15 +384,41 @@ class TtftLoadTester:
         print("TTFT load test")
         print(f"endpoint={self.endpoint}")
         print(f"model={self.args.model}")
-        print(
-            f"requests={self.args.requests} concurrency={self.args.concurrency} "
-            f"stream={str(self.args.stream).lower()}"
-        )
+        if self.args.mode == "fixed":
+            print(
+                f"mode=fixed requests={self.args.requests} concurrency={self.args.concurrency} "
+                f"stream={str(self.args.stream).lower()}"
+            )
+        else:
+            print(
+                f"mode=ramp start_concurrency={self.args.start_concurrency} "
+                f"step_concurrency={self.args.step_concurrency} "
+                f"max_concurrency={self.args.max_concurrency} "
+                f"stage_seconds={self.args.stage_seconds:g} stream={str(self.args.stream).lower()}"
+            )
         print(f"output_dir={self.out_dir}")
 
     def log(self, message: str) -> None:
         with self.print_lock:
             print(time.strftime("%H:%M:%S"), message, flush=True)
+
+    def print_stage_summary(self, stage: StageSummary) -> None:
+        self.log(
+            "stage={stage} concurrency={concurrency} completed={completed} ok={ok} "
+            "rpm={rpm:.2f} success={success:.2%} "
+            "ttft_p95={ttft}ms total_p95={total}ms stable={stable} {reason}".format(
+                stage=stage.stage_index,
+                concurrency=stage.concurrency,
+                completed=stage.completed,
+                ok=stage.ok,
+                rpm=stage.achieved_rpm,
+                success=stage.success_rate,
+                ttft=stage.p95_ttft_ms,
+                total=stage.p95_total_ms,
+                stable=stage.stable,
+                reason=stage.stable_reason,
+            )
+        )
 
 
 def build_payload(args: argparse.Namespace, run_id: str, request_index: int) -> dict[str, Any]:
@@ -419,6 +602,7 @@ def build_summary(
     started_wall: float,
     completed_wall: float,
     results: list[RequestResult],
+    stage_summaries: list[StageSummary],
 ) -> dict[str, Any]:
     ok_results = [item for item in results if item.ok]
     errors = [item for item in results if not item.ok]
@@ -435,13 +619,19 @@ def build_summary(
         "run_id": run_id,
         "endpoint": endpoint,
         "model": args.model,
+        "mode": args.mode,
         "stream": args.stream,
-        "requests": args.requests,
-        "concurrency": args.concurrency,
+        "requests": len(results),
+        "configured_requests": args.requests,
+        "configured_concurrency": args.concurrency,
         "started_at": started_wall,
         "completed_at": completed_wall,
         "wall_ms": wall_ms,
         "throughput_rps": round(len(results) / max(wall_ms / 1000.0, 0.001), 4),
+        "throughput_rpm": round(len(ok_results) * 60.0 / max(wall_ms / 1000.0, 0.001), 2),
+        "highest_stable_concurrency": highest_stable_concurrency(stage_summaries),
+        "highest_stable_rpm": highest_stable_rpm(stage_summaries),
+        "stages": [asdict(item) for item in stage_summaries],
         "success": {
             "ok": len(ok_results),
             "total": len(results),
@@ -471,6 +661,90 @@ def build_summary(
             "output": describe_values(item.output_tokens for item in ok_results if item.output_tokens is not None),
         },
     }
+
+
+def summarize_stage(
+    stage_index: int,
+    concurrency: int,
+    started_at: float,
+    completed_at: float,
+    results: list[RequestResult],
+    args: argparse.Namespace,
+) -> StageSummary:
+    ok_results = [item for item in results if item.ok]
+    errors = len(results) - len(ok_results)
+    success_rate = safe_div(len(ok_results), len(results))
+    error_rate = safe_div(errors, len(results))
+    wall_ms = ms_since(started_at, completed_at)
+    wall_seconds = max(wall_ms / 1000.0, 0.001)
+    ttft_values = sorted(item.first_token_ms for item in ok_results if item.first_token_ms is not None)
+    total_values = sorted(item.total_ms for item in ok_results)
+
+    stable, stable_reason = stage_stability(
+        completed=len(results),
+        ok=len(ok_results),
+        success_rate=success_rate,
+        error_rate=error_rate,
+        p95_ttft_ms=percentile(ttft_values, 0.95),
+        p95_total_ms=percentile(total_values, 0.95),
+        args=args,
+    )
+
+    return StageSummary(
+        stage_index=stage_index,
+        concurrency=concurrency,
+        started_at=started_at,
+        completed_at=completed_at,
+        wall_ms=wall_ms,
+        completed=len(results),
+        ok=len(ok_results),
+        errors=errors,
+        success_rate=round(success_rate, 4),
+        error_rate=round(error_rate, 4),
+        achieved_rpm=round(len(ok_results) * 60.0 / wall_seconds, 2),
+        p50_ttft_ms=percentile(ttft_values, 0.50),
+        p95_ttft_ms=percentile(ttft_values, 0.95),
+        p99_ttft_ms=percentile(ttft_values, 0.99),
+        p50_total_ms=percentile(total_values, 0.50),
+        p95_total_ms=percentile(total_values, 0.95),
+        p99_total_ms=percentile(total_values, 0.99),
+        stable=stable,
+        stable_reason=stable_reason,
+    )
+
+
+def stage_stability(
+    completed: int,
+    ok: int,
+    success_rate: float,
+    error_rate: float,
+    p95_ttft_ms: int | None,
+    p95_total_ms: int | None,
+    args: argparse.Namespace,
+) -> tuple[bool, str]:
+    if completed == 0:
+        return False, "no requests completed"
+    if ok == 0:
+        return False, "no successful requests"
+    if success_rate < args.min_success_rate:
+        return False, f"success_rate {success_rate:.4f} < {args.min_success_rate:.4f}"
+    if error_rate > args.max_error_rate:
+        return False, f"error_rate {error_rate:.4f} > {args.max_error_rate:.4f}"
+    if args.p95_ttft_sla_ms > 0 and p95_ttft_ms is not None and p95_ttft_ms > args.p95_ttft_sla_ms:
+        return False, f"p95_ttft_ms {p95_ttft_ms} > {args.p95_ttft_sla_ms}"
+    if args.p95_total_sla_ms > 0 and p95_total_ms is not None and p95_total_ms > args.p95_total_sla_ms:
+        return False, f"p95_total_ms {p95_total_ms} > {args.p95_total_sla_ms}"
+    return True, "ok"
+
+
+def highest_stable_concurrency(stage_summaries: list[StageSummary]) -> int:
+    stable = [item.concurrency for item in stage_summaries if item.stable]
+    return max(stable) if stable else 0
+
+
+def highest_stable_rpm(stage_summaries: list[StageSummary]) -> float:
+    stable = [item.achieved_rpm for item in stage_summaries if item.stable]
+    return max(stable) if stable else 0.0
 
 
 def describe_values(values_iter: Any) -> dict[str, Any]:
@@ -518,8 +792,13 @@ def print_summary(summary: dict[str, Any], out_dir: Path) -> None:
     )
     print(
         f"wall={summary['wall_ms']}ms throughput={summary['throughput_rps']}rps "
-        f"concurrency={summary['concurrency']}"
+        f"throughput={summary['throughput_rpm']}rpm"
     )
+    if summary["stages"]:
+        print(
+            f"highest_stable_concurrency={summary['highest_stable_concurrency']} "
+            f"highest_stable_rpm={summary['highest_stable_rpm']}"
+        )
     print_metric("ttft_first_token", latency["ttft_first_token"])
     print_metric("total", latency["total"])
     print_metric("first_event", latency["first_event"])
@@ -529,6 +808,7 @@ def print_summary(summary: dict[str, Any], out_dir: Path) -> None:
         print(f"errors_by_type={errors['by_type']}")
     print(f"summary_json={out_dir / 'summary.json'}")
     print(f"requests_csv={out_dir / 'requests.csv'}")
+    print(f"stages_csv={out_dir / 'stages.csv'}")
     print(f"failures_jsonl={out_dir / 'failures.jsonl'}")
 
 
@@ -644,7 +924,7 @@ def env_int(name: str, default: int) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Measure concurrent streaming TTFT and total latency for /v1/messages."
+        description="Measure streaming TTFT, total latency, concurrency, and achieved RPM for /v1/messages."
     )
     parser.add_argument("--base-url", default=os.environ.get("BASE_URL", DEFAULT_BASE_URL))
     parser.add_argument("--route", default=os.environ.get("ROUTE", DEFAULT_ROUTE))
@@ -652,8 +932,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auth", choices=["x-api-key", "bearer", "both"], default=os.environ.get("AUTH", "x-api-key"))
     parser.add_argument("--anthropic-version", default=os.environ.get("ANTHROPIC_VERSION", "2023-06-01"))
     parser.add_argument("--model", default=os.environ.get("MODEL", DEFAULT_MODEL))
+    parser.add_argument("--mode", choices=["ramp", "fixed"], default=os.environ.get("MODE", "ramp"))
     parser.add_argument("-c", "--concurrency", type=int, default=env_int("CONCURRENCY", 3))
     parser.add_argument("-n", "--requests", type=int, default=env_int("REQUESTS", 12))
+    parser.add_argument("--start-concurrency", type=int, default=env_int("START_CONCURRENCY", 1))
+    parser.add_argument("--step-concurrency", type=int, default=env_int("STEP_CONCURRENCY", 2))
+    parser.add_argument("--max-concurrency", type=int, default=env_int("MAX_CONCURRENCY", 16))
+    parser.add_argument("--stage-seconds", type=float, default=float(os.environ.get("STAGE_SECONDS", "60")))
+    parser.add_argument("--stop-on-unstable", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--min-success-rate", type=float, default=float(os.environ.get("MIN_SUCCESS_RATE", "0.95")))
+    parser.add_argument("--max-error-rate", type=float, default=float(os.environ.get("MAX_ERROR_RATE", "0.05")))
+    parser.add_argument("--p95-ttft-sla-ms", type=int, default=env_int("P95_TTFT_SLA_MS", 0))
+    parser.add_argument("--p95-total-sla-ms", type=int, default=env_int("P95_TOTAL_SLA_MS", 0))
     parser.add_argument("--warmup-requests", type=int, default=env_int("WARMUP_REQUESTS", 0))
     parser.add_argument("--timeout-secs", type=float, default=float(os.environ.get("TIMEOUT_SECS", "180")))
     parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=True)
@@ -685,6 +975,22 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--concurrency must be >= 1")
     if args.requests < 1:
         raise SystemExit("--requests must be >= 1")
+    if args.start_concurrency < 1:
+        raise SystemExit("--start-concurrency must be >= 1")
+    if args.step_concurrency < 1:
+        raise SystemExit("--step-concurrency must be >= 1")
+    if args.max_concurrency < args.start_concurrency:
+        raise SystemExit("--max-concurrency must be >= --start-concurrency")
+    if args.stage_seconds <= 0:
+        raise SystemExit("--stage-seconds must be > 0")
+    if not 0 <= args.min_success_rate <= 1:
+        raise SystemExit("--min-success-rate must be between 0 and 1")
+    if not 0 <= args.max_error_rate <= 1:
+        raise SystemExit("--max-error-rate must be between 0 and 1")
+    if args.p95_ttft_sla_ms < 0:
+        raise SystemExit("--p95-ttft-sla-ms must be >= 0")
+    if args.p95_total_sla_ms < 0:
+        raise SystemExit("--p95-total-sla-ms must be >= 0")
     if args.warmup_requests < 0:
         raise SystemExit("--warmup-requests must be >= 0")
     if args.max_tokens < 1:
