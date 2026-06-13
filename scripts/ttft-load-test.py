@@ -38,6 +38,7 @@ class RequestResult:
     request_index: int
     stage_index: int
     stage_concurrency: int
+    stage_target_rpm: float
     ok: bool
     status: int
     error_type: str
@@ -63,14 +64,18 @@ class RequestResult:
 class StageSummary:
     stage_index: int
     concurrency: int
+    target_rpm: float
     started_at: float
     completed_at: float
     wall_ms: int
+    measure_seconds: float
+    scheduled: int
     completed: int
     ok: int
     errors: int
     success_rate: float
     error_rate: float
+    completed_rpm: float
     achieved_rpm: float
     p50_ttft_ms: int | None
     p95_ttft_ms: int | None
@@ -78,6 +83,7 @@ class StageSummary:
     p50_total_ms: int | None
     p95_total_ms: int | None
     p99_total_ms: int | None
+    p95_client_queue_ms: int | None
     stable: bool
     stable_reason: str
 
@@ -107,14 +113,17 @@ class TtftLoadTester:
                 request_count=self.args.warmup_requests,
                 concurrency=self.args.start_concurrency,
                 stage_index=0,
+                target_rpm=0.0,
                 include_results=False,
             )
 
         started_wall = time.time()
         if self.args.mode == "fixed":
             results, stage_summaries = self.run_fixed_mode()
-        else:
+        elif self.args.mode == "ramp":
             results, stage_summaries = self.run_ramp_mode()
+        else:
+            results, stage_summaries = self.run_rpm_ramp_mode()
         completed_wall = time.time()
 
         summary = build_summary(
@@ -139,12 +148,16 @@ class TtftLoadTester:
             request_count=self.args.requests,
             concurrency=self.args.concurrency,
             stage_index=1,
+            target_rpm=0.0,
             include_results=True,
         )
         completed_at = time.time()
         stage = summarize_stage(
             stage_index=1,
             concurrency=self.args.concurrency,
+            target_rpm=0.0,
+            scheduled=len(results),
+            measure_seconds=None,
             started_at=started_at,
             completed_at=completed_at,
             results=results,
@@ -169,12 +182,16 @@ class TtftLoadTester:
                 duration_seconds=self.args.stage_seconds,
                 concurrency=concurrency,
                 stage_index=stage_index,
+                target_rpm=0.0,
             )
             completed_at = time.time()
             all_results.extend(stage_results)
             stage = summarize_stage(
                 stage_index=stage_index,
                 concurrency=concurrency,
+                target_rpm=0.0,
+                scheduled=len(stage_results),
+                measure_seconds=None,
                 started_at=started_at,
                 completed_at=completed_at,
                 results=stage_results,
@@ -192,11 +209,54 @@ class TtftLoadTester:
 
         return all_results, stage_summaries
 
+    def run_rpm_ramp_mode(self) -> tuple[list[RequestResult], list[StageSummary]]:
+        all_results: list[RequestResult] = []
+        stage_summaries: list[StageSummary] = []
+        stage_index = 1
+        target_rpm = self.args.start_rpm
+
+        while target_rpm <= self.args.max_rpm + 1e-9:
+            self.log(
+                f"stage={stage_index} target_rpm={target_rpm:g} "
+                f"max_workers={self.args.max_workers} duration={self.args.stage_seconds:g}s"
+            )
+            started_at = time.time()
+            stage_results, scheduled = self.run_rpm_stage(
+                duration_seconds=self.args.stage_seconds,
+                target_rpm=target_rpm,
+                stage_index=stage_index,
+            )
+            completed_at = time.time()
+            all_results.extend(stage_results)
+            stage = summarize_stage(
+                stage_index=stage_index,
+                concurrency=max((item.stage_concurrency for item in stage_results), default=0),
+                target_rpm=target_rpm,
+                scheduled=scheduled,
+                measure_seconds=self.args.stage_seconds,
+                started_at=started_at,
+                completed_at=completed_at,
+                results=stage_results,
+                args=self.args,
+            )
+            stage_summaries.append(stage)
+            self.print_stage_summary(stage)
+
+            if self.args.stop_on_unstable and not stage.stable:
+                self.log(f"stop: stage={stage_index} unstable: {stage.stable_reason}")
+                break
+
+            stage_index += 1
+            target_rpm += self.args.step_rpm
+
+        return all_results, stage_summaries
+
     def run_fixed_count(
         self,
         request_count: int,
         concurrency: int,
         stage_index: int,
+        target_rpm: float,
         include_results: bool,
     ) -> list[RequestResult]:
         batch_started = time.time()
@@ -205,7 +265,16 @@ class TtftLoadTester:
             for _ in range(request_count):
                 idx = self.next_request_index()
                 scheduled_at = time.time()
-                futures.append(executor.submit(self.send_one, idx, stage_index, concurrency, scheduled_at))
+                futures.append(
+                    executor.submit(
+                        self.send_one,
+                        idx,
+                        stage_index,
+                        concurrency,
+                        target_rpm,
+                        scheduled_at,
+                    )
+                )
 
             results: list[RequestResult] = []
             completed = 0
@@ -227,6 +296,7 @@ class TtftLoadTester:
         duration_seconds: float,
         concurrency: int,
         stage_index: int,
+        target_rpm: float,
     ) -> list[RequestResult]:
         stage_started = time.time()
         stop_at = stage_started + duration_seconds
@@ -238,7 +308,16 @@ class TtftLoadTester:
                 while time.time() < stop_at and len(futures) < concurrency:
                     idx = self.next_request_index()
                     scheduled_at = time.time()
-                    futures.add(executor.submit(self.send_one, idx, stage_index, concurrency, scheduled_at))
+                    futures.add(
+                        executor.submit(
+                            self.send_one,
+                            idx,
+                            stage_index,
+                            concurrency,
+                            target_rpm,
+                            scheduled_at,
+                        )
+                    )
 
                 done = [future for future in futures if future.done()]
                 if not done:
@@ -258,11 +337,64 @@ class TtftLoadTester:
 
         return sorted(results, key=lambda item: item.request_index)
 
+    def run_rpm_stage(
+        self,
+        duration_seconds: float,
+        target_rpm: float,
+        stage_index: int,
+    ) -> tuple[list[RequestResult], int]:
+        interval = 60.0 / target_rpm
+        scheduled_count = max(1, int(math.floor(duration_seconds / interval)))
+        stage_started = time.monotonic()
+        results: list[RequestResult] = []
+        futures: list[Future[RequestResult]] = []
+
+        with ThreadPoolExecutor(max_workers=self.args.max_workers) as executor:
+            for offset in range(scheduled_count):
+                scheduled_mono = stage_started + (offset * interval)
+                sleep_for = scheduled_mono - time.monotonic()
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+
+                idx = self.next_request_index()
+                scheduled_at = time.time()
+                futures.append(
+                    executor.submit(
+                        self.send_one,
+                        idx,
+                        stage_index,
+                        self.args.max_workers,
+                        target_rpm,
+                        scheduled_at,
+                    )
+                )
+
+            remaining = (stage_started + duration_seconds) - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                results.append(future.result())
+                if self.args.progress_every > 0 and (
+                    completed == scheduled_count or completed % self.args.progress_every == 0
+                ):
+                    elapsed = time.monotonic() - stage_started
+                    ok = sum(1 for item in results if item.ok)
+                    self.log(
+                        f"stage={stage_index} progress completed={completed}/{scheduled_count} "
+                        f"ok={ok} elapsed={elapsed:.1f}s"
+                    )
+
+        return sorted(results, key=lambda item: item.request_index), scheduled_count
+
     def send_one(
         self,
         request_index: int,
         stage_index: int,
         stage_concurrency: int,
+        stage_target_rpm: float,
         scheduled_at: float,
     ) -> RequestResult:
         started_at = time.time()
@@ -333,6 +465,7 @@ class TtftLoadTester:
             request_index=request_index,
             stage_index=stage_index,
             stage_concurrency=stage_concurrency,
+            stage_target_rpm=stage_target_rpm,
             ok=ok,
             status=status,
             error_type=error_type,
@@ -389,11 +522,18 @@ class TtftLoadTester:
                 f"mode=fixed requests={self.args.requests} concurrency={self.args.concurrency} "
                 f"stream={str(self.args.stream).lower()}"
             )
-        else:
+        elif self.args.mode == "ramp":
             print(
                 f"mode=ramp start_concurrency={self.args.start_concurrency} "
                 f"step_concurrency={self.args.step_concurrency} "
                 f"max_concurrency={self.args.max_concurrency} "
+                f"stage_seconds={self.args.stage_seconds:g} stream={str(self.args.stream).lower()}"
+            )
+        else:
+            print(
+                f"mode=rpm-ramp start_rpm={self.args.start_rpm:g} "
+                f"step_rpm={self.args.step_rpm:g} max_rpm={self.args.max_rpm:g} "
+                f"max_workers={self.args.max_workers} "
                 f"stage_seconds={self.args.stage_seconds:g} stream={str(self.args.stream).lower()}"
             )
         print(f"output_dir={self.out_dir}")
@@ -404,15 +544,20 @@ class TtftLoadTester:
 
     def print_stage_summary(self, stage: StageSummary) -> None:
         self.log(
-            "stage={stage} concurrency={concurrency} completed={completed} ok={ok} "
-            "rpm={rpm:.2f} success={success:.2%} "
+            "stage={stage} target_rpm={target:g} workers={concurrency} scheduled={scheduled} "
+            "completed={completed} ok={ok} completed_rpm={completed_rpm:.2f} "
+            "success_rpm={rpm:.2f} success={success:.2%} queue_p95={queue}ms "
             "ttft_p95={ttft}ms total_p95={total}ms stable={stable} {reason}".format(
                 stage=stage.stage_index,
+                target=stage.target_rpm,
                 concurrency=stage.concurrency,
+                scheduled=stage.scheduled,
                 completed=stage.completed,
                 ok=stage.ok,
+                completed_rpm=stage.completed_rpm,
                 rpm=stage.achieved_rpm,
                 success=stage.success_rate,
+                queue=stage.p95_client_queue_ms,
                 ttft=stage.p95_ttft_ms,
                 total=stage.p95_total_ms,
                 stable=stage.stable,
@@ -624,12 +769,17 @@ def build_summary(
         "requests": len(results),
         "configured_requests": args.requests,
         "configured_concurrency": args.concurrency,
+        "configured_start_rpm": args.start_rpm,
+        "configured_step_rpm": args.step_rpm,
+        "configured_max_rpm": args.max_rpm,
+        "configured_max_workers": args.max_workers,
         "started_at": started_wall,
         "completed_at": completed_wall,
         "wall_ms": wall_ms,
         "throughput_rps": round(len(results) / max(wall_ms / 1000.0, 0.001), 4),
         "throughput_rpm": round(len(ok_results) * 60.0 / max(wall_ms / 1000.0, 0.001), 2),
         "highest_stable_concurrency": highest_stable_concurrency(stage_summaries),
+        "highest_stable_target_rpm": highest_stable_target_rpm(stage_summaries),
         "highest_stable_rpm": highest_stable_rpm(stage_summaries),
         "stages": [asdict(item) for item in stage_summaries],
         "success": {
@@ -666,6 +816,9 @@ def build_summary(
 def summarize_stage(
     stage_index: int,
     concurrency: int,
+    target_rpm: float,
+    scheduled: int,
+    measure_seconds: float | None,
     started_at: float,
     completed_at: float,
     results: list[RequestResult],
@@ -677,8 +830,10 @@ def summarize_stage(
     error_rate = safe_div(errors, len(results))
     wall_ms = ms_since(started_at, completed_at)
     wall_seconds = max(wall_ms / 1000.0, 0.001)
+    rpm_seconds = max(measure_seconds if measure_seconds is not None else wall_seconds, 0.001)
     ttft_values = sorted(item.first_token_ms for item in ok_results if item.first_token_ms is not None)
     total_values = sorted(item.total_ms for item in ok_results)
+    client_queue_values = sorted(item.client_queue_ms for item in results)
 
     stable, stable_reason = stage_stability(
         completed=len(results),
@@ -693,21 +848,26 @@ def summarize_stage(
     return StageSummary(
         stage_index=stage_index,
         concurrency=concurrency,
+        target_rpm=target_rpm,
         started_at=started_at,
         completed_at=completed_at,
         wall_ms=wall_ms,
+        measure_seconds=round(rpm_seconds, 3),
+        scheduled=scheduled,
         completed=len(results),
         ok=len(ok_results),
         errors=errors,
         success_rate=round(success_rate, 4),
         error_rate=round(error_rate, 4),
-        achieved_rpm=round(len(ok_results) * 60.0 / wall_seconds, 2),
+        completed_rpm=round(len(results) * 60.0 / rpm_seconds, 2),
+        achieved_rpm=round(len(ok_results) * 60.0 / rpm_seconds, 2),
         p50_ttft_ms=percentile(ttft_values, 0.50),
         p95_ttft_ms=percentile(ttft_values, 0.95),
         p99_ttft_ms=percentile(ttft_values, 0.99),
         p50_total_ms=percentile(total_values, 0.50),
         p95_total_ms=percentile(total_values, 0.95),
         p99_total_ms=percentile(total_values, 0.99),
+        p95_client_queue_ms=percentile(client_queue_values, 0.95),
         stable=stable,
         stable_reason=stable_reason,
     )
@@ -740,6 +900,11 @@ def stage_stability(
 def highest_stable_concurrency(stage_summaries: list[StageSummary]) -> int:
     stable = [item.concurrency for item in stage_summaries if item.stable]
     return max(stable) if stable else 0
+
+
+def highest_stable_target_rpm(stage_summaries: list[StageSummary]) -> float:
+    stable = [item.target_rpm for item in stage_summaries if item.stable and item.target_rpm > 0]
+    return max(stable) if stable else 0.0
 
 
 def highest_stable_rpm(stage_summaries: list[StageSummary]) -> float:
@@ -797,6 +962,7 @@ def print_summary(summary: dict[str, Any], out_dir: Path) -> None:
     if summary["stages"]:
         print(
             f"highest_stable_concurrency={summary['highest_stable_concurrency']} "
+            f"highest_stable_target_rpm={summary['highest_stable_target_rpm']} "
             f"highest_stable_rpm={summary['highest_stable_rpm']}"
         )
     print_metric("ttft_first_token", latency["ttft_first_token"])
@@ -932,12 +1098,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auth", choices=["x-api-key", "bearer", "both"], default=os.environ.get("AUTH", "x-api-key"))
     parser.add_argument("--anthropic-version", default=os.environ.get("ANTHROPIC_VERSION", "2023-06-01"))
     parser.add_argument("--model", default=os.environ.get("MODEL", DEFAULT_MODEL))
-    parser.add_argument("--mode", choices=["ramp", "fixed"], default=os.environ.get("MODE", "ramp"))
+    parser.add_argument("--mode", choices=["rpm-ramp", "ramp", "fixed"], default=os.environ.get("MODE", "rpm-ramp"))
     parser.add_argument("-c", "--concurrency", type=int, default=env_int("CONCURRENCY", 3))
     parser.add_argument("-n", "--requests", type=int, default=env_int("REQUESTS", 12))
     parser.add_argument("--start-concurrency", type=int, default=env_int("START_CONCURRENCY", 1))
     parser.add_argument("--step-concurrency", type=int, default=env_int("STEP_CONCURRENCY", 2))
     parser.add_argument("--max-concurrency", type=int, default=env_int("MAX_CONCURRENCY", 16))
+    parser.add_argument("--start-rpm", type=float, default=float(os.environ.get("START_RPM", "100")))
+    parser.add_argument("--step-rpm", type=float, default=float(os.environ.get("STEP_RPM", "100")))
+    parser.add_argument("--max-rpm", type=float, default=float(os.environ.get("MAX_RPM", "1000")))
+    parser.add_argument("--max-workers", type=int, default=env_int("MAX_WORKERS", 128))
     parser.add_argument("--stage-seconds", type=float, default=float(os.environ.get("STAGE_SECONDS", "60")))
     parser.add_argument("--stop-on-unstable", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--min-success-rate", type=float, default=float(os.environ.get("MIN_SUCCESS_RATE", "0.95")))
@@ -981,6 +1151,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--step-concurrency must be >= 1")
     if args.max_concurrency < args.start_concurrency:
         raise SystemExit("--max-concurrency must be >= --start-concurrency")
+    if args.start_rpm <= 0:
+        raise SystemExit("--start-rpm must be > 0")
+    if args.step_rpm <= 0:
+        raise SystemExit("--step-rpm must be > 0")
+    if args.max_rpm < args.start_rpm:
+        raise SystemExit("--max-rpm must be >= --start-rpm")
+    if args.max_workers < 1:
+        raise SystemExit("--max-workers must be >= 1")
     if args.stage_seconds <= 0:
         raise SystemExit("--stage-seconds must be > 0")
     if not 0 <= args.min_success_rate <= 1:
