@@ -83,6 +83,8 @@ class StageSummary:
     p50_total_ms: int | None
     p95_total_ms: int | None
     p99_total_ms: int | None
+    estimated_avg_supported_concurrency: float | None
+    estimated_p95_supported_concurrency: float | None
     p95_client_queue_ms: int | None
     stable: bool
     stable_reason: str
@@ -547,7 +549,9 @@ class TtftLoadTester:
             "stage={stage} target_rpm={target:g} workers={concurrency} scheduled={scheduled} "
             "completed={completed} ok={ok} completed_rpm={completed_rpm:.2f} "
             "success_rpm={rpm:.2f} success={success:.2%} queue_p95={queue}ms "
-            "ttft_p95={ttft}ms total_p95={total}ms stable={stable} {reason}".format(
+            "ttft_p95={ttft}ms total_p95={total}ms "
+            "supported_concurrency_avg={avg_conc} supported_concurrency_p95={p95_conc} "
+            "stable={stable} {reason}".format(
                 stage=stage.stage_index,
                 target=stage.target_rpm,
                 concurrency=stage.concurrency,
@@ -560,6 +564,8 @@ class TtftLoadTester:
                 queue=stage.p95_client_queue_ms,
                 ttft=stage.p95_ttft_ms,
                 total=stage.p95_total_ms,
+                avg_conc=format_optional_float(stage.estimated_avg_supported_concurrency),
+                p95_conc=format_optional_float(stage.estimated_p95_supported_concurrency),
                 stable=stage.stable,
                 reason=stage.stable_reason,
             )
@@ -781,6 +787,7 @@ def build_summary(
         "highest_stable_concurrency": highest_stable_concurrency(stage_summaries),
         "highest_stable_target_rpm": highest_stable_target_rpm(stage_summaries),
         "highest_stable_rpm": highest_stable_rpm(stage_summaries),
+        "highest_stable_supported_concurrency": highest_stable_supported_concurrency(stage_summaries),
         "stages": [asdict(item) for item in stage_summaries],
         "success": {
             "ok": len(ok_results),
@@ -834,6 +841,11 @@ def summarize_stage(
     ttft_values = sorted(item.first_token_ms for item in ok_results if item.first_token_ms is not None)
     total_values = sorted(item.total_ms for item in ok_results)
     client_queue_values = sorted(item.client_queue_ms for item in results)
+    achieved_rpm = round(len(ok_results) * 60.0 / rpm_seconds, 2)
+    avg_total_ms = round(sum(total_values) / len(total_values), 2) if total_values else None
+    p95_total_ms = percentile(total_values, 0.95)
+    estimated_avg_concurrency = estimate_supported_concurrency(achieved_rpm, avg_total_ms)
+    estimated_p95_concurrency = estimate_supported_concurrency(achieved_rpm, p95_total_ms)
 
     stable, stable_reason = stage_stability(
         completed=len(results),
@@ -860,13 +872,15 @@ def summarize_stage(
         success_rate=round(success_rate, 4),
         error_rate=round(error_rate, 4),
         completed_rpm=round(len(results) * 60.0 / rpm_seconds, 2),
-        achieved_rpm=round(len(ok_results) * 60.0 / rpm_seconds, 2),
+        achieved_rpm=achieved_rpm,
         p50_ttft_ms=percentile(ttft_values, 0.50),
         p95_ttft_ms=percentile(ttft_values, 0.95),
         p99_ttft_ms=percentile(ttft_values, 0.99),
         p50_total_ms=percentile(total_values, 0.50),
-        p95_total_ms=percentile(total_values, 0.95),
+        p95_total_ms=p95_total_ms,
         p99_total_ms=percentile(total_values, 0.99),
+        estimated_avg_supported_concurrency=estimated_avg_concurrency,
+        estimated_p95_supported_concurrency=estimated_p95_concurrency,
         p95_client_queue_ms=percentile(client_queue_values, 0.95),
         stable=stable,
         stable_reason=stable_reason,
@@ -910,6 +924,38 @@ def highest_stable_target_rpm(stage_summaries: list[StageSummary]) -> float:
 def highest_stable_rpm(stage_summaries: list[StageSummary]) -> float:
     stable = [item.achieved_rpm for item in stage_summaries if item.stable]
     return max(stable) if stable else 0.0
+
+
+def highest_stable_supported_concurrency(stage_summaries: list[StageSummary]) -> dict[str, Any]:
+    stable = [item for item in stage_summaries if item.stable]
+    if not stable:
+        return {
+            "stage_index": None,
+            "target_rpm": 0.0,
+            "success_rpm": 0.0,
+            "avg": None,
+            "p95": None,
+        }
+    best = max(stable, key=lambda item: item.target_rpm if item.target_rpm > 0 else item.achieved_rpm)
+    return {
+        "stage_index": best.stage_index,
+        "target_rpm": best.target_rpm,
+        "success_rpm": best.achieved_rpm,
+        "avg": best.estimated_avg_supported_concurrency,
+        "p95": best.estimated_p95_supported_concurrency,
+    }
+
+
+def estimate_supported_concurrency(success_rpm: float, total_latency_ms: int | float | None) -> float | None:
+    if total_latency_ms is None or success_rpm <= 0:
+        return None
+    return round(success_rpm * (float(total_latency_ms) / 1000.0) / 60.0, 2)
+
+
+def format_optional_float(value: float | None) -> str:
+    if value is None:
+        return "None"
+    return f"{value:.2f}"
 
 
 def describe_values(values_iter: Any) -> dict[str, Any]:
@@ -960,10 +1006,18 @@ def print_summary(summary: dict[str, Any], out_dir: Path) -> None:
         f"throughput={summary['throughput_rpm']}rpm"
     )
     if summary["stages"]:
+        supported = summary["highest_stable_supported_concurrency"]
         print(
             f"highest_stable_concurrency={summary['highest_stable_concurrency']} "
             f"highest_stable_target_rpm={summary['highest_stable_target_rpm']} "
             f"highest_stable_rpm={summary['highest_stable_rpm']}"
+        )
+        print(
+            "supported_concurrency "
+            f"stage={supported['stage_index']} target_rpm={supported['target_rpm']} "
+            f"success_rpm={supported['success_rpm']} "
+            f"avg={format_optional_float(supported['avg'])} "
+            f"p95={format_optional_float(supported['p95'])}"
         )
     print_metric("ttft_first_token", latency["ttft_first_token"])
     print_metric("total", latency["total"])
