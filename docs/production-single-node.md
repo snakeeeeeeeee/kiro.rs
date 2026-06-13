@@ -237,6 +237,20 @@ scripts/load-test.sh
 
 For one account, keep `CONCURRENCY` at or below `perAccountMaxConcurrent` for baseline tests. Increase it only when validating `429` behavior.
 
+TTFT and total latency test:
+
+```bash
+BASE_URL=http://127.0.0.1:8990 \
+API_KEY='your-api-key' \
+python3 scripts/ttft-load-test.py \
+  --model claude-opus-4-8 \
+  --concurrency 8 \
+  --requests 40 \
+  --warmup-requests 4
+```
+
+The TTFT test streams by default and reports first-token latency plus total latency percentiles. It writes `summary.json`, `requests.csv`, and `failures.jsonl` under `tmp/ttft-load-*/`.
+
 Account-pool RPM test:
 
 ```bash
