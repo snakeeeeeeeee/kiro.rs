@@ -2,7 +2,7 @@
 //!
 //! 负责将 Anthropic API 请求格式转换为 Kiro API 请求格式
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -358,16 +358,21 @@ pub fn convert_request_with_options(
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
     let mut history = build_history(req, messages, &model_id, &mut tool_name_map, options)?;
 
-    // 8. 验证并过滤 tool_use/tool_result 配对
+    // 8. 先按 Anthropic/Bedrock 的相邻轮次规则清洗工具调用链。
+    // new-api 等 OpenAI-compatible 转换层在 failover 时可能丢掉
+    // content=null 但 tool_calls 非空的 assistant 消息，留下孤立 tool_result。
+    let tool_results = sanitize_tool_pairing(&mut history, tool_results);
+
+    // 9. 验证并过滤 tool_use/tool_result 配对
     // 移除孤立的 tool_result（没有对应的 tool_use）
     // 同时返回孤立的 tool_use_id 集合，用于后续清理
     let (validated_tool_results, orphaned_tool_use_ids) =
         validate_tool_pairing(&history, &tool_results);
 
-    // 9. 从历史中移除孤立的 tool_use（Kiro API 要求 tool_use 必须有对应的 tool_result）
+    // 10. 从历史中移除孤立的 tool_use（Kiro API 要求 tool_use 必须有对应的 tool_result）
     remove_orphaned_tool_uses(&mut history, &orphaned_tool_use_ids);
 
-    // 10. 收集历史中使用的工具名称，为缺失的工具生成占位符定义
+    // 11. 收集历史中使用的工具名称，为缺失的工具生成占位符定义
     // Kiro API 要求：历史消息中引用的工具必须在 tools 列表中有定义
     // 注意：Kiro 匹配工具名称时忽略大小写，所以这里也需要忽略大小写比较
     let history_tool_names = collect_history_tool_names(&history);
@@ -382,7 +387,7 @@ pub fn convert_request_with_options(
         }
     }
 
-    // 11. 构建 UserInputMessageContext
+    // 12. 构建 UserInputMessageContext
     let mut context = UserInputMessageContext::new();
     if !tools.is_empty() {
         context = context.with_tools(tools);
@@ -391,7 +396,7 @@ pub fn convert_request_with_options(
         context = context.with_tool_results(validated_tool_results);
     }
 
-    // 12. 构建当前消息
+    // 13. 构建当前消息
     // 保留文本内容，即使有工具结果也不丢弃用户文本
     let content = text_content;
 
@@ -405,7 +410,7 @@ pub fn convert_request_with_options(
 
     let current_message = CurrentMessage::new(user_input);
 
-    // 13. 构建 ConversationState
+    // 14. 构建 ConversationState
     let session_affinity_key = conversation_id.clone();
     let conversation_state = ConversationState::new(conversation_id)
         .with_agent_continuation_id(agent_continuation_id)
@@ -1474,6 +1479,194 @@ fn extract_tool_result_content(content: &Option<serde_json::Value>) -> String {
         }
         Some(v) => v.to_string(),
         None => String::new(),
+    }
+}
+
+/// 验证并过滤 tool_use/tool_result 配对
+///
+/// Anthropic/Bedrock 要求 tool_result 必须出现在紧邻上一轮 assistant
+/// 的 tool_use 之后。Kiro 上游也对这个链路敏感。这个清洗层只降级
+/// 明显坏掉的工具链，不伪造 tool_use。
+fn sanitize_tool_pairing(
+    history: &mut Vec<Message>,
+    current_tool_results: Vec<ToolResult>,
+) -> Vec<ToolResult> {
+    sanitize_history_tool_pairs(history);
+
+    let Some(previous_allowed) = pending_tool_use_ids_from_last_assistant(history) else {
+        if !current_tool_results.is_empty() {
+            tracing::warn!(
+                count = current_tool_results.len(),
+                "跳过当前消息中的孤立 tool_result：上一轮 assistant 没有 tool_use"
+            );
+        }
+        return Vec::new();
+    };
+
+    if current_tool_results.is_empty() {
+        remove_unmatched_tool_uses_from_last_assistant(history, &[]);
+        return Vec::new();
+    }
+
+    let filtered = retain_allowed_tool_results(current_tool_results, &previous_allowed);
+    remove_unmatched_tool_uses_from_last_assistant(history, &filtered);
+    filtered
+}
+
+fn sanitize_history_tool_pairs(history: &mut Vec<Message>) {
+    let mut index = 0usize;
+
+    while index < history.len() {
+        let tool_use_ids = match &history[index] {
+            Message::Assistant(assistant_msg) => assistant_msg
+                .assistant_response_message
+                .tool_uses
+                .as_ref()
+                .map(tool_use_id_set),
+            _ => None,
+        };
+
+        let Some(tool_use_ids) = tool_use_ids else {
+            if let Message::User(user_msg) = &mut history[index] {
+                strip_orphaned_history_tool_results(user_msg);
+            }
+            index += 1;
+            continue;
+        };
+
+        if index + 1 >= history.len() {
+            index += 1;
+            continue;
+        }
+
+        let mut matched_results = Vec::new();
+        let mut consumed_following_user = false;
+        if let Message::User(user_msg) = &mut history[index + 1] {
+            let original = std::mem::take(
+                &mut user_msg
+                    .user_input_message
+                    .user_input_message_context
+                    .tool_results,
+            );
+            matched_results = retain_allowed_tool_results(original, &tool_use_ids);
+            user_msg
+                .user_input_message
+                .user_input_message_context
+                .tool_results = matched_results.clone();
+            consumed_following_user = true;
+        }
+
+        remove_unmatched_tool_uses_from_assistant(&mut history[index], &matched_results);
+        index += if consumed_following_user { 2 } else { 1 };
+    }
+}
+
+fn strip_orphaned_history_tool_results(user_msg: &mut HistoryUserMessage) {
+    let tool_results = &mut user_msg
+        .user_input_message
+        .user_input_message_context
+        .tool_results;
+    if !tool_results.is_empty() {
+        tracing::warn!(
+            count = tool_results.len(),
+            "跳过历史中的孤立 tool_result：上一轮 assistant 没有 tool_use"
+        );
+        tool_results.clear();
+    }
+}
+
+fn pending_tool_use_ids_from_last_assistant(history: &[Message]) -> Option<HashSet<String>> {
+    match history.last() {
+        Some(Message::Assistant(assistant_msg)) => assistant_msg
+            .assistant_response_message
+            .tool_uses
+            .as_ref()
+            .map(tool_use_id_set)
+            .filter(|ids| !ids.is_empty()),
+        _ => None,
+    }
+}
+
+fn tool_use_id_set(tool_uses: &Vec<ToolUseEntry>) -> HashSet<String> {
+    tool_uses
+        .iter()
+        .map(|tool_use| tool_use.tool_use_id.clone())
+        .collect()
+}
+
+fn retain_allowed_tool_results(
+    tool_results: Vec<ToolResult>,
+    allowed_tool_use_ids: &HashSet<String>,
+) -> Vec<ToolResult> {
+    let original_len = tool_results.len();
+    let mut seen = HashSet::new();
+    let filtered: Vec<ToolResult> = tool_results
+        .into_iter()
+        .filter(|result| {
+            let allowed = allowed_tool_use_ids.contains(&result.tool_use_id);
+            let first_result = seen.insert(result.tool_use_id.clone());
+            if !allowed {
+                tracing::warn!(
+                    tool_use_id = %result.tool_use_id,
+                    "跳过不匹配的 tool_result：未在紧邻上一轮 assistant tool_use 中找到"
+                );
+            } else if !first_result {
+                tracing::warn!(
+                    tool_use_id = %result.tool_use_id,
+                    "跳过重复的 tool_result：同一 tool_use_id 已有结果"
+                );
+            }
+            allowed && first_result
+        })
+        .collect();
+
+    if filtered.len() != original_len {
+        tracing::warn!(
+            original = original_len,
+            retained = filtered.len(),
+            "已清洗 tool_result 列表以满足相邻 tool_use/tool_result 配对"
+        );
+    }
+
+    filtered
+}
+
+fn remove_unmatched_tool_uses_from_last_assistant(
+    history: &mut [Message],
+    matched_results: &[ToolResult],
+) {
+    if let Some(last) = history.last_mut() {
+        remove_unmatched_tool_uses_from_assistant(last, matched_results);
+    }
+}
+
+fn remove_unmatched_tool_uses_from_assistant(msg: &mut Message, matched_results: &[ToolResult]) {
+    let Message::Assistant(assistant_msg) = msg else {
+        return;
+    };
+
+    let Some(tool_uses) = assistant_msg.assistant_response_message.tool_uses.as_mut() else {
+        return;
+    };
+
+    let matched_ids: HashSet<&str> = matched_results
+        .iter()
+        .map(|result| result.tool_use_id.as_str())
+        .collect();
+    let original_len = tool_uses.len();
+    tool_uses.retain(|tool_use| matched_ids.contains(tool_use.tool_use_id.as_str()));
+    let retained_len = tool_uses.len();
+
+    if retained_len == 0 {
+        assistant_msg.assistant_response_message.tool_uses = None;
+    }
+
+    if original_len != retained_len {
+        tracing::warn!(
+            original = original_len,
+            retained = retained_len,
+            "已移除未配对的 assistant tool_use"
+        );
     }
 }
 
@@ -3316,6 +3509,224 @@ startxref
 
         // 重复的 tool_result 应该被过滤掉
         assert!(filtered.is_empty(), "重复的 tool_result 应该被过滤");
+    }
+
+    #[test]
+    fn test_sanitize_tool_pairing_drops_history_result_without_adjacent_use() {
+        let mut user_msg_with_orphan_result = UserMessage::new("", "claude-sonnet-4.5");
+        let mut ctx = UserInputMessageContext::new();
+        ctx = ctx.with_tool_results(vec![ToolResult::success(
+            "tooluse_missing",
+            "orphan output",
+        )]);
+        user_msg_with_orphan_result = user_msg_with_orphan_result.with_context(ctx);
+
+        let mut history = vec![
+            Message::User(HistoryUserMessage::new("Hello", "claude-sonnet-4.5")),
+            Message::Assistant(HistoryAssistantMessage::new("Plain assistant text")),
+            Message::User(HistoryUserMessage {
+                user_input_message: user_msg_with_orphan_result,
+            }),
+            Message::Assistant(HistoryAssistantMessage::new("Continuing")),
+        ];
+
+        let current = sanitize_tool_pairing(&mut history, Vec::new());
+        assert!(current.is_empty());
+
+        if let Message::User(user_msg) = &history[2] {
+            assert!(
+                user_msg
+                    .user_input_message
+                    .user_input_message_context
+                    .tool_results
+                    .is_empty(),
+                "孤立 tool_result 应被移除"
+            );
+        } else {
+            panic!("应该是 User 消息");
+        }
+    }
+
+    #[test]
+    fn test_sanitize_tool_pairing_keeps_current_adjacent_result() {
+        use crate::kiro::model::requests::tool::ToolUseEntry;
+
+        let mut assistant_msg = AssistantMessage::new("I'll run a command.");
+        assistant_msg = assistant_msg.with_tool_uses(vec![
+            ToolUseEntry::new("tooluse_ok", "exec_command")
+                .with_input(serde_json::json!({"cmd": "pwd"})),
+        ]);
+
+        let mut history = vec![
+            Message::User(HistoryUserMessage::new("Run pwd", "claude-sonnet-4.5")),
+            Message::Assistant(HistoryAssistantMessage {
+                assistant_response_message: assistant_msg,
+            }),
+        ];
+
+        let current = sanitize_tool_pairing(
+            &mut history,
+            vec![ToolResult::success("tooluse_ok", "/tmp/project")],
+        );
+
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].tool_use_id, "tooluse_ok");
+        if let Message::Assistant(assistant_msg) = &history[1] {
+            assert_eq!(
+                assistant_msg
+                    .assistant_response_message
+                    .tool_uses
+                    .as_ref()
+                    .expect("tool_use should remain")
+                    .len(),
+                1
+            );
+        } else {
+            panic!("应该是 Assistant 消息");
+        }
+    }
+
+    #[test]
+    fn test_sanitize_tool_pairing_drops_current_non_adjacent_result() {
+        use crate::kiro::model::requests::tool::ToolUseEntry;
+
+        let mut old_assistant = AssistantMessage::new("Earlier tool call.");
+        old_assistant = old_assistant.with_tool_uses(vec![
+            ToolUseEntry::new("tooluse_old", "exec_command")
+                .with_input(serde_json::json!({"cmd": "date"})),
+        ]);
+
+        let mut old_result_user = UserMessage::new("", "claude-sonnet-4.5");
+        let mut old_ctx = UserInputMessageContext::new();
+        old_ctx = old_ctx.with_tool_results(vec![ToolResult::success("tooluse_old", "done")]);
+        old_result_user = old_result_user.with_context(old_ctx);
+
+        let mut history = vec![
+            Message::User(HistoryUserMessage::new("Run date", "claude-sonnet-4.5")),
+            Message::Assistant(HistoryAssistantMessage {
+                assistant_response_message: old_assistant,
+            }),
+            Message::User(HistoryUserMessage {
+                user_input_message: old_result_user,
+            }),
+            Message::Assistant(HistoryAssistantMessage::new(
+                "Now I am just replying normally.",
+            )),
+        ];
+
+        let current = sanitize_tool_pairing(
+            &mut history,
+            vec![ToolResult::success("tooluse_old", "duplicate result")],
+        );
+
+        assert!(
+            current.is_empty(),
+            "当前 tool_result 不能匹配非紧邻的旧 tool_use"
+        );
+    }
+
+    #[test]
+    fn test_convert_request_drops_current_orphan_tool_result_from_new_api_shape() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 1024,
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("Start the server"),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!("Let me check if the server came up."),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!([
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tooluse_lost_by_new_api",
+                            "content": "000"
+                        }
+                    ]),
+                },
+            ],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        assert!(
+            state
+                .current_message
+                .user_input_message
+                .user_input_message_context
+                .tool_results
+                .is_empty(),
+            "孤立 current tool_result 不应继续传给 Kiro"
+        );
+    }
+
+    #[test]
+    fn test_convert_request_sanitizes_reported_dump_tool_result_shape() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // Mirrors the reported dump around the failing turn after a lossy
+        // OpenAI-compatible -> Anthropic conversion: the assistant text
+        // survived, but the content=null assistant.tool_calls turn was lost.
+        let reported_tool_use_id = "tooluse_ctlGdCLQDMMUmI2OLhaPOZ";
+        let req = MessagesRequest {
+            model: "claude-opus-4-8".to_string(),
+            max_tokens: 1024,
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("Continue"),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!(
+                        "Let me check what port the server is actually running on..."
+                    ),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!([
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": reported_tool_use_id,
+                            "content": "Chunk ID: 197373\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n"
+                        }
+                    ]),
+                },
+            ],
+            stream: true,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        assert!(
+            state
+                .current_message
+                .user_input_message
+                .user_input_message_context
+                .tool_results
+                .is_empty(),
+            "dump 中这种孤立 tool_result 应被兜底移除"
+        );
     }
 
     #[test]
