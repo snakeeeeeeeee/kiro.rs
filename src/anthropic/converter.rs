@@ -179,9 +179,12 @@ pub struct ConversionResult {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ConversionOptions {
+pub struct ConversionOptions<'a> {
     pub clean_probe_mode: bool,
     pub signed_thinking_history_experiment: bool,
+    /// Stable client-provided conversation/session identifier used when
+    /// metadata.user_id does not contain a Kiro-compatible session UUID.
+    pub client_conversation_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +250,13 @@ fn is_valid_uuid(s: &str) -> bool {
     s.len() == 36 && s.chars().filter(|c| *c == '-').count() == 4
 }
 
+fn normalized_client_conversation_id(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 /// 收集历史消息中使用的所有工具名称
 fn collect_history_tool_names(history: &[Message]) -> Vec<String> {
     let mut tool_names = Vec::new();
@@ -293,7 +303,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 /// 将 Anthropic 请求转换为 Kiro 请求，并应用调用方提供的兼容选项。
 pub fn convert_request_with_options(
     req: &MessagesRequest,
-    options: ConversionOptions,
+    options: ConversionOptions<'_>,
 ) -> Result<ConversionResult, ConversionError> {
     // 1. 映射模型
     let model_id = map_model(&req.model)
@@ -319,12 +329,14 @@ pub fn convert_request_with_options(
     };
 
     // 3. 生成会话 ID 和代理 ID
-    // 优先从 metadata.user_id 中提取 session UUID 作为 conversationId
+    // 优先从 metadata.user_id 中提取 session UUID 作为 conversationId。
+    // 如果客户端通过 header 显式传入稳定会话 ID，则作为 fallback 使用。
     let conversation_id = req
         .metadata
         .as_ref()
         .and_then(|m| m.user_id.as_ref())
         .and_then(|user_id| extract_session_id(user_id))
+        .or_else(|| normalized_client_conversation_id(options.client_conversation_id))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     // Kiro 官方客户端保持 agentContinuationId 与 conversationId 稳定一致。
     // 随机 continuation id 会削弱同一会话在上游的连续性与缓存局部性。
@@ -1822,7 +1834,7 @@ fn map_tool_name(name: &str, tool_name_map: &mut HashMap<String, String>) -> Str
 fn convert_tools(
     tools: &Option<Vec<super::types::Tool>>,
     tool_name_map: &mut HashMap<String, String>,
-    options: ConversionOptions,
+    options: ConversionOptions<'_>,
 ) -> Vec<Tool> {
     let Some(tools) = tools else {
         return Vec::new();
@@ -1896,7 +1908,7 @@ fn has_thinking_tags(content: &str) -> bool {
 fn apply_current_message_prefixes(
     req: &MessagesRequest,
     content: String,
-    _options: ConversionOptions,
+    _options: ConversionOptions<'_>,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -1976,7 +1988,7 @@ fn build_history(
     messages: &[super::types::Message],
     model_id: &str,
     tool_name_map: &mut HashMap<String, String>,
-    options: ConversionOptions,
+    options: ConversionOptions<'_>,
 ) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
@@ -2103,7 +2115,7 @@ fn merge_user_messages(
 fn convert_assistant_message(
     msg: &super::types::Message,
     tool_name_map: &mut HashMap<String, String>,
-    options: ConversionOptions,
+    options: ConversionOptions<'_>,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     let mut thinking_content = String::new();
     let mut thinking_signature: Option<String> = None;
@@ -2202,7 +2214,7 @@ fn convert_assistant_message(
 fn merge_assistant_messages(
     messages: &[&super::types::Message],
     tool_name_map: &mut HashMap<String, String>,
-    options: ConversionOptions,
+    options: ConversionOptions<'_>,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     assert!(!messages.is_empty());
     if messages.len() == 1 {
@@ -3268,6 +3280,91 @@ startxref
         assert_eq!(
             result.conversation_state.agent_continuation_id.as_deref(),
             Some("a0662283-7fd3-4399-a7eb-52b9a717ae88")
+        );
+    }
+
+    #[test]
+    fn test_convert_request_uses_client_conversation_id_when_metadata_missing() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("Hello"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let result = convert_request_with_options(
+            &req,
+            ConversionOptions {
+                client_conversation_id: Some(" client-session-a "),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.conversation_state.conversation_id,
+            "client-session-a"
+        );
+        assert_eq!(result.session_affinity_key, "client-session-a");
+        assert_eq!(
+            result.conversation_state.agent_continuation_id.as_deref(),
+            Some("client-session-a")
+        );
+    }
+
+    #[test]
+    fn test_metadata_session_takes_priority_over_client_conversation_id() {
+        use super::super::types::{Message as AnthropicMessage, Metadata};
+
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("Hello"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            response_format: None,
+            metadata: Some(Metadata {
+                user_id: Some(
+                    "user_xxx_account__session_a0662283-7fd3-4399-a7eb-52b9a717ae88".to_string(),
+                ),
+            }),
+        };
+
+        let result = convert_request_with_options(
+            &req,
+            ConversionOptions {
+                client_conversation_id: Some("client-session-a"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.conversation_state.conversation_id,
+            "a0662283-7fd3-4399-a7eb-52b9a717ae88"
+        );
+        assert_eq!(
+            result.session_affinity_key,
+            "a0662283-7fd3-4399-a7eb-52b9a717ae88"
         );
     }
 

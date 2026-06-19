@@ -142,6 +142,37 @@ fn x_conversation_id_for_session(headers: &HeaderMap) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+fn session_id_for_session(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+#[derive(Clone, Copy)]
+struct ClientConversationHeader<'a> {
+    value: &'a str,
+    source: &'static str,
+}
+
+fn client_conversation_header<'a>(
+    x_conversation_id: Option<&'a str>,
+    session_id: Option<&'a str>,
+) -> Option<ClientConversationHeader<'a>> {
+    x_conversation_id
+        .map(|value| ClientConversationHeader {
+            value,
+            source: "x-conversation-id",
+        })
+        .or_else(|| {
+            session_id.map(|value| ClientConversationHeader {
+                value,
+                source: "session-id",
+            })
+        })
+}
+
 fn header_value_for_log<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
     headers
         .get(name)
@@ -154,6 +185,8 @@ fn usage_session_key_source(session_key: &str) -> &'static str {
         "metadata.user_id"
     } else if session_key.starts_with("header:x-conversation-id:") {
         "x-conversation-id"
+    } else if session_key.starts_with("header:session-id:") {
+        "session-id"
     } else if session_key.starts_with("fallback:") {
         "fallback"
     } else {
@@ -1812,6 +1845,8 @@ pub async fn post_messages(
     let request_id = RequestLogContext::new_request_id();
     let metadata_user_id = metadata_user_id_for_log(&payload);
     let x_conversation_id = x_conversation_id_for_session(&headers);
+    let session_id = session_id_for_session(&headers);
+    let client_conversation = client_conversation_header(x_conversation_id, session_id);
     let initial_request_log = RequestLogContext::new_with_request_id(
         route,
         metadata_user_id.clone(),
@@ -1826,6 +1861,10 @@ pub async fn post_messages(
         metadata_user_id_present = initial_request_log.metadata_user_id_present(),
         x_conversation_id = x_conversation_id.unwrap_or(""),
         x_conversation_id_present = x_conversation_id.is_some(),
+        session_id = session_id.unwrap_or(""),
+        session_id_present = session_id.is_some(),
+        client_conversation_id = client_conversation.map_or("", |header| header.value),
+        client_conversation_id_source = client_conversation.map_or("none", |header| header.source),
         x_user_id_present = headers.contains_key("x-user-id"),
         x_codebuddy_request = header_value_for_log(&headers, "x-codebuddy-request"),
         user_agent = header_value_for_log(&headers, header::USER_AGENT.as_str()),
@@ -1882,6 +1921,7 @@ pub async fn post_messages(
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
         x_conversation_id,
+        session_id,
     );
     let request_log = RequestLogContext::new(route, metadata_user_id, usage_session_key);
     let request_log = RequestLogContext {
@@ -1900,6 +1940,10 @@ pub async fn post_messages(
         client_session_id = request_log.client_session_id_for_log(),
         x_conversation_id = x_conversation_id.unwrap_or(""),
         x_conversation_id_present = x_conversation_id.is_some(),
+        session_id = session_id.unwrap_or(""),
+        session_id_present = session_id.is_some(),
+        client_conversation_id = client_conversation.map_or("", |header| header.value),
+        client_conversation_id_source = client_conversation.map_or("none", |header| header.source),
         usage_session_key_source = usage_session_key_source(&request_log.usage_session_key),
         usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
@@ -1929,7 +1973,14 @@ pub async fn post_messages(
             Err(e) => return e.into_response(),
         };
 
-        return websearch::handle_websearch_request(provider, &payload, input_tokens, permit).await;
+        return websearch::handle_websearch_request(
+            provider,
+            &payload,
+            input_tokens,
+            permit,
+            client_conversation.map(|header| header.value),
+        )
+        .await;
     }
 
     let detection_profile =
@@ -1949,7 +2000,9 @@ pub async fn post_messages(
     let opus47_diagnostics_enabled =
         diagnostics_enabled_for_model(&runtime_settings, &requested_model)
             && is_compat_diagnostics_model_name(&requested_model);
-    let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
+    let mut conversion_options =
+        conversion_options_for_request(&requested_model, &runtime_settings);
+    conversion_options.client_conversation_id = client_conversation.map(|header| header.value);
 
     // 转换请求
     let mut conversion_result = match convert_request_with_options(&payload, conversion_options) {
@@ -4039,7 +4092,7 @@ fn apply_opus47_plain_stabilization(
 fn conversion_options_for_request(
     requested_model: &str,
     settings: &crate::kiro::settings::RuntimeSettings,
-) -> ConversionOptions {
+) -> ConversionOptions<'static> {
     let signed_thinking_setting =
         crate::kiro::settings::effective_opus47_signed_thinking_preservation(settings);
     let signed_thinking_mode = SignedThinkingMode::from_setting(signed_thinking_setting.as_str());
@@ -4048,6 +4101,7 @@ fn conversion_options_for_request(
             && crate::kiro::settings::effective_opus47_clean_probe_mode(settings) == "clean",
         signed_thinking_history_experiment: is_opus47_or_48_model_name(requested_model)
             && signed_thinking_mode == SignedThinkingMode::HistoryExperiment,
+        client_conversation_id: None,
     }
 }
 
@@ -4772,6 +4826,8 @@ pub async fn post_messages_cc(
     let request_id = RequestLogContext::new_request_id();
     let metadata_user_id = metadata_user_id_for_log(&payload);
     let x_conversation_id = x_conversation_id_for_session(&headers);
+    let session_id = session_id_for_session(&headers);
+    let client_conversation = client_conversation_header(x_conversation_id, session_id);
     let initial_request_log = RequestLogContext::new_with_request_id(
         route,
         metadata_user_id.clone(),
@@ -4786,6 +4842,10 @@ pub async fn post_messages_cc(
         metadata_user_id_present = initial_request_log.metadata_user_id_present(),
         x_conversation_id = x_conversation_id.unwrap_or(""),
         x_conversation_id_present = x_conversation_id.is_some(),
+        session_id = session_id.unwrap_or(""),
+        session_id_present = session_id.is_some(),
+        client_conversation_id = client_conversation.map_or("", |header| header.value),
+        client_conversation_id_source = client_conversation.map_or("none", |header| header.source),
         x_user_id_present = headers.contains_key("x-user-id"),
         x_codebuddy_request = header_value_for_log(&headers, "x-codebuddy-request"),
         user_agent = header_value_for_log(&headers, header::USER_AGENT.as_str()),
@@ -4843,6 +4903,7 @@ pub async fn post_messages_cc(
         &payload.model,
         &runtime_settings.virtual_cache_fallback_scope,
         x_conversation_id,
+        session_id,
     );
     let request_log = RequestLogContext::new(route, metadata_user_id, usage_session_key);
     let request_log = RequestLogContext {
@@ -4861,6 +4922,10 @@ pub async fn post_messages_cc(
         client_session_id = request_log.client_session_id_for_log(),
         x_conversation_id = x_conversation_id.unwrap_or(""),
         x_conversation_id_present = x_conversation_id.is_some(),
+        session_id = session_id.unwrap_or(""),
+        session_id_present = session_id.is_some(),
+        client_conversation_id = client_conversation.map_or("", |header| header.value),
+        client_conversation_id_source = client_conversation.map_or("none", |header| header.source),
         usage_session_key_source = usage_session_key_source(&request_log.usage_session_key),
         usage_session_key = %request_log.usage_session_key,
         "message_identity_diagnostics"
@@ -4890,7 +4955,14 @@ pub async fn post_messages_cc(
             Err(e) => return e.into_response(),
         };
 
-        return websearch::handle_websearch_request(provider, &payload, input_tokens, permit).await;
+        return websearch::handle_websearch_request(
+            provider,
+            &payload,
+            input_tokens,
+            permit,
+            client_conversation.map(|header| header.value),
+        )
+        .await;
     }
 
     let detection_profile =
@@ -4910,7 +4982,9 @@ pub async fn post_messages_cc(
     let opus47_diagnostics_enabled =
         diagnostics_enabled_for_model(&runtime_settings, &requested_model)
             && is_compat_diagnostics_model_name(&requested_model);
-    let conversion_options = conversion_options_for_request(&requested_model, &runtime_settings);
+    let mut conversion_options =
+        conversion_options_for_request(&requested_model, &runtime_settings);
+    conversion_options.client_conversation_id = client_conversation.map(|header| header.value);
 
     // 转换请求
     let mut conversion_result = match convert_request_with_options(&payload, conversion_options) {

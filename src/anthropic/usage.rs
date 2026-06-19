@@ -822,6 +822,7 @@ pub fn session_key_for_request_with_conversation_header(
     model: &str,
     fallback_scope: &str,
     x_conversation_id: Option<&str>,
+    session_id: Option<&str>,
 ) -> String {
     let metadata_user_id = req
         .metadata
@@ -829,7 +830,9 @@ pub fn session_key_for_request_with_conversation_header(
         .and_then(|metadata| metadata.user_id.as_ref())
         .map(|user_id| user_id.trim());
 
-    if metadata_user_id.is_some_and(|user_id| !user_id.is_empty()) {
+    if metadata_user_id
+        .is_some_and(|user_id| !user_id.is_empty() && metadata_user_id_has_session_scope(user_id))
+    {
         return session_key_for_request(req, model, fallback_scope);
     }
 
@@ -838,6 +841,14 @@ pub fn session_key_for_request_with_conversation_header(
         .filter(|value| !value.is_empty())
     {
         return format!("header:x-conversation-id:{conversation_id}");
+    }
+
+    if let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) {
+        return format!("header:session-id:{session_id}");
+    }
+
+    if metadata_user_id.is_some_and(|user_id| !user_id.is_empty()) {
+        return session_key_for_request(req, model, fallback_scope);
     }
 
     session_key_for_request(req, model, fallback_scope)
@@ -866,6 +877,18 @@ fn metadata_user_id_cache_key(user_id: &str) -> Option<String> {
     }
 
     Some(format!("metadata:user:{user_id}"))
+}
+
+fn metadata_user_id_has_session_scope(user_id: &str) -> bool {
+    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(user_id) {
+        return json_string_field(&map, "session_id").is_some();
+    }
+
+    user_id.find("session_").is_some_and(|pos| {
+        user_id
+            .get(pos + "session_".len()..)
+            .is_some_and(|session| !session.trim().is_empty())
+    })
 }
 
 fn request_isolated_fallback_key(model: &str) -> String {
@@ -1201,12 +1224,14 @@ mod tests {
             &first.model,
             "model",
             Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+            None,
         );
         let second_key = session_key_for_request_with_conversation_header(
             &second,
             &second.model,
             "model",
             Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+            None,
         );
 
         assert_eq!(
@@ -1228,8 +1253,49 @@ mod tests {
                 &request.model,
                 "model",
                 Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+                Some("client-session-a"),
             ),
             "metadata:user:user_device-a_account__session_8bb5523b-ec7c-4540-a9ca-beb6d79f1552"
+        );
+    }
+
+    #[test]
+    fn missing_metadata_uses_session_id_header_when_x_conversation_id_is_absent() {
+        let first = request_without_metadata();
+        let second = request_without_metadata();
+
+        let first_key = session_key_for_request_with_conversation_header(
+            &first,
+            &first.model,
+            "model",
+            None,
+            Some("client-session-a"),
+        );
+        let second_key = session_key_for_request_with_conversation_header(
+            &second,
+            &second.model,
+            "model",
+            None,
+            Some(" client-session-a "),
+        );
+
+        assert_eq!(first_key, "header:session-id:client-session-a");
+        assert_eq!(second_key, first_key);
+    }
+
+    #[test]
+    fn x_conversation_id_takes_priority_over_session_id_header() {
+        let request = request_without_metadata();
+
+        assert_eq!(
+            session_key_for_request_with_conversation_header(
+                &request,
+                &request.model,
+                "model",
+                Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+                Some("client-session-a"),
+            ),
+            "header:x-conversation-id:af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"
         );
     }
 
@@ -1243,13 +1309,30 @@ mod tests {
                 &request.model,
                 "model",
                 Some(" af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3 "),
+                Some("client-session-a"),
             ),
             "header:x-conversation-id:af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"
         );
     }
 
     #[test]
-    fn non_empty_metadata_user_id_keeps_existing_fallback_behavior() {
+    fn empty_metadata_user_id_allows_session_id_header_fallback() {
+        let request = request_with_metadata_user_id("   ");
+
+        assert_eq!(
+            session_key_for_request_with_conversation_header(
+                &request,
+                &request.model,
+                "model",
+                None,
+                Some(" client-session-a "),
+            ),
+            "header:session-id:client-session-a"
+        );
+    }
+
+    #[test]
+    fn metadata_without_session_scope_allows_conversation_header_fallback() {
         let first = request_with_metadata_user_id(
             r#"{"session_id":"","account_uuid":"","device_id":"","user":""}"#,
         );
@@ -1262,17 +1345,61 @@ mod tests {
             &first.model,
             "model",
             Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+            Some("client-session-a"),
         );
         let second_key = session_key_for_request_with_conversation_header(
             &second,
             &second.model,
             "model",
             Some("af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"),
+            Some("client-session-a"),
         );
 
-        assert!(first_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
-        assert!(second_key.starts_with("fallback:none:claude-sonnet-4-5-20250929:"));
-        assert_ne!(first_key, second_key);
+        assert_eq!(
+            first_key,
+            "header:x-conversation-id:af3c5ad7-9290-4dc7-94fd-4e4cbb98fba3"
+        );
+        assert_eq!(second_key, first_key);
+    }
+
+    #[test]
+    fn metadata_without_session_scope_allows_session_id_header_fallback() {
+        let request = request_with_metadata_user_id("user-stable-without-session");
+
+        assert_eq!(
+            session_key_for_request_with_conversation_header(
+                &request,
+                &request.model,
+                "model",
+                None,
+                Some("client-session-a"),
+            ),
+            "header:session-id:client-session-a"
+        );
+    }
+
+    #[test]
+    fn metadata_without_session_scope_still_falls_back_without_headers() {
+        let first = request_with_metadata_user_id("user-stable-without-session");
+        let second = request_with_metadata_user_id("user-stable-without-session");
+
+        let first_key = session_key_for_request_with_conversation_header(
+            &first,
+            &first.model,
+            "model",
+            None,
+            None,
+        );
+        let second_key = session_key_for_request_with_conversation_header(
+            &second,
+            &second.model,
+            "model",
+            None,
+            None,
+        );
+
+        assert_eq!(first_key, "metadata:user:user-stable-without-session");
+        assert_eq!(second_key, first_key);
     }
 
     #[test]

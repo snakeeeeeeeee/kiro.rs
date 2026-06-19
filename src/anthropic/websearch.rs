@@ -486,6 +486,7 @@ pub async fn handle_websearch_request(
     payload: &MessagesRequest,
     input_tokens: i32,
     permit: GlobalRequestPermit,
+    client_conversation_id: Option<&str>,
 ) -> Response {
     // 1. 提取搜索查询
     let query = match extract_search_query(payload) {
@@ -511,7 +512,13 @@ pub async fn handle_websearch_request(
         .metadata
         .as_ref()
         .and_then(|m| m.user_id.as_ref())
-        .and_then(|user_id| extract_session_id(user_id));
+        .and_then(|user_id| extract_session_id(user_id))
+        .or_else(|| {
+            client_conversation_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
 
     // 3. 调用 Kiro MCP API
     let search_results =
