@@ -112,6 +112,11 @@ export interface RuntimeStatusResponse {
   promptDumpDir: string
   promptDumpMaxBytes: number
   promptDumpModels: string
+  messagePruningEnabled: boolean
+  messagePruningMaxRequestBytes: number
+  messagePruningKeepRecentMessages: number
+  messagePruningMaxHistoryEntryBytes: number
+  messagePruningMaxTruncatedContentBytes: number
   compatUsageShape: 'anthropic' | 'flat'
   compatThinkingModel: 'native' | 'plain_text'
   compatModelsShape: 'anthropic' | 'aggregator'
@@ -359,6 +364,11 @@ export interface RuntimeSettings {
   promptDumpDir: string
   promptDumpMaxBytes: number
   promptDumpModels: string
+  messagePruningEnabled: boolean
+  messagePruningMaxRequestBytes: number
+  messagePruningKeepRecentMessages: number
+  messagePruningMaxHistoryEntryBytes: number
+  messagePruningMaxTruncatedContentBytes: number
   compatUsageShape: 'anthropic' | 'flat'
   compatThinkingModel: 'native' | 'plain_text'
   compatModelsShape: 'anthropic' | 'aggregator'

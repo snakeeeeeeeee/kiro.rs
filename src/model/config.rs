@@ -261,6 +261,26 @@ pub struct Config {
     #[serde(default = "default_prompt_dump_models")]
     pub prompt_dump_models: String,
 
+    /// 是否启用 Kiro 上游请求历史消息裁剪
+    #[serde(default)]
+    pub message_pruning_enabled: bool,
+
+    /// Kiro 上游请求体字节上限，超过后才触发裁剪
+    #[serde(default = "default_message_pruning_max_request_bytes")]
+    pub message_pruning_max_request_bytes: usize,
+
+    /// 裁剪时最少保留的历史消息数量
+    #[serde(default = "default_message_pruning_keep_recent_messages")]
+    pub message_pruning_keep_recent_messages: usize,
+
+    /// 单条历史消息超过该字节数时允许进入文本截断
+    #[serde(default = "default_message_pruning_max_history_entry_bytes")]
+    pub message_pruning_max_history_entry_bytes: usize,
+
+    /// 文本字段截断后的最大字节数
+    #[serde(default = "default_message_pruning_max_truncated_content_bytes")]
+    pub message_pruning_max_truncated_content_bytes: usize,
+
     /// 兼容 usage 字段形态："anthropic" 或 "flat"
     #[serde(default = "default_compat_usage_shape")]
     pub compat_usage_shape: String,
@@ -617,6 +637,22 @@ fn default_prompt_dump_models() -> String {
     "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6".to_string()
 }
 
+fn default_message_pruning_max_request_bytes() -> usize {
+    615 * 1024
+}
+
+fn default_message_pruning_keep_recent_messages() -> usize {
+    2
+}
+
+fn default_message_pruning_max_history_entry_bytes() -> usize {
+    300_000
+}
+
+fn default_message_pruning_max_truncated_content_bytes() -> usize {
+    50_000
+}
+
 fn default_compat_usage_shape() -> String {
     "anthropic".to_string()
 }
@@ -829,6 +865,13 @@ impl Default for Config {
             prompt_dump_dir: default_prompt_dump_dir(),
             prompt_dump_max_bytes: default_prompt_dump_max_bytes(),
             prompt_dump_models: default_prompt_dump_models(),
+            message_pruning_enabled: false,
+            message_pruning_max_request_bytes: default_message_pruning_max_request_bytes(),
+            message_pruning_keep_recent_messages: default_message_pruning_keep_recent_messages(),
+            message_pruning_max_history_entry_bytes:
+                default_message_pruning_max_history_entry_bytes(),
+            message_pruning_max_truncated_content_bytes:
+                default_message_pruning_max_truncated_content_bytes(),
             compat_usage_shape: default_compat_usage_shape(),
             compat_thinking_model: default_compat_thinking_model(),
             compat_models_shape: default_compat_models_shape(),

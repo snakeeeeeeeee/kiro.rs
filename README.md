@@ -224,6 +224,11 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `opus47DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.7/4.8 响应形态诊断日志，包括 reasoning/signature 是否由上游出现并暴露给客户端 |
 | `opus47RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.7/4.8 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
 | `opus47RawDebugMaxChars` | number | `20000` | Opus 4.7/4.8 原始调试日志单字段最大字符数 |
+| `messagePruningEnabled` | boolean | `false` | Kiro 上游请求消息裁剪开关。关闭时只记录超限日志，不改写请求体 |
+| `messagePruningMaxRequestBytes` | number | `629760` | 最终 Kiro JSON 请求体字节上限，默认对齐公开 Kiro 反代常用的 `615 * 1024` |
+| `messagePruningKeepRecentMessages` | number | `2` | 裁剪时最少保留的历史消息数量；裁剪仍以请求体大小为准 |
+| `messagePruningMaxHistoryEntryBytes` | number | `300000` | 删除旧 history 后仍超限时，允许截断的单条历史消息字节阈值 |
+| `messagePruningMaxTruncatedContentBytes` | number | `50000` | 文本字段截断后的最大字节数，不能大于 `messagePruningMaxHistoryEntryBytes` |
 | `opus46DetectionProfile` | string | `normal` | Opus 4.6 检测 profile：`normal` 或 `cc_max_like`。`cc_max_like` 启用窄身份/ANTML 探针兼容，并让通用兼容形态 effective 为 CC Max Like 形态 |
 | `opus46AntmlProbeCompat` | string | `off` | Opus 4.6 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
 | `opus46DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.6 响应形态诊断日志 |
@@ -294,6 +299,11 @@ docker compose -f docker-compose-dev.yml up -d --build
    "opus47DiagnosticsEnabled": true,
    "opus47RawDebugEnabled": false,
    "opus47RawDebugMaxChars": 20000,
+   "messagePruningEnabled": false,
+   "messagePruningMaxRequestBytes": 629760,
+   "messagePruningKeepRecentMessages": 2,
+   "messagePruningMaxHistoryEntryBytes": 300000,
+   "messagePruningMaxTruncatedContentBytes": 50000,
    "opus46DetectionProfile": "normal",
    "opus46AntmlProbeCompat": "off",
    "opus46DiagnosticsEnabled": true,
@@ -308,6 +318,8 @@ docker compose -f docker-compose-dev.yml up -d --build
    "extractThinking": true
 }
 ```
+
+消息裁剪策略是本地 payload 降载策略，不是 400 重试策略。它按最终发往 Kiro 的 JSON 请求体字节数判断，默认阈值对齐公开 Kiro 反代常用的 615KB 经验值；默认关闭，只有开启后才会改写上游请求体，且不会裁剪当前消息、工具定义、图片或 profileArn。
 
 ### credentials.json
 

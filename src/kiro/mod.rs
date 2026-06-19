@@ -3,6 +3,7 @@
 pub mod dynamic_proxy;
 pub mod endpoint;
 pub mod machine_id;
+pub mod message_pruning;
 pub mod model;
 pub mod model_cooldown;
 pub mod parser;

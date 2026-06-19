@@ -695,6 +695,16 @@ pub struct ManagerSnapshot {
     pub prompt_dump_max_bytes: usize,
     /// Prompt dump 模型 allowlist
     pub prompt_dump_models: String,
+    /// Kiro 请求消息裁剪开关
+    pub message_pruning_enabled: bool,
+    /// Kiro 请求体裁剪阈值
+    pub message_pruning_max_request_bytes: usize,
+    /// 裁剪时最少保留的历史消息数量
+    pub message_pruning_keep_recent_messages: usize,
+    /// 允许截断的单条历史消息字节阈值
+    pub message_pruning_max_history_entry_bytes: usize,
+    /// 文本字段截断后的最大字节数
+    pub message_pruning_max_truncated_content_bytes: usize,
     /// usage 字段兼容形态
     pub compat_usage_shape: String,
     /// thinking 模型响应兼容策略
@@ -2443,6 +2453,13 @@ impl MultiTokenManager {
             prompt_dump_dir: settings.prompt_dump_dir,
             prompt_dump_max_bytes: settings.prompt_dump_max_bytes,
             prompt_dump_models: settings.prompt_dump_models,
+            message_pruning_enabled: settings.message_pruning_enabled,
+            message_pruning_max_request_bytes: settings.message_pruning_max_request_bytes,
+            message_pruning_keep_recent_messages: settings.message_pruning_keep_recent_messages,
+            message_pruning_max_history_entry_bytes: settings
+                .message_pruning_max_history_entry_bytes,
+            message_pruning_max_truncated_content_bytes: settings
+                .message_pruning_max_truncated_content_bytes,
             compat_usage_shape: settings.compat_usage_shape,
             compat_thinking_model: settings.compat_thinking_model,
             compat_models_shape: settings.compat_models_shape,

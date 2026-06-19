@@ -21,6 +21,9 @@ use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::dynamic_proxy::is_proxy_error;
 use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
+use crate::kiro::message_pruning::{
+    MessagePruningConfig, MessagePruningOutcome, MessagePruningStats, guard_kiro_payload,
+};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::conversation::{
@@ -150,6 +153,12 @@ struct ApiRequestParts {
     raw_request_id: Option<String>,
     raw_debug_enabled: bool,
     raw_debug_max_chars: usize,
+}
+
+impl ApiRequestParts {
+    fn replace_body(&mut self, body: String) {
+        self.body = body;
+    }
 }
 
 struct ApiSendSuccess {
@@ -853,7 +862,7 @@ impl KiroProvider {
         &self,
         ctx: &CallContext,
         request_body: &str,
-        is_stream: bool,
+        _is_stream: bool,
         model_for_metrics: &str,
         settings: &crate::kiro::settings::RuntimeSettings,
     ) -> anyhow::Result<ApiRequestParts> {
@@ -873,18 +882,6 @@ impl KiroProvider {
         let (raw_debug_enabled, raw_debug_max_chars) =
             raw_debug_config_for_model(settings, model_for_metrics);
         let raw_request_id = raw_debug_enabled.then(|| Uuid::new_v4().to_string());
-        if let Some(raw_request_id) = raw_request_id.as_deref() {
-            log_kiro_raw_request(
-                raw_request_id,
-                model_for_metrics,
-                ctx.id,
-                &endpoint_name,
-                &url,
-                is_stream,
-                &body,
-                raw_debug_max_chars,
-            );
-        }
 
         Ok(ApiRequestParts {
             endpoint,
@@ -896,6 +893,45 @@ impl KiroProvider {
             raw_debug_enabled,
             raw_debug_max_chars,
         })
+    }
+
+    fn apply_message_pruning(
+        parts: &mut ApiRequestParts,
+        settings: &crate::kiro::settings::RuntimeSettings,
+        request_log: Option<&RequestLogContext>,
+        external_model: &str,
+        credential_id: u64,
+        is_stream: bool,
+    ) {
+        let config = MessagePruningConfig::from(settings);
+        match guard_kiro_payload(&parts.body, &config) {
+            MessagePruningOutcome::Noop => {}
+            MessagePruningOutcome::Skipped(stats) => {
+                Self::log_message_pruning_skipped(
+                    &stats,
+                    &config,
+                    request_log,
+                    external_model,
+                    credential_id,
+                    parts.endpoint_name.as_str(),
+                    parts.api_region.as_str(),
+                    is_stream,
+                );
+            }
+            MessagePruningOutcome::Pruned { body, stats } => {
+                parts.replace_body(body);
+                Self::log_message_pruned(
+                    &stats,
+                    &config,
+                    request_log,
+                    external_model,
+                    credential_id,
+                    parts.endpoint_name.as_str(),
+                    parts.api_region.as_str(),
+                    is_stream,
+                );
+            }
+        }
     }
 
     async fn send_api_attempt(
@@ -1713,7 +1749,7 @@ impl KiroProvider {
             last_credential_id = Some(ctx.id);
 
             let config = self.token_manager.config();
-            let parts = match self.build_api_request_parts(
+            let mut parts = match self.build_api_request_parts(
                 &ctx,
                 request_body,
                 is_stream,
@@ -1744,6 +1780,26 @@ impl KiroProvider {
                 url = %parts.url,
                 "kiro_api_request_endpoint"
             );
+            Self::apply_message_pruning(
+                &mut parts,
+                &settings,
+                request_log_ref,
+                model_for_metrics.as_str(),
+                ctx.id,
+                is_stream,
+            );
+            if let Some(raw_request_id) = parts.raw_request_id.as_deref() {
+                log_kiro_raw_request(
+                    raw_request_id,
+                    model_for_metrics.as_str(),
+                    ctx.id,
+                    parts.endpoint_name.as_str(),
+                    parts.url.as_str(),
+                    is_stream,
+                    &parts.body,
+                    parts.raw_debug_max_chars,
+                );
+            }
             if let Some(dump) = prompt_dump.as_ref() {
                 dump.write_text("upstream_request.json", &parts.body);
             }
@@ -2367,6 +2423,87 @@ impl KiroProvider {
             upstream_reason,
             retry_after_ms,
             "kiro_api_request_diagnostics"
+        );
+    }
+
+    fn log_message_pruning_skipped(
+        stats: &MessagePruningStats,
+        config: &MessagePruningConfig,
+        request_log: Option<&RequestLogContext>,
+        external_model: &str,
+        credential_id: u64,
+        endpoint: &str,
+        api_region: &str,
+        stream: bool,
+    ) {
+        tracing::info!(
+            request_id = request_log.map_or("", |log| log.request_id.as_str()),
+            route = request_log.map_or("", |log| log.route),
+            client_device_id = request_log.map_or("", RequestLogContext::client_device_id_for_log),
+            client_account_uuid =
+                request_log.map_or("", RequestLogContext::client_account_uuid_for_log),
+            client_user = request_log.map_or("", RequestLogContext::client_user_for_log),
+            client_session_id =
+                request_log.map_or("", RequestLogContext::client_session_id_for_log),
+            usage_session_key = request_log.map_or("", |log| log.usage_session_key.as_str()),
+            external_model,
+            credential_id,
+            endpoint,
+            api_region,
+            stream,
+            enabled = config.enabled,
+            max_request_bytes = config.max_request_bytes,
+            keep_recent_messages = config.keep_recent_messages,
+            original_bytes = stats.original_bytes,
+            final_bytes = stats.final_bytes,
+            original_history_len = stats.original_history_len,
+            final_history_len = stats.final_history_len,
+            under_limit = stats.under_limit,
+            "kiro_api_message_pruning_skipped"
+        );
+    }
+
+    fn log_message_pruned(
+        stats: &MessagePruningStats,
+        config: &MessagePruningConfig,
+        request_log: Option<&RequestLogContext>,
+        external_model: &str,
+        credential_id: u64,
+        endpoint: &str,
+        api_region: &str,
+        stream: bool,
+    ) {
+        tracing::info!(
+            request_id = request_log.map_or("", |log| log.request_id.as_str()),
+            route = request_log.map_or("", |log| log.route),
+            client_device_id = request_log.map_or("", RequestLogContext::client_device_id_for_log),
+            client_account_uuid =
+                request_log.map_or("", RequestLogContext::client_account_uuid_for_log),
+            client_user = request_log.map_or("", RequestLogContext::client_user_for_log),
+            client_session_id =
+                request_log.map_or("", RequestLogContext::client_session_id_for_log),
+            usage_session_key = request_log.map_or("", |log| log.usage_session_key.as_str()),
+            external_model,
+            credential_id,
+            endpoint,
+            api_region,
+            stream,
+            enabled = config.enabled,
+            max_request_bytes = config.max_request_bytes,
+            keep_recent_messages = config.keep_recent_messages,
+            max_history_entry_bytes = config.max_history_entry_bytes,
+            max_truncated_content_bytes = config.max_truncated_content_bytes,
+            original_bytes = stats.original_bytes,
+            final_bytes = stats.final_bytes,
+            original_history_len = stats.original_history_len,
+            final_history_len = stats.final_history_len,
+            removed_entries = stats.removed_entries,
+            truncated_entries = stats.truncated_entries,
+            orphaned_tool_results_removed = stats.orphaned_tool_results_removed,
+            empty_tool_uses_stripped = stats.empty_tool_uses_stripped,
+            aligned_leading_entries_removed = stats.aligned_leading_entries_removed,
+            under_limit = stats.under_limit,
+            "kiro_api_message_pruned"
         );
     }
 

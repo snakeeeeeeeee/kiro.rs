@@ -70,6 +70,11 @@ pub struct RuntimeSettings {
     pub prompt_dump_dir: String,
     pub prompt_dump_max_bytes: usize,
     pub prompt_dump_models: String,
+    pub message_pruning_enabled: bool,
+    pub message_pruning_max_request_bytes: usize,
+    pub message_pruning_keep_recent_messages: usize,
+    pub message_pruning_max_history_entry_bytes: usize,
+    pub message_pruning_max_truncated_content_bytes: usize,
     pub compat_usage_shape: String,
     pub compat_thinking_model: String,
     pub compat_models_shape: String,
@@ -196,6 +201,12 @@ impl RuntimeSettings {
             prompt_dump_dir: normalize_prompt_dump_dir(&config.prompt_dump_dir),
             prompt_dump_max_bytes: config.prompt_dump_max_bytes.clamp(10_000, 50_000_000),
             prompt_dump_models: normalize_prompt_dump_models(&config.prompt_dump_models),
+            message_pruning_enabled: config.message_pruning_enabled,
+            message_pruning_max_request_bytes: config.message_pruning_max_request_bytes,
+            message_pruning_keep_recent_messages: config.message_pruning_keep_recent_messages,
+            message_pruning_max_history_entry_bytes: config.message_pruning_max_history_entry_bytes,
+            message_pruning_max_truncated_content_bytes: config
+                .message_pruning_max_truncated_content_bytes,
             compat_usage_shape: normalize_compat_usage_shape(&config.compat_usage_shape),
             compat_thinking_model: normalize_compat_thinking_model(&config.compat_thinking_model),
             compat_models_shape: normalize_compat_models_shape(&config.compat_models_shape),
@@ -366,6 +377,25 @@ impl RuntimeSettings {
         }
         if !(10_000..=50_000_000).contains(&self.prompt_dump_max_bytes) {
             anyhow::bail!("promptDumpMaxBytes 必须在 10000..50000000 范围内");
+        }
+        if !(100_000..=5_000_000).contains(&self.message_pruning_max_request_bytes) {
+            anyhow::bail!("messagePruningMaxRequestBytes 必须在 100000..5000000 范围内");
+        }
+        if !(1..=200).contains(&self.message_pruning_keep_recent_messages) {
+            anyhow::bail!("messagePruningKeepRecentMessages 必须在 1..200 范围内");
+        }
+        if !(10_000..=2_000_000).contains(&self.message_pruning_max_history_entry_bytes) {
+            anyhow::bail!("messagePruningMaxHistoryEntryBytes 必须在 10000..2000000 范围内");
+        }
+        if !(1_000..=500_000).contains(&self.message_pruning_max_truncated_content_bytes) {
+            anyhow::bail!("messagePruningMaxTruncatedContentBytes 必须在 1000..500000 范围内");
+        }
+        if self.message_pruning_max_truncated_content_bytes
+            > self.message_pruning_max_history_entry_bytes
+        {
+            anyhow::bail!(
+                "messagePruningMaxTruncatedContentBytes 不能大于 messagePruningMaxHistoryEntryBytes"
+            );
         }
         if self.compat_thinking_model != "native" && self.compat_thinking_model != "plain_text" {
             anyhow::bail!("compatThinkingModel 必须是 'native' 或 'plain_text'");
@@ -1062,6 +1092,11 @@ mod tests {
             settings.prompt_dump_models,
             "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6"
         );
+        assert!(!settings.message_pruning_enabled);
+        assert_eq!(settings.message_pruning_max_request_bytes, 629_760);
+        assert_eq!(settings.message_pruning_keep_recent_messages, 2);
+        assert_eq!(settings.message_pruning_max_history_entry_bytes, 300_000);
+        assert_eq!(settings.message_pruning_max_truncated_content_bytes, 50_000);
         assert_eq!(settings.target_cache_reuse_ratio, 0.0);
         assert_eq!(settings.virtual_cache_context_shrink_reset_ratio, 0.7);
         assert_eq!(
@@ -1104,6 +1139,39 @@ mod tests {
         assert!(settings.validate().is_err());
 
         settings.prompt_dump_max_bytes = 10_000;
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn message_pruning_settings_validate_range() {
+        let mut settings = RuntimeSettings::from_config(&Config::default());
+
+        settings.message_pruning_max_request_bytes = 99_999;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_max_request_bytes = 5_000_001;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_max_request_bytes = 629_760;
+
+        settings.message_pruning_keep_recent_messages = 0;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_keep_recent_messages = 201;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_keep_recent_messages = 2;
+
+        settings.message_pruning_max_history_entry_bytes = 9_999;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_max_history_entry_bytes = 2_000_001;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_max_history_entry_bytes = 300_000;
+
+        settings.message_pruning_max_truncated_content_bytes = 999;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_max_truncated_content_bytes = 500_001;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_max_truncated_content_bytes = 300_001;
+        assert!(settings.validate().is_err());
+        settings.message_pruning_max_truncated_content_bytes = 50_000;
+
         assert!(settings.validate().is_ok());
     }
 

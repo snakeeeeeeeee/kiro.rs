@@ -21,7 +21,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'allowOverUsage' | 'sessionAffinityEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'allowOverUsage' | 'sessionAffinityEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'messagePruningEnabled' | 'messagePruningMaxRequestBytes' | 'messagePruningKeepRecentMessages' | 'messagePruningMaxHistoryEntryBytes' | 'messagePruningMaxTruncatedContentBytes' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -58,7 +58,7 @@ const numberFields: Array<{
   { key: 'dynamicProxyWorkerConcurrency', label: '动态代理并发数', hint: '建议 3' },
 ]
 
-type NumberSettingKey = (typeof numberFields)[number]['key'] | 'opus47RawDebugMaxChars' | 'opus46RawDebugMaxChars' | 'sonnet46RawDebugMaxChars' | 'promptDumpMaxBytes'
+type NumberSettingKey = (typeof numberFields)[number]['key'] | 'opus47RawDebugMaxChars' | 'opus46RawDebugMaxChars' | 'sonnet46RawDebugMaxChars' | 'promptDumpMaxBytes' | 'messagePruningMaxRequestBytes' | 'messagePruningKeepRecentMessages' | 'messagePruningMaxHistoryEntryBytes' | 'messagePruningMaxTruncatedContentBytes'
 
 export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDialogProps) {
   const { data, isLoading } = useRuntimeSettings()
@@ -685,6 +685,86 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     onChange={event => setForm(prev => prev ? { ...prev, promptDumpModels: event.target.value } : prev)}
                   />
                   <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-opus-4-8, claude-sonnet-4-6。</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">消息裁剪策略</h3>
+                <p className="text-xs text-muted-foreground">
+                  按最终 Kiro 请求体字节数判断；默认阈值 629760 bytes，当前消息和工具定义不会被裁剪。
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">启用状态</label>
+                  <select
+                    value={form.messagePruningEnabled ? 'enabled' : 'disabled'}
+                    onChange={event =>
+                      setForm(prev => prev ? { ...prev, messagePruningEnabled: event.target.value === 'enabled' } : prev)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="disabled">关闭</option>
+                    <option value="enabled">启用</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    关闭时只记录超限日志，不改写上游请求体。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">请求体上限 bytes</label>
+                  <Input
+                    type="number"
+                    min={100000}
+                    max={5000000}
+                    value={form.messagePruningMaxRequestBytes}
+                    onChange={event => updateNumber('messagePruningMaxRequestBytes', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">100000-5000000，默认 629760。</p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">最少保留历史消息数</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={form.messagePruningKeepRecentMessages}
+                    onChange={event => updateNumber('messagePruningKeepRecentMessages', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    默认 2；裁剪仍以请求体大小为准。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">单条历史上限 bytes</label>
+                  <Input
+                    type="number"
+                    min={10000}
+                    max={2000000}
+                    value={form.messagePruningMaxHistoryEntryBytes}
+                    onChange={event => updateNumber('messagePruningMaxHistoryEntryBytes', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">10000-2000000，默认 300000。</p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">截断后内容上限 bytes</label>
+                  <Input
+                    type="number"
+                    min={1000}
+                    max={500000}
+                    value={form.messagePruningMaxTruncatedContentBytes}
+                    onChange={event => updateNumber('messagePruningMaxTruncatedContentBytes', event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    1000-500000，且不能大于单条历史上限。
+                  </p>
                 </div>
               </div>
             </section>

@@ -229,6 +229,13 @@ impl AdminService {
             prompt_dump_dir: snapshot.prompt_dump_dir,
             prompt_dump_max_bytes: snapshot.prompt_dump_max_bytes,
             prompt_dump_models: snapshot.prompt_dump_models,
+            message_pruning_enabled: snapshot.message_pruning_enabled,
+            message_pruning_max_request_bytes: snapshot.message_pruning_max_request_bytes,
+            message_pruning_keep_recent_messages: snapshot.message_pruning_keep_recent_messages,
+            message_pruning_max_history_entry_bytes: snapshot
+                .message_pruning_max_history_entry_bytes,
+            message_pruning_max_truncated_content_bytes: snapshot
+                .message_pruning_max_truncated_content_bytes,
             compat_usage_shape: snapshot.compat_usage_shape,
             compat_thinking_model: snapshot.compat_thinking_model,
             compat_models_shape: snapshot.compat_models_shape,

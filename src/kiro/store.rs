@@ -612,6 +612,28 @@ fn runtime_settings_pairs(
             settings.prompt_dump_max_bytes.to_string(),
         ),
         ("promptDumpModels", settings.prompt_dump_models.clone()),
+        (
+            "messagePruningEnabled",
+            settings.message_pruning_enabled.to_string(),
+        ),
+        (
+            "messagePruningMaxRequestBytes",
+            settings.message_pruning_max_request_bytes.to_string(),
+        ),
+        (
+            "messagePruningKeepRecentMessages",
+            settings.message_pruning_keep_recent_messages.to_string(),
+        ),
+        (
+            "messagePruningMaxHistoryEntryBytes",
+            settings.message_pruning_max_history_entry_bytes.to_string(),
+        ),
+        (
+            "messagePruningMaxTruncatedContentBytes",
+            settings
+                .message_pruning_max_truncated_content_bytes
+                .to_string(),
+        ),
         ("compatUsageShape", settings.compat_usage_shape.clone()),
         (
             "compatThinkingModel",
@@ -846,6 +868,19 @@ fn apply_runtime_setting(
         "promptDumpMaxBytes" => settings.prompt_dump_max_bytes = parse_usize(key, value)?,
         "promptDumpModels" => {
             settings.prompt_dump_models = crate::kiro::settings::normalize_prompt_dump_models(value)
+        }
+        "messagePruningEnabled" => settings.message_pruning_enabled = parse_bool(key, value)?,
+        "messagePruningMaxRequestBytes" => {
+            settings.message_pruning_max_request_bytes = parse_usize(key, value)?
+        }
+        "messagePruningKeepRecentMessages" => {
+            settings.message_pruning_keep_recent_messages = parse_usize(key, value)?
+        }
+        "messagePruningMaxHistoryEntryBytes" => {
+            settings.message_pruning_max_history_entry_bytes = parse_usize(key, value)?
+        }
+        "messagePruningMaxTruncatedContentBytes" => {
+            settings.message_pruning_max_truncated_content_bytes = parse_usize(key, value)?
         }
         "compatUsageShape" => {
             settings.compat_usage_shape = crate::kiro::settings::normalize_compat_usage_shape(value)
@@ -1225,6 +1260,11 @@ mod tests {
         updated.prompt_dump_dir = "/tmp/kiro-prompt-dumps".to_string();
         updated.prompt_dump_max_bytes = 12_345;
         updated.prompt_dump_models = "claude-opus-4-7,claude-sonnet-4-6".to_string();
+        updated.message_pruning_enabled = true;
+        updated.message_pruning_max_request_bytes = 777_777;
+        updated.message_pruning_keep_recent_messages = 3;
+        updated.message_pruning_max_history_entry_bytes = 222_222;
+        updated.message_pruning_max_truncated_content_bytes = 44_444;
         updated.target_cache_reuse_ratio = 0.95;
         updated.virtual_cache_context_shrink_reset_ratio = 0.2;
         updated.load_balancing_mode = "balanced".to_string();
@@ -1271,6 +1311,11 @@ mod tests {
             loaded.prompt_dump_models,
             "claude-opus-4-7,claude-sonnet-4-6"
         );
+        assert!(loaded.message_pruning_enabled);
+        assert_eq!(loaded.message_pruning_max_request_bytes, 777_777);
+        assert_eq!(loaded.message_pruning_keep_recent_messages, 3);
+        assert_eq!(loaded.message_pruning_max_history_entry_bytes, 222_222);
+        assert_eq!(loaded.message_pruning_max_truncated_content_bytes, 44_444);
         assert_eq!(loaded.target_cache_reuse_ratio, 0.95);
         assert_eq!(loaded.virtual_cache_context_shrink_reset_ratio, 0.2);
         assert_eq!(loaded.load_balancing_mode, "balanced");
