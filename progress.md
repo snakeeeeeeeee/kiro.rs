@@ -1,6 +1,9 @@
 # Progress
 
 ## Session Log
+- 2026-06-20 CST: Started implementing Admin-managed plaintext external API keys and sidebar UI split. Current worktree has pre-existing untracked DB/tmp/probe artifacts; this task will ignore them unless directly needed.
+- 2026-06-20 CST: Implemented `api_keys` SQLite storage, in-memory `ApiKeyManager`, Admin `/api-keys` CRUD endpoints, `/v1`/`/cc/v1` dynamic key auth, sidebar Admin shell, account pool page split, and key management UI with show/copy/enable/delete/name editing.
+- 2026-06-20 CST: Validation passed: `cargo fmt -- --check`, `cargo check`, `cargo test -q` (399 tests), and `pnpm --dir admin-ui build`.
 - 2026-06-01 CST: Started investigating Admin import HTTP 400 for a provided Kiro Power account export. Read the attachment structurally only; it contains real OAuth/IdC secrets, so later logs and responses should avoid printing credential values.
 - 2026-06-01 CST: Reproduced the real failure path on isolated local port 18990. Add credential returned 200; balance refresh returned upstream `Invalid profileArn`, which explained the UI rollback/400 report.
 - 2026-06-01 CST: Patched batch and KAM import dialogs so an add-success + balance-refresh-failure keeps the credential when the import file carries usage/subscription snapshot metadata, and displays a warning instead of rolling back.

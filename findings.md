@@ -6,6 +6,9 @@
 - Regression analysis should compare `1ba06f6..HEAD`, focusing on Anthropic envelope shape, identity normalization, model-family leakage, usage/cache fields, thinking/signature exposure, and model/run-mode presets.
 
 ## Current Task Findings
+- Admin external API keys should be plaintext in SQLite by explicit user preference, visible in Admin UI, and protected only by the existing `adminApiKey`.
+- External API request auth currently compares only `config.apiKey` in `src/anthropic/middleware.rs`; this needs an in-memory key manager cache so `/v1` and `/cc/v1` do not hit SQLite per request.
+- Admin UI is a single large `Dashboard` component with top header and account pool content. The lowest-risk refactor is a shell/sidebar plus moving the existing account pool logic into a page component without changing its inner behavior.
 - Opus 4.7 run mode should be implemented as an effective preset layer. It must not rewrite persisted granular settings, and it must not toggle Prompt Dump or raw debug automatically.
 - Fast mode should not use `diagnose` signed-thinking, because `diagnose` still observes/logs signature state; effective signed-thinking is `off` for lowest overhead.
 - SQLite store and runtime settings modules are present under `src/kiro/store.rs` and `src/kiro/settings.rs`.

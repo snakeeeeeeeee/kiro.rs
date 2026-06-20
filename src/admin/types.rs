@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::anthropic::VirtualCacheReuseSnapshot;
+use crate::common::api_keys::ApiKeyRecord;
 use crate::kiro::dynamic_proxy::{DynamicProxyBindingView, DynamicProxySummary};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model_cooldown::ModelCooldownSnapshot;
@@ -135,6 +136,53 @@ pub struct CredentialTestResponse {
     pub latency_ms: u64,
     pub endpoint: String,
     pub api_region: String,
+}
+
+// ============ 外部 API 密钥 ============
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeysResponse {
+    pub keys: Vec<ApiKeyItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyItem {
+    pub id: u64,
+    pub name: String,
+    pub key: String,
+    pub disabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+}
+
+impl From<ApiKeyRecord> for ApiKeyItem {
+    fn from(value: ApiKeyRecord) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            key: value.key,
+            disabled: value.disabled,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            last_used_at: value.last_used_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApiKeyRequest {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateApiKeyRequest {
+    pub name: Option<String>,
+    pub disabled: Option<bool>,
 }
 
 // ============ 运行时状态 ============

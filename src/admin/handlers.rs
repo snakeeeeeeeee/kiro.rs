@@ -10,9 +10,9 @@ use super::{
     middleware::AdminState,
     types::{
         AddCredentialRequest, BatchCredentialIdsRequest, BatchCredentialPolicyRequest,
-        CredentialTestRequest, ExportCredentialsRequest, SetCredentialPolicyRequest,
-        SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SetRuntimeSettingsRequest, SuccessResponse,
+        CreateApiKeyRequest, CredentialTestRequest, ExportCredentialsRequest,
+        SetCredentialPolicyRequest, SetDisabledRequest, SetLoadBalancingModeRequest,
+        SetPriorityRequest, SetRuntimeSettingsRequest, SuccessResponse, UpdateApiKeyRequest,
     },
 };
 
@@ -28,6 +28,52 @@ pub async fn get_runtime_status(State(state): State<AdminState>) -> impl IntoRes
 pub async fn get_all_credentials(State(state): State<AdminState>) -> impl IntoResponse {
     let response = state.service.get_all_credentials();
     Json(response)
+}
+
+/// GET /api/admin/api-keys
+/// 获取外部访问密钥列表
+pub async fn get_api_keys(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.service.get_api_keys() {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/api-keys
+/// 生成外部访问密钥
+pub async fn create_api_key(
+    State(state): State<AdminState>,
+    Json(payload): Json<CreateApiKeyRequest>,
+) -> impl IntoResponse {
+    match state.service.create_api_key(payload) {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// PATCH /api/admin/api-keys/:id
+/// 修改外部访问密钥
+pub async fn update_api_key(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<UpdateApiKeyRequest>,
+) -> impl IntoResponse {
+    match state.service.update_api_key(id, payload) {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// DELETE /api/admin/api-keys/:id
+/// 删除外部访问密钥
+pub async fn delete_api_key(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.delete_api_key(id) {
+        Ok(_) => Json(SuccessResponse::new(format!("密钥 #{} 已删除", id))).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
 }
 
 /// GET /api/admin/settings/runtime

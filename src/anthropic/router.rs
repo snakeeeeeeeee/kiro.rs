@@ -9,6 +9,7 @@ use axum::{
 use std::sync::Arc;
 
 use super::VirtualCacheUsageManager;
+use crate::common::api_keys::ApiKeyManager;
 use crate::kiro::provider::KiroProvider;
 use crate::runtime::RuntimeLimiter;
 
@@ -43,6 +44,7 @@ pub fn create_router_with_provider(
     extract_thinking: bool,
     runtime_limiter: Arc<RuntimeLimiter>,
     virtual_cache_usage: Arc<VirtualCacheUsageManager>,
+    api_key_manager: Option<Arc<ApiKeyManager>>,
 ) -> Router {
     let mut state = AppState::new(
         api_key,
@@ -52,6 +54,9 @@ pub fn create_router_with_provider(
     );
     if let Some(provider) = kiro_provider {
         state = state.with_kiro_provider(provider);
+    }
+    if let Some(manager) = api_key_manager {
+        state = state.with_api_key_manager(manager);
     }
 
     // 需要认证的 /v1 路由

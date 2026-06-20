@@ -195,6 +195,12 @@ async fn main() {
     // 创建 MultiTokenManager 和 KiroProvider
     let dynamic_proxy_manager =
         Arc::new(DynamicProxyManager::new(store.clone(), config.tls_backend));
+    let api_key_manager = Arc::new(
+        common::api_keys::ApiKeyManager::new(store.clone()).unwrap_or_else(|e| {
+            tracing::error!("初始化外部 API 密钥管理器失败: {}", e);
+            std::process::exit(1);
+        }),
+    );
 
     let token_manager = MultiTokenManager::from_stored_credentials(
         config.clone(),
@@ -242,6 +248,7 @@ async fn main() {
         config.extract_thinking,
         runtime_limiter.clone(),
         virtual_cache_usage.clone(),
+        Some(api_key_manager.clone()),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
@@ -265,6 +272,7 @@ async fn main() {
                 model_cooldowns.clone(),
                 dynamic_proxy_manager.clone(),
                 virtual_cache_usage.clone(),
+                api_key_manager.clone(),
                 endpoint_names.clone(),
             );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
@@ -297,6 +305,8 @@ async fn main() {
         tracing::info!("Admin API:");
         tracing::info!("  GET  /api/admin/runtime");
         tracing::info!("  GET  /api/admin/credentials");
+        tracing::info!("  GET  /api/admin/api-keys");
+        tracing::info!("  POST /api/admin/api-keys");
         tracing::info!("  POST /api/admin/credentials/:index/disabled");
         tracing::info!("  POST /api/admin/credentials/:index/priority");
         tracing::info!("  POST /api/admin/credentials/:index/reset");

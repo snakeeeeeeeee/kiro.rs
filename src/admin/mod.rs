@@ -11,7 +11,7 @@
 //!
 //! # 使用
 //! ```ignore
-//! let admin_service = AdminService::new(token_manager.clone(), provider.clone(), runtime_limiter.clone(), metrics.clone(), model_cooldowns.clone(), dynamic_proxy.clone(), endpoint_names);
+//! let admin_service = AdminService::new(token_manager.clone(), provider.clone(), runtime_limiter.clone(), metrics.clone(), model_cooldowns.clone(), dynamic_proxy.clone(), virtual_cache_usage.clone(), api_key_manager.clone(), endpoint_names);
 //! let admin_state = AdminState::new(admin_api_key, admin_service);
 //! let admin_router = create_admin_router(admin_state);
 //! ```

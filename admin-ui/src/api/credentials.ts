@@ -19,6 +19,10 @@ import type {
   DynamicProxyBatchActionResponse,
   EndpointConfigResponse,
   EndpointLatencyResponse,
+  ApiKeysResponse,
+  ApiKeyItem,
+  CreateApiKeyRequest,
+  UpdateApiKeyRequest,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -41,6 +45,29 @@ api.interceptors.request.use((config) => {
 // 获取所有凭据状态
 export async function getCredentials(): Promise<CredentialsStatusResponse> {
   const { data } = await api.get<CredentialsStatusResponse>('/credentials')
+  return data
+}
+
+export async function getApiKeys(): Promise<ApiKeysResponse> {
+  const { data } = await api.get<ApiKeysResponse>('/api-keys')
+  return data
+}
+
+export async function createApiKey(req: CreateApiKeyRequest): Promise<ApiKeyItem> {
+  const { data } = await api.post<ApiKeyItem>('/api-keys', req)
+  return data
+}
+
+export async function updateApiKey(
+  id: number,
+  req: UpdateApiKeyRequest
+): Promise<ApiKeyItem> {
+  const { data } = await api.patch<ApiKeyItem>(`/api-keys/${id}`, req)
+  return data
+}
+
+export async function deleteApiKey(id: number): Promise<SuccessResponse> {
+  const { data } = await api.delete<SuccessResponse>(`/api-keys/${id}`)
   return data
 }
 

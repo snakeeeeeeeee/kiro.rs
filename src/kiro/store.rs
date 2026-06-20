@@ -35,6 +35,17 @@ pub struct StoredCredential {
     pub disabled_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct StoredApiKey {
+    pub id: u64,
+    pub name: String,
+    pub key: String,
+    pub disabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+}
+
 impl KiroStore {
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -116,6 +127,16 @@ impl KiroStore {
                 last_verified_at TEXT NULL,
                 verify_error TEXT NULL,
                 fail_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                key TEXT NOT NULL UNIQUE,
+                disabled INTEGER NOT NULL DEFAULT 0,
+                last_used_at TEXT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -441,6 +462,81 @@ impl KiroStore {
             params![credential_id],
         )?;
         Ok(changed > 0)
+    }
+
+    pub fn load_api_keys(&self) -> anyhow::Result<Vec<StoredApiKey>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, name, key, disabled, created_at, updated_at, last_used_at
+            FROM api_keys
+            ORDER BY id DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], stored_api_key_from_row)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    pub fn insert_api_key(&self, name: &str, key: &str) -> anyhow::Result<StoredApiKey> {
+        let conn = self.conn.lock();
+        conn.execute(
+            r#"
+            INSERT INTO api_keys (name, key, disabled, created_at, updated_at)
+            VALUES (?1, ?2, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            "#,
+            params![name, key],
+        )?;
+        let id = conn.last_insert_rowid();
+        load_api_key_locked(&conn, i64_to_u64(id))?
+            .ok_or_else(|| anyhow::anyhow!("密钥创建后读取失败: {}", id))
+    }
+
+    pub fn update_api_key(
+        &self,
+        id: u64,
+        name: Option<&str>,
+        disabled: Option<bool>,
+    ) -> anyhow::Result<StoredApiKey> {
+        let conn = self.conn.lock();
+        let current =
+            load_api_key_locked(&conn, id)?.ok_or_else(|| anyhow::anyhow!("密钥不存在: {}", id))?;
+        let next_name = name.unwrap_or(&current.name);
+        let next_disabled = disabled.unwrap_or(current.disabled);
+        conn.execute(
+            r#"
+            UPDATE api_keys
+            SET name = ?2,
+                disabled = ?3,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?1
+            "#,
+            params![id, next_name, bool_to_i64(next_disabled)],
+        )?;
+        load_api_key_locked(&conn, id)?.ok_or_else(|| anyhow::anyhow!("密钥不存在: {}", id))
+    }
+
+    pub fn delete_api_key(&self, id: u64) -> anyhow::Result<bool> {
+        let conn = self.conn.lock();
+        let changed = conn.execute("DELETE FROM api_keys WHERE id = ?1", params![id])?;
+        Ok(changed > 0)
+    }
+
+    pub fn touch_api_key_last_used(&self, id: u64, used_at: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            r#"
+            UPDATE api_keys
+            SET last_used_at = ?2,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?1
+            "#,
+            params![id, used_at],
+        )?;
+        Ok(())
     }
 }
 
@@ -1082,6 +1178,34 @@ fn dynamic_proxy_binding_from_row(
     })
 }
 
+fn stored_api_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredApiKey> {
+    Ok(StoredApiKey {
+        id: i64_to_u64(row.get(0)?),
+        name: row.get(1)?,
+        key: row.get(2)?,
+        disabled: i64_to_bool(row.get(3)?),
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+        last_used_at: row.get(6)?,
+    })
+}
+
+fn load_api_key_locked(conn: &Connection, id: u64) -> anyhow::Result<Option<StoredApiKey>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, name, key, disabled, created_at, updated_at, last_used_at
+        FROM api_keys
+        WHERE id = ?1
+        "#,
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(stored_api_key_from_row(row)?))
+    } else {
+        Ok(None)
+    }
+}
+
 fn parse_f64(key: &str, value: &str) -> anyhow::Result<f64> {
     value
         .parse::<f64>()
@@ -1367,6 +1491,44 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert!(store.delete_dynamic_proxy_binding(42).unwrap());
         assert!(store.load_dynamic_proxy_binding(42).unwrap().is_none());
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn api_key_round_trip_stores_plaintext() {
+        let path = test_db_path("api-key-round-trip");
+        let store = KiroStore::open(&path).unwrap();
+
+        let created = store
+            .insert_api_key("prod gateway", "sk_test_plaintext")
+            .unwrap();
+        assert_eq!(created.name, "prod gateway");
+        assert_eq!(created.key, "sk_test_plaintext");
+        assert!(!created.disabled);
+
+        let loaded = store.load_api_keys().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].key, "sk_test_plaintext");
+
+        let updated = store
+            .update_api_key(created.id, Some("cursor user"), Some(true))
+            .unwrap();
+        assert_eq!(updated.name, "cursor user");
+        assert!(updated.disabled);
+
+        store
+            .touch_api_key_last_used(created.id, "2026-06-20T00:00:00Z")
+            .unwrap();
+        let touched = store.load_api_keys().unwrap();
+        assert_eq!(
+            touched[0].last_used_at.as_deref(),
+            Some("2026-06-20T00:00:00Z")
+        );
+
+        assert!(store.delete_api_key(created.id).unwrap());
+        assert!(store.load_api_keys().unwrap().is_empty());
 
         drop(store);
         let _ = std::fs::remove_file(path);

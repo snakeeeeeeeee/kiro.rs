@@ -39,6 +39,8 @@ Current extension: add Opus 4.6 and Sonnet 4.6 benchmark/fast/custom compatibili
 
 Current extension: add a default-off global target cache reuse ratio that uses recent virtual-cache usage as a soft controller while preserving the existing ledger semantics and advanced cache execution settings.
 
+Current extension: add Admin-managed plaintext external API keys (`sk-...`) with in-memory auth cache, and refactor Admin UI into sidebar pages for account pool management and key management.
+
 ## Phases
 - [completed] Inspect existing Admin/backend runtime shape and identify integration points
 - [completed] Add SQLite store and first-start migration from `credentials.json`
@@ -73,6 +75,7 @@ Current extension: add a default-off global target cache reuse ratio that uses r
 - [completed] Add Opus 4.7 run modes for benchmark scoring vs low-latency daily use without mutating manual dump settings
 - [completed] Implement Opus 4.6/Sonnet 4.6 compatibility settings, generalized probe helpers, PDF duplicate-output fix, and Docker verification
 - [in_progress] Add global target cache reuse ratio config, 5-minute diagnostics, Admin UI control, and regression coverage
+- [completed] Add plaintext external API key storage/cache/auth, Admin key APIs, and sidebar-based Admin UI pages
 
 ## Decisions
 - Keep single-node only; no Redis/Postgres.

@@ -24,8 +24,12 @@ import {
   verifyDynamicProxy,
   clearDynamicProxy,
   dynamicProxyBatchAction,
+  getApiKeys,
+  createApiKey,
+  updateApiKey,
+  deleteApiKey,
 } from '@/api/credentials'
-import type { AddCredentialRequest, BatchCredentialPolicyRequest, CredentialTestRequest, RuntimeSettings, SetCredentialPolicyRequest } from '@/types/api'
+import type { AddCredentialRequest, BatchCredentialPolicyRequest, CreateApiKeyRequest, CredentialTestRequest, RuntimeSettings, SetCredentialPolicyRequest, UpdateApiKeyRequest } from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -43,6 +47,45 @@ export function useCredentialBalance(id: number | null) {
     queryFn: () => getCredentialBalance(id!),
     enabled: id !== null,
     retry: false, // 余额查询失败时不重试（避免重复请求被封禁的账号）
+  })
+}
+
+export function useApiKeys() {
+  return useQuery({
+    queryKey: ['apiKeys'],
+    queryFn: getApiKeys,
+    refetchInterval: 30000,
+  })
+}
+
+export function useCreateApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (req: CreateApiKeyRequest) => createApiKey(req),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] })
+    },
+  })
+}
+
+export function useUpdateApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, request }: { id: number; request: UpdateApiKeyRequest }) =>
+      updateApiKey(id, request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] })
+    },
+  })
+}
+
+export function useDeleteApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => deleteApiKey(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] })
+    },
   })
 }
 

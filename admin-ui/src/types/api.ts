@@ -67,6 +67,29 @@ export interface CredentialTestResponse {
   apiRegion: string
 }
 
+export interface ApiKeysResponse {
+  keys: ApiKeyItem[]
+}
+
+export interface ApiKeyItem {
+  id: number
+  name: string
+  key: string
+  disabled: boolean
+  createdAt: string
+  updatedAt: string
+  lastUsedAt: string | null
+}
+
+export interface CreateApiKeyRequest {
+  name?: string
+}
+
+export interface UpdateApiKeyRequest {
+  name?: string
+  disabled?: boolean
+}
+
 export interface RuntimeStatusResponse {
   defaultEndpoint: EndpointName
   endpoints: EndpointOption[]

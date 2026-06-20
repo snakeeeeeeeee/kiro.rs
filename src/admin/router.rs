@@ -8,13 +8,14 @@ use axum::{
 use super::{
     handlers::{
         add_credential, bind_dynamic_proxy, clear_credential_cooldown,
-        clear_credential_cooldown_batch, clear_dynamic_proxy, delete_credential,
-        dynamic_proxy_batch_action, export_credentials, force_refresh_token, get_all_credentials,
-        get_credential_balance, get_dynamic_proxy_bindings, get_endpoints, get_load_balancing_mode,
-        get_runtime_settings, get_runtime_status, reset_failure_count, rotate_dynamic_proxy,
-        set_credential_disabled, set_credential_policy, set_credential_policy_batch,
-        set_credential_priority, set_load_balancing_mode, set_runtime_settings,
-        test_credential_connection, test_endpoint_latency, verify_dynamic_proxy,
+        clear_credential_cooldown_batch, clear_dynamic_proxy, create_api_key, delete_api_key,
+        delete_credential, dynamic_proxy_batch_action, export_credentials, force_refresh_token,
+        get_all_credentials, get_api_keys, get_credential_balance, get_dynamic_proxy_bindings,
+        get_endpoints, get_load_balancing_mode, get_runtime_settings, get_runtime_status,
+        reset_failure_count, rotate_dynamic_proxy, set_credential_disabled, set_credential_policy,
+        set_credential_policy_batch, set_credential_priority, set_load_balancing_mode,
+        set_runtime_settings, test_credential_connection, test_endpoint_latency, update_api_key,
+        verify_dynamic_proxy,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -44,6 +45,11 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route(
             "/credentials",
             get(get_all_credentials).post(add_credential),
+        )
+        .route("/api-keys", get(get_api_keys).post(create_api_key))
+        .route(
+            "/api-keys/{id}",
+            patch(update_api_key).delete(delete_api_key),
         )
         .route("/credentials/export", post(export_credentials))
         .route(

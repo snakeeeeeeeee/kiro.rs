@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 
-use crate::common::auth;
+use crate::common::{api_keys::ApiKeyManager, auth};
 use crate::kiro::provider::KiroProvider;
 use crate::runtime::RuntimeLimiter;
 
@@ -23,6 +23,8 @@ use super::usage::VirtualCacheUsageManager;
 pub struct AppState {
     /// API 密钥
     pub api_key: String,
+    /// Admin 管理的外部 API 密钥缓存
+    pub api_key_manager: Option<Arc<ApiKeyManager>>,
     /// Kiro Provider（可选，用于实际 API 调用）
     /// 内部使用 MultiTokenManager，已支持线程安全的多凭据管理
     pub kiro_provider: Option<Arc<KiroProvider>>,
@@ -46,6 +48,7 @@ impl AppState {
     ) -> Self {
         Self {
             api_key: api_key.into(),
+            api_key_manager: None,
             kiro_provider: None,
             extract_thinking,
             runtime_limiter,
@@ -61,6 +64,12 @@ impl AppState {
         self.kiro_provider = Some(provider);
         self
     }
+
+    /// 设置外部 API Key 管理器
+    pub fn with_api_key_manager(mut self, manager: Arc<ApiKeyManager>) -> Self {
+        self.api_key_manager = Some(manager);
+        self
+    }
 }
 
 /// API Key 认证中间件
@@ -70,7 +79,15 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     match auth::extract_api_key(&request) {
-        Some(key) if auth::constant_time_eq(&key, &state.api_key) => next.run(request).await,
+        Some(key)
+            if auth::constant_time_eq(&key, &state.api_key)
+                || state
+                    .api_key_manager
+                    .as_ref()
+                    .is_some_and(|manager| manager.authenticate(&key)) =>
+        {
+            next.run(request).await
+        }
         _ => {
             let error = ErrorResponse::authentication_error();
             (StatusCode::UNAUTHORIZED, Json(error)).into_response()

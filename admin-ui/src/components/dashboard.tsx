@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Download, Trash2, RotateCcw, CheckCircle2, Activity, Settings, Columns3, Search, ShieldCheck, Globe2, Zap } from 'lucide-react'
+import { RefreshCw, LogOut, Moon, Sun, Server, KeyRound, Plus, Upload, FileUp, Download, Trash2, RotateCcw, CheckCircle2, Activity, Settings, Columns3, Search, ShieldCheck, Globe2, Zap } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { storage } from '@/lib/storage'
@@ -15,14 +15,12 @@ import { RuntimeSettingsDialog } from '@/components/runtime-settings-dialog'
 import { PolicyDialog } from '@/components/policy-dialog'
 import { CredentialTestDialog } from '@/components/credential-test-dialog'
 import { AccountTable, type AccountColumn, type AccountColumnKey, type AccountSortKey } from '@/components/account-table'
+import { ApiKeyManagementPage } from '@/components/api-key-management-page'
 import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useClearCooldown, useClearCooldownBatch, useSetDisabled, useBindDynamicProxy, useRotateDynamicProxy, useVerifyDynamicProxy, useClearDynamicProxy, useDynamicProxyBatchAction } from '@/hooks/use-credentials'
 import { getCredentialBalance, forceRefreshToken, exportCredentials, getRuntimeStatus } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import type { BalanceResponse, CredentialStatusItem, ExportedCredential, RuntimeStatusResponse } from '@/types/api'
 
-interface DashboardProps {
-  onLogout: () => void
-}
 
 function formatExportDate(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0')
@@ -168,7 +166,7 @@ function formatClockTime(value: Date | null): string {
   })
 }
 
-export function Dashboard({ onLogout }: DashboardProps) {
+export function AccountPoolPage() {
   const [selectedCredentialId, setSelectedCredentialId] = useState<number | null>(null)
   const [balanceDialogOpen, setBalanceDialogOpen] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -243,13 +241,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
     }))
   const cancelVerifyRef = useRef(false)
   const [currentPage, setCurrentPage] = useState(1)
-  const [darkMode, setDarkMode] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return document.documentElement.classList.contains('dark')
-    }
-    return false
-  })
-
   const queryClient = useQueryClient()
   const { data, isLoading, error, refetch } = useCredentials()
   const { mutate: deleteCredential } = useDeleteCredential()
@@ -429,11 +420,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
     )
   }, [data?.credentials])
 
-  const toggleDarkMode = () => {
-    setDarkMode(!darkMode)
-    document.documentElement.classList.toggle('dark')
-  }
-
   const handleViewBalance = (id: number) => {
     setSelectedCredentialId(id)
     setBalanceDialogOpen(true)
@@ -546,11 +532,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
     toast.success('已刷新凭据列表')
   }
 
-  const handleLogout = () => {
-    storage.removeApiKey()
-    queryClient.clear()
-    onLogout()
-  }
 
   // 选择管理
   const toggleSelect = (id: number) => {
@@ -1033,7 +1014,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="flex min-h-[360px] items-center justify-center bg-background">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
           <p className="text-muted-foreground">加载中...</p>
@@ -1044,14 +1025,13 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <div className="flex min-h-[360px] items-center justify-center bg-background p-4">
         <Card className="w-full max-w-md">
           <CardContent className="pt-6 text-center">
             <div className="text-red-500 mb-4">加载失败</div>
             <p className="text-muted-foreground mb-4">{(error as Error).message}</p>
             <div className="space-x-2">
               <Button onClick={() => refetch()}>重试</Button>
-              <Button variant="outline" onClick={handleLogout}>重新登录</Button>
             </div>
           </CardContent>
         </Card>
@@ -1060,30 +1040,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="flex h-14 items-center justify-between px-4 md:px-6">
-          <div className="flex items-center gap-2">
-            <Server className="h-5 w-5" />
-            <span className="font-semibold">Kiro Admin</span>
-            <Badge variant="outline">单机</Badge>
-          </div>
-          <div className="flex items-center gap-1 md:gap-2">
-            <Button variant="ghost" size="icon" onClick={toggleDarkMode} title="切换主题">
-              {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-            </Button>
-            <Button variant="ghost" size="icon" onClick={handleRefresh} title="刷新">
-              <RefreshCw className="h-5 w-5" />
-            </Button>
-            <Button variant="ghost" size="icon" onClick={handleLogout} title="退出">
-              <LogOut className="h-5 w-5" />
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      <main className="w-full px-4 py-5 md:px-6">
-        <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+    <div className="space-y-5">
+      <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">账号池</CardTitle>
@@ -1194,9 +1152,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
               </div>
             </CardContent>
           </Card>
-        </div>
+      </div>
 
-        {runtimeStatus?.requestMetrics.requestCount ? (
+      {runtimeStatus?.requestMetrics.requestCount ? (
           <div className="mb-5 rounded-lg border bg-card p-3">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-medium">最近 {Math.round(runtimeStatus.requestMetrics.windowSecs / 60)} 分钟请求耗时</div>
@@ -1221,9 +1179,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
               ))}
             </div>
           </div>
-        ) : null}
+      ) : null}
 
-        {runtimeStatus?.modelCooldowns.length ? (
+      {runtimeStatus?.modelCooldowns.length ? (
           <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950">
             <div className="mb-2 text-sm font-medium">模型冷却</div>
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
@@ -1237,9 +1195,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
               ))}
             </div>
           </div>
-        ) : null}
+      ) : null}
 
-        <div className="space-y-3">
+      <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" size="sm" onClick={handleRefresh}>
@@ -1489,9 +1447,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
               </Button>
             </div>
           </div>
-        </div>
-      </main>
-
+      </div>
       {/* 余额对话框 */}
       <BalanceDialog
         credentialId={selectedCredentialId}
@@ -1549,6 +1505,125 @@ export function Dashboard({ onLogout }: DashboardProps) {
         onOpenChange={setBatchPolicyOpen}
         selectedIds={Array.from(selectedIds)}
       />
+    </div>
+  )
+}
+
+type AdminPage = 'accounts' | 'apiKeys'
+
+interface DashboardProps {
+  onLogout: () => void
+}
+
+const navItems: Array<{
+  id: AdminPage
+  label: string
+  icon: typeof Server
+}> = [
+  {
+    id: 'accounts',
+    label: '号池管理',
+    icon: Server,
+  },
+  {
+    id: 'apiKeys',
+    label: '密钥管理',
+    icon: KeyRound,
+  },
+]
+
+export function Dashboard({ onLogout }: DashboardProps) {
+  const [activePage, setActivePage] = useState<AdminPage>('accounts')
+  const [darkMode, setDarkMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return document.documentElement.classList.contains('dark')
+    }
+    return false
+  })
+  const queryClient = useQueryClient()
+
+  const toggleDarkMode = () => {
+    setDarkMode(!darkMode)
+    document.documentElement.classList.toggle('dark')
+  }
+
+  const handleRefresh = () => {
+    if (activePage === 'accounts') {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['loadBalancingMode'] })
+    } else {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] })
+    }
+    toast.success('已刷新当前页面')
+  }
+
+  const handleLogout = () => {
+    storage.removeApiKey()
+    queryClient.clear()
+    onLogout()
+  }
+
+  const activeTitle = activePage === 'accounts' ? '号池管理' : '密钥管理'
+
+  return (
+    <div className="min-h-screen bg-background">
+      <div className="flex min-h-screen flex-col md:flex-row">
+        <aside className="border-b bg-muted/20 md:sticky md:top-0 md:h-screen md:w-64 md:border-b-0 md:border-r">
+          <div className="flex h-14 items-center gap-2 border-b px-4">
+            <Server className="h-5 w-5" />
+            <span className="font-semibold">Kiro Admin</span>
+            <Badge variant="outline">单机</Badge>
+          </div>
+          <nav className="flex gap-2 overflow-x-auto p-3 md:block md:space-y-1 md:overflow-visible">
+            {navItems.map(item => {
+              const Icon = item.icon
+              const active = activePage === item.id
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActivePage(item.id)}
+                  className={`flex min-w-[150px] items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors md:w-full ${
+                    active
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                  }`}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block font-medium">{item.label}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </nav>
+        </aside>
+
+        <div className="min-w-0 flex-1">
+          <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 px-4 py-2 md:px-6">
+              <div className="min-w-0">
+                <h1 className="truncate text-base font-semibold">{activeTitle}</h1>
+              </div>
+              <div className="flex items-center gap-1 md:gap-2">
+                <Button variant="ghost" size="icon" onClick={toggleDarkMode} title="切换主题" aria-label="切换主题">
+                  {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+                </Button>
+                <Button variant="ghost" size="icon" onClick={handleRefresh} title="刷新" aria-label="刷新当前页面">
+                  <RefreshCw className="h-5 w-5" />
+                </Button>
+                <Button variant="ghost" size="icon" onClick={handleLogout} title="退出" aria-label="退出登录">
+                  <LogOut className="h-5 w-5" />
+                </Button>
+              </div>
+            </div>
+          </header>
+
+          <main className="w-full px-4 py-5 md:px-6">
+            {activePage === 'accounts' ? <AccountPoolPage /> : <ApiKeyManagementPage />}
+          </main>
+        </div>
+      </div>
     </div>
   )
 }

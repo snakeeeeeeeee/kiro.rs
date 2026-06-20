@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
 
 use crate::anthropic::VirtualCacheUsageManager;
+use crate::common::api_keys::ApiKeyManager;
 use crate::http_client::build_client;
 use crate::kiro::dynamic_proxy::DynamicProxyManager;
 use crate::kiro::endpoint::{endpoint_api_url, endpoint_label, normalize_endpoint_name};
@@ -24,14 +25,14 @@ use crate::runtime::RuntimeLimiter;
 
 use super::error::AdminServiceError;
 use super::types::{
-    AddCredentialRequest, AddCredentialResponse, BalanceResponse, BatchCredentialIdsRequest,
-    BatchCredentialPolicyRequest, CredentialStatusItem, CredentialTestRequest,
-    CredentialTestResponse, CredentialsStatusResponse, DynamicProxyActionResponse,
-    DynamicProxyBatchActionResponse, DynamicProxyBindingsResponse, EndpointConfigResponse,
-    EndpointLatencyResponse, EndpointOption, ExportCredentialsRequest, ExportCredentialsResponse,
-    LoadBalancingModeResponse, RuntimeCredentialStatus, RuntimeSettingsResponse,
-    RuntimeStatusResponse, SetCredentialPolicyRequest, SetLoadBalancingModeRequest,
-    SetRuntimeSettingsRequest,
+    AddCredentialRequest, AddCredentialResponse, ApiKeyItem, ApiKeysResponse, BalanceResponse,
+    BatchCredentialIdsRequest, BatchCredentialPolicyRequest, CreateApiKeyRequest,
+    CredentialStatusItem, CredentialTestRequest, CredentialTestResponse, CredentialsStatusResponse,
+    DynamicProxyActionResponse, DynamicProxyBatchActionResponse, DynamicProxyBindingsResponse,
+    EndpointConfigResponse, EndpointLatencyResponse, EndpointOption, ExportCredentialsRequest,
+    ExportCredentialsResponse, LoadBalancingModeResponse, RuntimeCredentialStatus,
+    RuntimeSettingsResponse, RuntimeStatusResponse, SetCredentialPolicyRequest,
+    SetLoadBalancingModeRequest, SetRuntimeSettingsRequest, UpdateApiKeyRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -57,6 +58,7 @@ pub struct AdminService {
     model_cooldowns: Arc<ModelCooldownManager>,
     dynamic_proxy: Arc<DynamicProxyManager>,
     virtual_cache_usage: Arc<VirtualCacheUsageManager>,
+    api_key_manager: Arc<ApiKeyManager>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
@@ -72,6 +74,7 @@ impl AdminService {
         model_cooldowns: Arc<ModelCooldownManager>,
         dynamic_proxy: Arc<DynamicProxyManager>,
         virtual_cache_usage: Arc<VirtualCacheUsageManager>,
+        api_key_manager: Arc<ApiKeyManager>,
         known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
@@ -88,6 +91,7 @@ impl AdminService {
             model_cooldowns,
             dynamic_proxy,
             virtual_cache_usage,
+            api_key_manager,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
@@ -356,6 +360,50 @@ impl AdminService {
     pub fn get_dynamic_proxy_bindings(&self) -> DynamicProxyBindingsResponse {
         DynamicProxyBindingsResponse {
             bindings: self.dynamic_proxy_bindings_map().into_values().collect(),
+        }
+    }
+
+    pub fn get_api_keys(&self) -> Result<ApiKeysResponse, AdminServiceError> {
+        let keys = self
+            .api_key_manager
+            .list()
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))?
+            .into_iter()
+            .map(ApiKeyItem::from)
+            .collect();
+        Ok(ApiKeysResponse { keys })
+    }
+
+    pub fn create_api_key(
+        &self,
+        req: CreateApiKeyRequest,
+    ) -> Result<ApiKeyItem, AdminServiceError> {
+        self.api_key_manager
+            .create(req.name)
+            .map(ApiKeyItem::from)
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))
+    }
+
+    pub fn update_api_key(
+        &self,
+        id: u64,
+        req: UpdateApiKeyRequest,
+    ) -> Result<ApiKeyItem, AdminServiceError> {
+        self.api_key_manager
+            .update(id, req.name, req.disabled)
+            .map(ApiKeyItem::from)
+            .map_err(|err| self.classify_api_key_error(err, id))
+    }
+
+    pub fn delete_api_key(&self, id: u64) -> Result<(), AdminServiceError> {
+        let deleted = self
+            .api_key_manager
+            .delete(id)
+            .map_err(|err| AdminServiceError::InternalError(err.to_string()))?;
+        if deleted {
+            Ok(())
+        } else {
+            Err(AdminServiceError::NotFound { id })
         }
     }
 
@@ -1054,6 +1102,15 @@ impl AdminService {
         } else if msg.contains("只能删除已禁用的凭据") || msg.contains("请先禁用凭据")
         {
             AdminServiceError::InvalidCredential(msg)
+        } else {
+            AdminServiceError::InternalError(msg)
+        }
+    }
+
+    fn classify_api_key_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
+        let msg = e.to_string();
+        if msg.contains("密钥不存在") {
+            AdminServiceError::NotFound { id }
         } else {
             AdminServiceError::InternalError(msg)
         }
