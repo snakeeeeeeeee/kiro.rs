@@ -411,6 +411,7 @@ export interface RuntimeSettings {
   virtualCacheBurstMinTokens: number
   virtualCacheBurstMaxTokens: number
   virtualCacheFallbackScope: 'model' | 'none'
+  virtualCacheHaikuInputOnlyEnabled: boolean
   targetCacheReuseRatio: number
   virtualCacheContextShrinkResetRatio: number
   dynamicProxyEnabled: boolean

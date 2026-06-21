@@ -94,6 +94,8 @@ pub struct RuntimeSettings {
     pub virtual_cache_burst_min_tokens: u32,
     pub virtual_cache_burst_max_tokens: u32,
     pub virtual_cache_fallback_scope: String,
+    #[serde(default)]
+    pub virtual_cache_haiku_input_only_enabled: bool,
     pub target_cache_reuse_ratio: f64,
     pub virtual_cache_context_shrink_reset_ratio: f64,
     pub dynamic_proxy_enabled: bool,
@@ -234,6 +236,7 @@ impl RuntimeSettings {
             virtual_cache_fallback_scope: normalize_virtual_cache_fallback_scope(
                 &config.virtual_cache_fallback_scope,
             ),
+            virtual_cache_haiku_input_only_enabled: config.virtual_cache_haiku_input_only_enabled,
             target_cache_reuse_ratio: config.target_cache_reuse_ratio.clamp(0.0, 1.0),
             virtual_cache_context_shrink_reset_ratio: config
                 .virtual_cache_context_shrink_reset_ratio
@@ -1099,6 +1102,7 @@ mod tests {
         assert_eq!(settings.message_pruning_max_truncated_content_bytes, 50_000);
         assert_eq!(settings.target_cache_reuse_ratio, 0.0);
         assert_eq!(settings.virtual_cache_context_shrink_reset_ratio, 0.7);
+        assert!(!settings.virtual_cache_haiku_input_only_enabled);
         assert_eq!(
             normalize_opus47_detection_profile("cc-max-like"),
             "cc_max_like"

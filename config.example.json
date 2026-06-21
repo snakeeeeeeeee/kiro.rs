@@ -50,6 +50,7 @@
   "virtualCacheMinCreationTokens": 128,
   "virtualCacheMaxCreationTokens": 1200,
   "virtualCacheFallbackScope": "model",
+  "virtualCacheHaikuInputOnlyEnabled": false,
   "targetCacheReuseRatio": 0,
   "virtualCacheContextShrinkResetRatio": 0.7,
   "shutdownDrainTimeoutSecs": 60,

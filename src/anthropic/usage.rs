@@ -82,6 +82,18 @@ impl AnthropicUsage {
         }
     }
 
+    pub fn input_only_with_cache_fields(input_tokens: i32, output_tokens: i32) -> Self {
+        Self {
+            input_tokens: input_tokens.max(0),
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            ephemeral_5m_input_tokens: 0,
+            ephemeral_1h_input_tokens: 0,
+            output_tokens: output_tokens.max(0),
+            include_cache_fields: true,
+        }
+    }
+
     #[cfg(test)]
     pub fn to_json(&self) -> Value {
         self.to_json_with_shape("anthropic")
@@ -270,6 +282,23 @@ impl VirtualCacheUsageManager {
             };
         }
 
+        let accounting_total =
+            compute_accounting_total(&input, observed_total, model_context_window);
+        if settings.virtual_cache_haiku_input_only_enabled && is_haiku_model(&input.model) {
+            return PendingVirtualUsage {
+                key: None,
+                usage: AnthropicUsage::input_only_with_cache_fields(
+                    accounting_total,
+                    input.output_tokens,
+                ),
+                creation_ttl: input.creation_ttl,
+                creation_tokens: 0,
+                observed_total_input_tokens: observed_total,
+                accounting_total_input_tokens: accounting_total,
+                reset_ledger: false,
+            };
+        }
+
         let key = LedgerKey {
             model: input.model.clone(),
             session_key: input.session_key.clone(),
@@ -296,8 +325,6 @@ impl VirtualCacheUsageManager {
             entry = LedgerEntry::default();
         }
 
-        let accounting_total =
-            compute_accounting_total(&input, observed_total, model_context_window);
         let target_reuse_snapshot = self.reuse_snapshot_at(settings.target_cache_reuse_ratio, now);
         let effective_settings = apply_target_cache_reuse_tuning(settings, &target_reuse_snapshot);
         let uncached = compute_uncached_tokens(&effective_settings, &input, accounting_total);
@@ -621,6 +648,10 @@ fn cap_creation_to_available_cache_budget(
             .saturating_sub(uncached)
             .saturating_sub(read_tokens),
     )
+}
+
+fn is_haiku_model(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().contains("haiku")
 }
 
 fn apply_creation_jitter(
@@ -1484,6 +1515,46 @@ mod tests {
         assert!(json.get("cache_read_input_tokens").is_none());
         assert!(json.get("cache_creation_input_tokens").is_none());
         assert!(json.get("cache_creation").is_none());
+    }
+
+    #[test]
+    fn haiku_input_only_keeps_cache_fields_but_skips_virtual_ledger() {
+        let manager = VirtualCacheUsageManager::new();
+        let mut settings = settings();
+        settings.virtual_cache_haiku_input_only_enabled = true;
+
+        let first = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-haiku-4-5-20251001".to_string(),
+                accounting_total_input_tokens: Some(2_000),
+                ..input("session-a", 1_000, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(first.input_tokens, 2_000);
+        assert_eq!(first.cache_read_input_tokens, 0);
+        assert_eq!(first.cache_creation_input_tokens, 0);
+        assert_eq!(first.ephemeral_5m_input_tokens, 0);
+        assert_eq!(first.ephemeral_1h_input_tokens, 0);
+
+        let json = first.to_json_with_shape("anthropic");
+        assert_eq!(json["input_tokens"], 2_000);
+        assert_eq!(json["cache_read_input_tokens"], 0);
+        assert_eq!(json["cache_creation_input_tokens"], 0);
+        assert_eq!(json["cache_creation"]["ephemeral_5m_input_tokens"], 0);
+        assert_eq!(json["cache_creation"]["ephemeral_1h_input_tokens"], 0);
+
+        let second = manager.build_usage(
+            &settings,
+            VirtualUsageInput {
+                model: "claude-haiku-4-5-20251001".to_string(),
+                accounting_total_input_tokens: Some(2_100),
+                ..input("session-a", 1_100, CacheTtl::FiveMinutes)
+            },
+        );
+        assert_eq!(second.input_tokens, 2_100);
+        assert_eq!(second.cache_read_input_tokens, 0);
+        assert_eq!(second.cache_creation_input_tokens, 0);
     }
 
     #[test]

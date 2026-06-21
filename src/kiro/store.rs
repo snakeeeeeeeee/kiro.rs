@@ -798,6 +798,10 @@ fn runtime_settings_pairs(
             settings.virtual_cache_fallback_scope.clone(),
         ),
         (
+            "virtualCacheHaikuInputOnlyEnabled",
+            settings.virtual_cache_haiku_input_only_enabled.to_string(),
+        ),
+        (
             "targetCacheReuseRatio",
             settings.target_cache_reuse_ratio.to_string(),
         ),
@@ -1036,6 +1040,9 @@ fn apply_runtime_setting(
         "virtualCacheFallbackScope" => {
             settings.virtual_cache_fallback_scope =
                 crate::kiro::settings::normalize_virtual_cache_fallback_scope(value)
+        }
+        "virtualCacheHaikuInputOnlyEnabled" => {
+            settings.virtual_cache_haiku_input_only_enabled = parse_bool(key, value)?
         }
         "targetCacheReuseRatio" => settings.target_cache_reuse_ratio = parse_f64(key, value)?,
         "virtualCacheContextShrinkResetRatio" => {
@@ -1389,6 +1396,7 @@ mod tests {
         updated.message_pruning_keep_recent_messages = 3;
         updated.message_pruning_max_history_entry_bytes = 222_222;
         updated.message_pruning_max_truncated_content_bytes = 44_444;
+        updated.virtual_cache_haiku_input_only_enabled = true;
         updated.target_cache_reuse_ratio = 0.95;
         updated.virtual_cache_context_shrink_reset_ratio = 0.2;
         updated.load_balancing_mode = "balanced".to_string();
@@ -1440,6 +1448,7 @@ mod tests {
         assert_eq!(loaded.message_pruning_keep_recent_messages, 3);
         assert_eq!(loaded.message_pruning_max_history_entry_bytes, 222_222);
         assert_eq!(loaded.message_pruning_max_truncated_content_bytes, 44_444);
+        assert!(loaded.virtual_cache_haiku_input_only_enabled);
         assert_eq!(loaded.target_cache_reuse_ratio, 0.95);
         assert_eq!(loaded.virtual_cache_context_shrink_reset_ratio, 0.2);
         assert_eq!(loaded.load_balancing_mode, "balanced");

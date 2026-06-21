@@ -353,6 +353,10 @@ pub struct Config {
     #[serde(default = "default_virtual_cache_fallback_scope")]
     pub virtual_cache_fallback_scope: String,
 
+    /// Haiku 模型是否跳过虚拟缓存读写，直接按普通输入上报 usage
+    #[serde(default = "default_virtual_cache_haiku_input_only_enabled")]
+    pub virtual_cache_haiku_input_only_enabled: bool,
+
     /// 全局目标缓存复用率，0 表示关闭；范围 0..1
     #[serde(default = "default_target_cache_reuse_ratio")]
     pub target_cache_reuse_ratio: f64,
@@ -725,6 +729,10 @@ fn default_virtual_cache_fallback_scope() -> String {
     "none".to_string()
 }
 
+fn default_virtual_cache_haiku_input_only_enabled() -> bool {
+    false
+}
+
 fn default_target_cache_reuse_ratio() -> f64 {
     0.0
 }
@@ -890,6 +898,8 @@ impl Default for Config {
             virtual_cache_burst_min_tokens: default_virtual_cache_burst_min_tokens(),
             virtual_cache_burst_max_tokens: default_virtual_cache_burst_max_tokens(),
             virtual_cache_fallback_scope: default_virtual_cache_fallback_scope(),
+            virtual_cache_haiku_input_only_enabled: default_virtual_cache_haiku_input_only_enabled(
+            ),
             target_cache_reuse_ratio: default_target_cache_reuse_ratio(),
             virtual_cache_context_shrink_reset_ratio:
                 default_virtual_cache_context_shrink_reset_ratio(),

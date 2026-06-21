@@ -21,7 +21,7 @@ interface RuntimeSettingsDialogProps {
 }
 
 const numberFields: Array<{
-  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'allowOverUsage' | 'sessionAffinityEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'messagePruningEnabled' | 'messagePruningMaxRequestBytes' | 'messagePruningKeepRecentMessages' | 'messagePruningMaxHistoryEntryBytes' | 'messagePruningMaxTruncatedContentBytes' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
+  key: keyof Omit<RuntimeSettings, 'loadBalancingMode' | 'tokenAutoRefreshEnabled' | 'allowOverUsage' | 'sessionAffinityEnabled' | 'sameAccountRetryRules' | 'opus47PlainStabilizationMode' | 'opus47AntmlProbeCompat' | 'opus47CleanProbeMode' | 'opus47DetectionProfile' | 'opus47SignedThinkingPreservation' | 'opus47ShortThinkingExperiment' | 'opus47DiagnosticsEnabled' | 'opus47RawDebugEnabled' | 'opus47RawDebugMaxChars' | 'opus46DetectionProfile' | 'opus46AntmlProbeCompat' | 'opus46DiagnosticsEnabled' | 'opus46RawDebugEnabled' | 'opus46RawDebugMaxChars' | 'sonnet46DetectionProfile' | 'sonnet46AntmlProbeCompat' | 'sonnet46DiagnosticsEnabled' | 'sonnet46RawDebugEnabled' | 'sonnet46RawDebugMaxChars' | 'promptDumpEnabled' | 'promptDumpDir' | 'promptDumpMaxBytes' | 'promptDumpModels' | 'messagePruningEnabled' | 'messagePruningMaxRequestBytes' | 'messagePruningKeepRecentMessages' | 'messagePruningMaxHistoryEntryBytes' | 'messagePruningMaxTruncatedContentBytes' | 'compatUsageShape' | 'compatThinkingModel' | 'compatModelsShape' | 'virtualCacheUsageEnabled' | 'virtualCacheDefaultTtl' | 'virtualCacheInputMode' | 'virtualCacheCreationMode' | 'virtualCacheFallbackScope' | 'virtualCacheHaikuInputOnlyEnabled' | 'dynamicProxyEnabled' | 'dynamicProxyAutoBindNewAccounts' | 'dynamicProxyProvider' | 'dynamicProxyProtocol' | 'dynamicProxyHost' | 'dynamicProxyUsernameTemplate' | 'dynamicProxyPassword' | 'dynamicProxyRegion' | 'dynamicProxyState' | 'dynamicProxyVerifyUrl'>
   label: string
   hint: string
 }> = [
@@ -70,7 +70,10 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
 
   useEffect(() => {
     if (data && open) {
-      setForm(data)
+      setForm({
+        ...data,
+        virtualCacheHaikuInputOnlyEnabled: data.virtualCacheHaikuInputOnlyEnabled ?? false,
+      })
     }
   }, [data, open])
 
@@ -936,6 +939,23 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                 <option value="enabled">启用</option>
                 <option value="disabled">关闭</option>
               </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Haiku 直接输入 Usage</label>
+              <select
+                value={form.virtualCacheHaikuInputOnlyEnabled ? 'enabled' : 'disabled'}
+                onChange={event =>
+                  setForm(prev => prev ? { ...prev, virtualCacheHaikuInputOnlyEnabled: event.target.value === 'enabled' } : prev)
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="disabled">关闭</option>
+                <option value="enabled">启用</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                启用后 Haiku 请求保留 cache 字段但不读写虚拟缓存账本，输入全计入 input_tokens。
+              </p>
             </div>
 
             <div className="space-y-2">
