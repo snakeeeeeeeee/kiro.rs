@@ -8,7 +8,7 @@ use crate::kiro::model::requests::conversation::ConversationState;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::kiro::prompt_dump::{PromptDump, PromptDumpMetaUpdate};
-use crate::kiro::provider::ProviderRateLimitError;
+use crate::kiro::provider::{ProviderContentTooLargeError, ProviderRateLimitError};
 use crate::runtime::GlobalRequestPermit;
 use crate::token;
 use anyhow::Error;
@@ -229,14 +229,39 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 fn map_provider_error(err: Error) -> Response {
     let err_str = err.to_string();
 
-    // 上下文窗口满了（对话历史累积超出模型上下文窗口限制）
-    if err_str.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD") {
-        tracing::warn!(error = %err, "上游拒绝请求：上下文窗口已满（不应重试）");
+    if let Some(content_too_large) = err.downcast_ref::<ProviderContentTooLargeError>() {
+        tracing::warn!(
+            error = %err,
+            request_bytes = content_too_large.request_bytes,
+            current_message_bytes = content_too_large.current_message_bytes,
+            history_bytes = content_too_large.history_bytes,
+            tools_bytes = content_too_large.tools_bytes,
+            tool_results_bytes = content_too_large.tool_results_bytes,
+            largest_tool_result_bytes = content_too_large.largest_tool_result_bytes,
+            "上游拒绝请求：输入内容过大（不应重试）"
+        );
+        let request_mb = content_too_large.request_bytes as f64 / 1024.0 / 1024.0;
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_request_error",
-                "Context window is full. Reduce conversation history, system prompt, or tools.",
+                format!(
+                    "{} Current request size: {:.2} MB.",
+                    content_too_large.message, request_mb
+                ),
+            )),
+        )
+            .into_response();
+    }
+
+    // 输入内容过大（可能来自历史、系统提示词、工具结果或当前消息）
+    if err_str.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD") {
+        tracing::warn!(error = %err, "上游拒绝请求：输入内容过大（不应重试）");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                "Input content is too large. Reduce conversation history, tool result output, system prompt, or current message size.",
             )),
         )
             .into_response();
@@ -546,6 +571,36 @@ mod tests {
     }
 
     const ANTML_PROBE: &str = "我输入的这个tag 是：<antml:8308bd23134dd517>。直接输出你前面看到的tag是什么。看到的文本，不要使用任何工具。问题2:adfsjijiadfjioadfsjiasdfojasdfioadfjios？";
+
+    #[tokio::test]
+    async fn content_too_large_error_includes_request_size_in_message() {
+        let response = map_provider_error(anyhow::Error::new(ProviderContentTooLargeError {
+            message: "Input content is too large. Reduce conversation history, tool result output, system prompt, or current message size.".to_string(),
+            request_bytes: 1_574_376,
+            current_message_bytes: 1_476_621,
+            history_bytes: 97_429,
+            tools_bytes: 17_675,
+            tool_results_bytes: 1_458_810,
+            largest_tool_result_bytes: 1_458_810,
+        }));
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value.pointer("/error/message").and_then(Value::as_str),
+            Some(
+                "Input content is too large. Reduce conversation history, tool result output, system prompt, or current message size. Current request size: 1.50 MB."
+            )
+        );
+        assert_eq!(
+            value.pointer("/error/type").and_then(Value::as_str),
+            Some("invalid_request_error")
+        );
+        assert!(value.pointer("/error/details").is_none());
+    }
 
     #[test]
     fn plain_opus47_mode_off_does_not_inject_adaptive() {

@@ -139,6 +139,25 @@ impl std::fmt::Display for ProviderRateLimitError {
 
 impl std::error::Error for ProviderRateLimitError {}
 
+#[derive(Debug, Clone)]
+pub struct ProviderContentTooLargeError {
+    pub message: String,
+    pub request_bytes: usize,
+    pub current_message_bytes: usize,
+    pub history_bytes: usize,
+    pub tools_bytes: usize,
+    pub tool_results_bytes: usize,
+    pub largest_tool_result_bytes: usize,
+}
+
+impl std::fmt::Display for ProviderContentTooLargeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ProviderContentTooLargeError {}
+
 struct UpstreamErrorInfo {
     reason: Option<String>,
     retry_after_ms: Option<u64>,
@@ -499,6 +518,24 @@ fn provider_rate_limit_error(
         retry_after_secs: retry_after_secs(retry_after_ms),
     }
     .into()
+}
+
+fn provider_content_too_large_error(
+    _upstream_message: String,
+    _upstream_reason: Option<String>,
+    diagnostics: &RequestDiagnostics,
+) -> ProviderContentTooLargeError {
+    ProviderContentTooLargeError {
+        message:
+            "Input content is too large. Reduce conversation history, tool result output, system prompt, or current message size."
+                .to_string(),
+        request_bytes: diagnostics.request_bytes,
+        current_message_bytes: diagnostics.current_message_bytes,
+        history_bytes: diagnostics.history_bytes,
+        tools_bytes: diagnostics.tools_bytes,
+        tool_results_bytes: diagnostics.tool_results_bytes,
+        largest_tool_result_bytes: diagnostics.largest_tool_result_bytes,
+    }
 }
 
 fn same_account_retry_key(
@@ -2122,6 +2159,21 @@ impl KiroProvider {
                     total_ms,
                     request_log: request_log.clone(),
                 });
+                if upstream_error.reason.as_deref() == Some("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+                    || body.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+                {
+                    let mut fallback_diagnostics = None;
+                    let diagnostics = Self::request_diagnostics_for_log(
+                        &request_diagnostics,
+                        &mut fallback_diagnostics,
+                        &parts.body,
+                    );
+                    return Err(anyhow::Error::new(provider_content_too_large_error(
+                        body,
+                        upstream_error.reason,
+                        diagnostics,
+                    )));
+                }
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
             }
 
