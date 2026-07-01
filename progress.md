@@ -547,3 +547,11 @@
 - One attempted Cargo invocation passed two test filters in one command; Cargo rejected it, and full validation will cover the same tests.
 - Final validation passed: `cargo fmt -- --check`, `cargo test -q` (374 tests), `pnpm --dir admin-ui build`, and `git diff --check`.
 - Local service smoke used `/tmp/kiro-rs-runtime-test/config.runtime-test.json` on `127.0.0.1:18990` with a temporary SQLite DB. `GET /healthz` returned 200, `GET /api/admin/settings/runtime` returned `virtualCacheContextShrinkResetRatio=0.7`, `PUT` to `0.2` read back correctly, and the setting was restored to `0.7`.
+
+## Completed: Sonnet 5 Compatibility
+- Added `claude-sonnet-5` and `claude-sonnet-5-thinking` to `/v1/models`.
+- Updated Anthropic-to-Kiro and Admin test model mapping so Sonnet 5 routes to `claude-sonnet-5` instead of falling back to `claude-sonnet-4.5`.
+- Treated Sonnet 5 as a Sonnet compatibility model for diagnostics, raw debug config, ANTML probe compatibility, identity probe compatibility, and 1M context-window calculations.
+- Added Sonnet 5 to the default prompt dump model allowlist and README model mapping docs.
+- Validation passed: `cargo fmt -- --check`, `cargo check`, `cargo test test_map_model_sonnet_5 -- --nocapture`, `cargo test model_list_includes_sonnet5_variants -- --nocapture`, `cargo test admin_test_model_maps_sonnet5_to_native_id -- --nocapture`, `cargo test antml_probe_compat_clarifies_plain_opus46_and_sonnet_compat_probe -- --nocapture`, `cargo test identity_probe_compat_applies_to_compat_profiles_and_clears_tools -- --nocapture`, `cargo test opus47_profile_defaults_and_normalization -- --nocapture`, `cargo test -q` (404 tests), and `git diff --check`.
+- Follow-up: Admin UI credential test dialog now includes `Claude Sonnet 5` and defaults to `claude-sonnet-5`; runtime-settings copy now says Sonnet compatibility applies to 4.6 and 5. `CI=true pnpm --dir admin-ui build` passed after adding pnpm 11 `allowBuilds` entries for `@swc/core` and `esbuild`.

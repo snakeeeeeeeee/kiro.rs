@@ -586,7 +586,18 @@ fn raw_debug_config_for_model(
     settings: &crate::kiro::settings::RuntimeSettings,
     model: &str,
 ) -> (bool, usize) {
-    match model.trim().to_ascii_lowercase().as_str() {
+    let model = model.trim().to_ascii_lowercase();
+    if model == "claude-sonnet-5"
+        || model == "claude-sonnet-5-thinking"
+        || model.starts_with("claude-sonnet-5-")
+    {
+        return (
+            settings.sonnet46_raw_debug_enabled,
+            settings.sonnet46_raw_debug_max_chars,
+        );
+    }
+
+    match model.as_str() {
         "claude-opus-4-8"
         | "claude-opus-4.8"
         | "claude-opus-4-8-thinking"
@@ -623,7 +634,9 @@ fn map_admin_test_model(model: &str) -> Option<String> {
     let model_lower = model.trim().to_ascii_lowercase();
 
     if model_lower.contains("sonnet") {
-        if model_lower.contains("4-6") || model_lower.contains("4.6") {
+        if model_lower.contains("sonnet-5") || model_lower.contains("sonnet 5") {
+            Some("claude-sonnet-5".to_string())
+        } else if model_lower.contains("4-6") || model_lower.contains("4.6") {
             Some("claude-sonnet-4.6".to_string())
         } else {
             Some("claude-sonnet-4.5".to_string())
@@ -2708,6 +2721,18 @@ mod tests {
             )
             .as_deref(),
             Some("INSUFFICIENT_MODEL_CAPACITY")
+        );
+    }
+
+    #[test]
+    fn admin_test_model_maps_sonnet5_to_native_id() {
+        assert_eq!(
+            map_admin_test_model("claude-sonnet-5"),
+            Some("claude-sonnet-5".to_string())
+        );
+        assert_eq!(
+            map_admin_test_model("claude-sonnet-5-thinking"),
+            Some("claude-sonnet-5".to_string())
         );
     }
 

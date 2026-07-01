@@ -21,6 +21,7 @@ interface CredentialTestDialogProps {
 }
 
 const TEST_MODELS = [
+  { label: 'Claude Sonnet 5', value: 'claude-sonnet-5' },
   { label: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6' },
   { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5-20251001' },
   { label: 'Claude Opus 4.6', value: 'claude-opus-4-6' },
@@ -37,7 +38,7 @@ function formatMs(value: number): string {
 }
 
 export function CredentialTestDialog({ credential, open, onOpenChange }: CredentialTestDialogProps) {
-  const [model, setModel] = useState('claude-opus-4-8')
+  const [model, setModel] = useState('claude-sonnet-5')
   const [prompt, setPrompt] = useState('hi')
   const [result, setResult] = useState<CredentialTestResponse | null>(null)
   const [error, setError] = useState<string | null>(null)

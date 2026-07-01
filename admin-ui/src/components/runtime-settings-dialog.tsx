@@ -557,9 +557,9 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
 
             <section className="space-y-4 rounded-lg border bg-muted/20 p-4 md:col-span-2">
               <div className="space-y-1">
-                <h3 className="text-sm font-semibold">Sonnet 4.6 兼容策略</h3>
+                <h3 className="text-sm font-semibold">Sonnet 4.6 / 5 兼容策略</h3>
                 <p className="text-xs text-muted-foreground">
-                  这些选项只影响 claude-sonnet-4-6；默认不改正常 Claude Code 工具调用。
+                  这些选项影响 claude-sonnet-4-6 和 claude-sonnet-5；默认不改正常 Claude Code 工具调用。
                 </p>
               </div>
 
@@ -687,7 +687,7 @@ export function RuntimeSettingsDialog({ open, onOpenChange }: RuntimeSettingsDia
                     value={form.promptDumpModels}
                     onChange={event => setForm(prev => prev ? { ...prev, promptDumpModels: event.target.value } : prev)}
                   />
-                  <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-opus-4-8, claude-sonnet-4-6。</p>
+                  <p className="text-xs text-muted-foreground">逗号分隔；默认 claude-opus-4-6, claude-opus-4-7, claude-opus-4-8, claude-sonnet-4-6, claude-sonnet-5。</p>
                 </div>
               </div>
             </section>

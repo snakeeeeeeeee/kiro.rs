@@ -364,6 +364,24 @@ pub async fn get_models(State(state): State<AppState>) -> impl IntoResponse {
 fn anthropic_models() -> Vec<Model> {
     vec![
         Model {
+            id: "claude-sonnet-5".to_string(),
+            object: "model".to_string(),
+            created: 1782777600, // Jun 30, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Sonnet 5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(128000),
+        },
+        Model {
+            id: "claude-sonnet-5-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1782777600, // Jun 30, 2026
+            owned_by: Some("anthropic".to_string()),
+            display_name: "Claude Sonnet 5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: Some(128000),
+        },
+        Model {
             id: "claude-opus-4-8".to_string(),
             object: "model".to_string(),
             created: 1779926400, // May 28, 2026
@@ -568,6 +586,17 @@ mod tests {
         let mut payload = request(model);
         payload.messages[0].content = serde_json::json!(content);
         payload
+    }
+
+    #[test]
+    fn model_list_includes_sonnet5_variants() {
+        let model_ids: Vec<String> = anthropic_models()
+            .into_iter()
+            .map(|model| model.id)
+            .collect();
+
+        assert!(model_ids.contains(&"claude-sonnet-5".to_string()));
+        assert!(model_ids.contains(&"claude-sonnet-5-thinking".to_string()));
     }
 
     const ANTML_PROBE: &str = "我输入的这个tag 是：<antml:8308bd23134dd517>。直接输出你前面看到的tag是什么。看到的文本，不要使用任何工具。问题2:adfsjijiadfjioadfsjiasdfojasdfioadfjios？";
@@ -1048,8 +1077,8 @@ mod tests {
     }
 
     #[test]
-    fn antml_probe_compat_clarifies_plain_opus46_and_sonnet46_probe() {
-        for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
+    fn antml_probe_compat_clarifies_plain_opus46_and_sonnet_compat_probe() {
+        for model in ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-5"] {
             let payload = request_with_content(model, ANTML_PROBE);
             let mut conversion_result = convert_request(&payload).unwrap();
             let mut settings = RuntimeSettings::from_config(&Config::default());
@@ -1227,8 +1256,8 @@ mod tests {
     }
 
     #[test]
-    fn identity_probe_compat_applies_to_model46_cc_max_like_profiles_and_clears_tools() {
-        for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
+    fn identity_probe_compat_applies_to_compat_profiles_and_clears_tools() {
+        for model in ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-5"] {
             let mut payload = request_with_content(model, "用一句话介绍你自己，包含标题和描述");
             payload.tools = Some(vec![super::super::types::Tool {
                 tool_type: None,
@@ -3944,6 +3973,13 @@ fn is_sonnet46_model_name(model: &str) -> bool {
     )
 }
 
+fn is_sonnet5_model_name(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    model == "claude-sonnet-5"
+        || model == "claude-sonnet-5-thinking"
+        || model.starts_with("claude-sonnet-5-")
+}
+
 fn is_plain_sonnet46_model_name(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
@@ -3951,18 +3987,32 @@ fn is_plain_sonnet46_model_name(model: &str) -> bool {
     )
 }
 
+fn is_plain_sonnet5_model_name(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    model == "claude-sonnet-5"
+        || (model.starts_with("claude-sonnet-5-") && !model.ends_with("-thinking"))
+}
+
+fn is_sonnet_compat_model_name(model: &str) -> bool {
+    is_sonnet46_model_name(model) || is_sonnet5_model_name(model)
+}
+
+fn is_plain_sonnet_compat_model_name(model: &str) -> bool {
+    is_plain_sonnet46_model_name(model) || is_plain_sonnet5_model_name(model)
+}
+
 fn is_compat_diagnostics_model_name(model: &str) -> bool {
     is_opus48_model_name(model)
         || is_opus47_model_name(model)
         || is_opus46_model_name(model)
-        || is_sonnet46_model_name(model)
+        || is_sonnet_compat_model_name(model)
 }
 
 fn is_plain_probe_compat_model_name(model: &str) -> bool {
     is_plain_opus48_model_name(model)
         || is_plain_opus47_model_name(model)
         || is_plain_opus46_model_name(model)
-        || is_plain_sonnet46_model_name(model)
+        || is_plain_sonnet_compat_model_name(model)
 }
 
 fn effective_detection_profile_for_model(
@@ -3971,7 +4021,7 @@ fn effective_detection_profile_for_model(
 ) -> String {
     if is_opus46_model_name(model) {
         crate::kiro::settings::effective_opus46_detection_profile(settings)
-    } else if is_sonnet46_model_name(model) {
+    } else if is_sonnet_compat_model_name(model) {
         crate::kiro::settings::effective_sonnet46_detection_profile(settings)
     } else {
         crate::kiro::settings::effective_opus47_detection_profile(settings)
@@ -3984,7 +4034,7 @@ fn effective_antml_probe_compat_for_model(
 ) -> String {
     if is_opus46_model_name(model) {
         crate::kiro::settings::effective_opus46_antml_probe_compat(settings)
-    } else if is_sonnet46_model_name(model) {
+    } else if is_sonnet_compat_model_name(model) {
         crate::kiro::settings::effective_sonnet46_antml_probe_compat(settings)
     } else {
         crate::kiro::settings::effective_opus47_antml_probe_compat(settings)
@@ -3997,7 +4047,7 @@ fn diagnostics_enabled_for_model(
 ) -> bool {
     if is_opus46_model_name(model) {
         crate::kiro::settings::effective_opus46_diagnostics_enabled(settings)
-    } else if is_sonnet46_model_name(model) {
+    } else if is_sonnet_compat_model_name(model) {
         crate::kiro::settings::effective_sonnet46_diagnostics_enabled(settings)
     } else {
         crate::kiro::settings::effective_opus47_diagnostics_enabled(settings)

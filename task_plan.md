@@ -206,3 +206,14 @@ Current extension: add Admin-managed plaintext external API keys (`sk-...`) with
 - [completed] Identify whether the 400 comes from frontend normalization, Admin request validation, or token verification.
 - [completed] Patch the narrow compatibility issue and add regression coverage.
 - [completed] Verify by local API/UI import without exposing imported secrets.
+
+## Sonnet 5 Compatibility Extension
+- [completed] Confirm official Claude Sonnet 5 API behavior and identify local model-routing touch points.
+- [completed] Add `claude-sonnet-5` and `claude-sonnet-5-thinking` to model listing and request mapping.
+- [completed] Reuse existing Sonnet compatibility diagnostics/probe handling for Sonnet 5.
+- [completed] Add focused regression tests and run formatting/checks.
+
+## Sonnet 5 Decisions
+- Treat Sonnet 5 as the same local compatibility family as Sonnet 4.6 for this pass.
+- Preserve the requested model name in API responses and route to upstream Kiro model ID `claude-sonnet-5`.
+- Do not implement Sonnet 5-specific official Anthropic protocol restrictions yet because this proxy already translates Anthropic requests into Kiro XML/directive shape and the user asked for same handling as current Sonnet.

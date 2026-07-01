@@ -107,6 +107,7 @@ const MIN_PDF_PRIMARY_TEXT_CHARS: usize = 32;
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 ///
 /// 按照用户要求：
+/// - sonnet 5 → claude-sonnet-5
 /// - sonnet 4.6/4-6 → claude-sonnet-4.6
 /// - 其他 sonnet → claude-sonnet-4.5
 /// - opus 4.8/4-8 → claude-opus-4.8
@@ -119,7 +120,9 @@ pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
 
     if model_lower.contains("sonnet") {
-        if model_lower.contains("4-6") || model_lower.contains("4.6") {
+        if model_lower.contains("sonnet-5") || model_lower.contains("sonnet 5") {
+            Some("claude-sonnet-5".to_string())
+        } else if model_lower.contains("4-6") || model_lower.contains("4.6") {
             Some("claude-sonnet-4.6".to_string())
         } else {
             Some("claude-sonnet-4.5".to_string())
@@ -155,6 +158,7 @@ pub fn get_context_window_size(model: &str) -> i32 {
     match map_model(model) {
         Some(mapped)
             if mapped == "claude-sonnet-4.6"
+                || mapped == "claude-sonnet-5"
                 || mapped == "claude-opus-4.6"
                 || mapped == "claude-opus-4.8"
                 || mapped == "claude-opus-4.7" =>
@@ -2367,6 +2371,18 @@ mod tests {
         // thinking 后缀不应影响 sonnet 模型映射
         let result = map_model("claude-sonnet-4-5-20250929-thinking");
         assert_eq!(result, Some("claude-sonnet-4.5".to_string()));
+    }
+
+    #[test]
+    fn test_map_model_sonnet_5() {
+        assert_eq!(
+            map_model("claude-sonnet-5"),
+            Some("claude-sonnet-5".to_string())
+        );
+        assert_eq!(
+            map_model("claude-sonnet-5-thinking"),
+            Some("claude-sonnet-5".to_string())
+        );
     }
 
     #[test]

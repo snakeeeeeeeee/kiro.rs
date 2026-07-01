@@ -638,7 +638,7 @@ fn default_prompt_dump_max_bytes() -> usize {
 }
 
 fn default_prompt_dump_models() -> String {
-    "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6".to_string()
+    "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6,claude-sonnet-5".to_string()
 }
 
 fn default_message_pruning_max_request_bytes() -> usize {

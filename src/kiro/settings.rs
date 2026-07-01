@@ -680,7 +680,8 @@ pub fn normalize_prompt_dump_models(models: &str) -> String {
         .filter(|model| !model.is_empty())
         .collect();
     if normalized.is_empty() {
-        "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6".to_string()
+        "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6,claude-sonnet-5"
+            .to_string()
     } else {
         normalized.join(",")
     }
@@ -1093,7 +1094,7 @@ mod tests {
         assert_eq!(settings.prompt_dump_max_bytes, 2_000_000);
         assert_eq!(
             settings.prompt_dump_models,
-            "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6"
+            "claude-opus-4-6,claude-opus-4-7,claude-opus-4-8,claude-sonnet-4-6,claude-sonnet-5"
         );
         assert!(!settings.message_pruning_enabled);
         assert_eq!(settings.message_pruning_max_request_bytes, 629_760);

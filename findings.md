@@ -307,3 +307,9 @@
 
 - 2026-06-01 CST: Direct KAM-shaped upstream probe with the provided Enterprise token succeeded for getUsageLimits (200) while the old kiro.rs-shaped usage URL returned 400 Invalid profileArn. KAM-shaped generateAssistantResponse no longer failed with profileArn required; Claude models returned INVALID_MODEL_ID because this KIRO POWER account only listed deepseek-3.2, minimax-m2.5, minimax-m2.1, glm-5, and qwen3-coder-next.
 - Implemented provider preservation, Enterprise profileless Q API region/headers/usage URL, and Kiro-native model pass-through for the listed non-Claude models. Isolated local verification on port 18993: Admin add 200, balance 200 with KIRO POWER 0.63/10000, /v1/messages deepseek-3.2 200 text ok.
+
+## 2026-07-01 Sonnet 5 Compatibility Findings
+- Official Anthropic docs identify the new model ID as `claude-sonnet-5`.
+- Sonnet 5 is presented as the Sonnet 4.6 successor with the same request/response/streaming shape, 1M context, and 128k max output.
+- Official Anthropic API differences to watch: adaptive thinking is the default behavior, manual `thinking: enabled` with `budget_tokens` is not supported, non-default sampling parameters are rejected, and the tokenizer can count slightly more tokens than Sonnet 4.6.
+- For this Kiro proxy pass, the safe local change is narrow model routing: expose `claude-sonnet-5` and `claude-sonnet-5-thinking`, map Sonnet 5 requests to Kiro model ID `claude-sonnet-5`, and reuse existing Sonnet 4.6 compatibility diagnostics/probe settings. The proxy does not add new Anthropic-side rejection rules because it translates requests into Kiro XML/directive shape and currently does not deserialize sampling parameters.

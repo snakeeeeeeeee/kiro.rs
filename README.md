@@ -234,11 +234,11 @@ docker compose -f docker-compose-dev.yml up -d --build
 | `opus46DiagnosticsEnabled` | boolean | `true` | 是否启用 Opus 4.6 响应形态诊断日志 |
 | `opus46RawDebugEnabled` | boolean | `false` | 是否启用 Opus 4.6 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
 | `opus46RawDebugMaxChars` | number | `20000` | Opus 4.6 原始调试日志单字段最大字符数 |
-| `sonnet46DetectionProfile` | string | `normal` | Sonnet 4.6 检测 profile：`normal` 或 `cc_max_like`。`cc_max_like` 启用窄身份/ANTML 探针兼容，并让通用兼容形态 effective 为 CC Max Like 形态 |
-| `sonnet46AntmlProbeCompat` | string | `off` | Sonnet 4.6 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
-| `sonnet46DiagnosticsEnabled` | boolean | `true` | 是否启用 Sonnet 4.6 响应形态诊断日志 |
-| `sonnet46RawDebugEnabled` | boolean | `false` | 是否启用 Sonnet 4.6 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
-| `sonnet46RawDebugMaxChars` | number | `20000` | Sonnet 4.6 原始调试日志单字段最大字符数 |
+| `sonnet46DetectionProfile` | string | `normal` | Sonnet 4.6/5 检测 profile：`normal` 或 `cc_max_like`。`cc_max_like` 启用窄身份/ANTML 探针兼容，并让通用兼容形态 effective 为 CC Max Like 形态 |
+| `sonnet46AntmlProbeCompat` | string | `off` | Sonnet 4.6/5 ANTML/tag 探针兼容模式：`off` 或 `clarify` |
+| `sonnet46DiagnosticsEnabled` | boolean | `true` | 是否启用 Sonnet 4.6/5 响应形态诊断日志 |
+| `sonnet46RawDebugEnabled` | boolean | `false` | 是否启用 Sonnet 4.6/5 原始请求/响应调试日志；会记录正文，仅排查时短期开启 |
+| `sonnet46RawDebugMaxChars` | number | `20000` | Sonnet 4.6/5 原始调试日志单字段最大字符数 |
 | `shutdownDrainTimeoutSecs` | number | `60` | 收到关闭信号后等待已有请求结束的最长时间 |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide`、`codewhisperer`、`amazonq`。SQLite 初始化后可在 Admin 面板运行策略里热切换 |
@@ -538,7 +538,9 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 | Anthropic 模型 | Kiro 模型 |
 |----------------|-----------|
-| `*sonnet*` | `claude-sonnet-4.5` |
+| `*sonnet-5*` | `claude-sonnet-5` |
+| `*sonnet*`（含 4.6/4-6） | `claude-sonnet-4.6` |
+| `*sonnet*`（其他） | `claude-sonnet-4.5` |
 | `*opus*`（含 4.8/4-8） | `claude-opus-4.8` |
 | `*opus*`（含 4.7/4-7） | `claude-opus-4.7` |
 | `*opus*`（含 4.5/4-5） | `claude-opus-4.5` |
